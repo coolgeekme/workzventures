@@ -58,26 +58,9 @@ export default function Landing() {
 
         <div className="relative h-[520px] wz-card overflow-hidden">
           <img src={HERO_IMG} alt="Workz" className="absolute inset-0 w-full h-full object-cover" />
-          <div className="absolute inset-0 bg-gradient-to-b from-[var(--wz-bg)]/40 via-transparent to-[var(--wz-bg)]/80" />
-          <div className="absolute top-6 left-6 right-6 flex items-center justify-between">
-            <div className="overline">Live · platform telemetry</div>
-            <div className="flex items-center gap-2 text-xs font-mono-wz">
-              <div className="dot-blink" /><span className="text-[var(--wz-positive)]">online</span>
-            </div>
-          </div>
-          <div className="absolute top-16 left-6 right-6 grid grid-cols-3 gap-2 text-xs font-mono-wz">
-            <div className="border border-[var(--wz-border)] bg-[var(--wz-bg)]/80 backdrop-blur p-2">
-              <div className="text-[var(--wz-positive)]">▲ +12.4%</div>
-              <div className="overline mt-1">engagement</div>
-            </div>
-            <div className="border border-[var(--wz-border)] bg-[var(--wz-bg)]/80 backdrop-blur p-2">
-              <div className="text-[var(--wz-gold)]">42</div>
-              <div className="overline mt-1">active deals</div>
-            </div>
-            <div className="border border-[var(--wz-border)] bg-[var(--wz-bg)]/80 backdrop-blur p-2">
-              <div className="text-[var(--wz-amber)]">9</div>
-              <div className="overline mt-1">mcp actions</div>
-            </div>
+          <div className="absolute top-5 right-5 flex items-center gap-2 px-3 py-1.5 bg-[var(--wz-bg)]/70 backdrop-blur border border-[var(--wz-border)]">
+            <div className="dot-blink" />
+            <span className="overline text-white">live · online</span>
           </div>
         </div>
       </section>
