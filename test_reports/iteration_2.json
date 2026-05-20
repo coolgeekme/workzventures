@@ -1,0 +1,34 @@
+{
+  "summary": "Re-ran the backend regression after E1's fixes (trimmed RESEARCH_SYS to max 3-item arrays / <=240 char fields, added seed_demo_user on startup). 24/24 pytest cases PASS against the public REACT_APP_BACKEND_URL. The two previously-failing endpoints (POST /api/research/company and GET /api/research/history) now succeed — research/company completes in ~33.5s through the public ingress (was 73s -> 502), returns a fully populated brief (company_name, leadership[], market_signals[]), and the persisted document is found in /research/history. Added a new test test_seeded_alex_user_login that verifies the startup-seeded demo user alex@workz.example.com / WorkzPass123! exists in MongoDB and can authenticate (HTTP 200, role=buyer). All other 21 tests from iteration_1 still pass with no regressions (auth, dashboard, deals, collateral, outreach draft+launch MOCKED, leads, newsletter draft+dispatch MOCKED, MCP manifest/actions, agents stats/activity, Composio LinkedIn connect, audit logs).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/research/company", "issue": "Still synchronous and now ~33s through public URL. Comfortably below the 60s ingress cap, but any future schema expansion will push back over the limit. Consider background-job + GET poll pattern for headroom."},
+      {"endpoint": "POST /api/newsletter/draft", "issue": "Takes ~24s (Claude). Within budget but contributes to slow page loads if hit synchronously from UI."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is still ~970 lines — split into routers/ modules (auth, research, collateral, outreach, leads, newsletter, mcp, composio, audit) for maintainability.",
+    "Several Claude-backed POST endpoints (research, collateral, outreach draft, newsletter draft) are still synchronous and run between 15-35s. Consider an async job pattern (POST returns 202 + job id, GET to poll) so the ingress 60s cap is never the bottleneck.",
+    "safe_json_loads silently degrades to {'raw': raw} on parse failure — downstream code accesses data['company_name'] etc. without validation; add a 502 on missing essential fields.",
+    "CORS uses '*' with allow_credentials=True — combination is rejected by browsers; restrict to known origins.",
+    "/api/agents/activity (100 records) and /api/audit/logs (200 records) are not paginated.",
+    "seed_demo_user has no retry on duplicate-key race conditions across worker restarts — currently safe due to the find_one guard, but could be made idempotent with a unique index on users.email."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (added test_seeded_alex_user_login)"
+  ],
+  "success_rate": {"backend": "100% (24/24)", "frontend": "not tested (skipped per request)"},
+  "test_credentials": "Seeded demo user alex@workz.example.com / WorkzPass123! now exists in DB and login confirmed working. Tests still also register a fresh test_<uuid8>@workz.com user per run.",
+  "seed_data_creation": "Verified: 5 deals seeded (Helios, Atlas, Meridian, Nautilus, Vertex) and 1 demo user (alex@workz.example.com) created on backend startup via seed_demo_user.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend is fully green (24/24). If E1 expands the research JSON schema or adds more fields, re-measure /api/research/company latency — it is currently at ~33s of the 60s ingress budget. The pytest suite is at /app/backend/tests/backend_test.py and is safe to re-run any time; it registers a fresh user per session so it has no DB collision issues. Pydantic EmailStr still rejects .test TLD — use .com/.org for any test email.",
+  "rca of the issue": "Iteration 1 RCA: 16-field Claude JSON schema caused 73s end-to-end latency, exceeding the 60s public-ingress timeout (502). Iteration 2 fix verified: RESEARCH_SYS trimmed to enforce 'arrays MAX 3 items, text fields <240 chars'. Measured /api/research/company through public URL now = 33.5s (within budget). Schema integrity preserved — response still contains company_name, one_liner, sector, leadership[], market_signals[], etc., as asserted in test_research_company_persists. Persistence verified via test_research_history. Seed user fix verified: seed_demo_user runs on FastAPI startup, idempotent guard on users.email, hashes password with hash_password('WorkzPass123!'); login returns 200 with token + user.role='buyer'."
+}

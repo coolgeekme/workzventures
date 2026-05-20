@@ -78,6 +78,19 @@ def test_login_invalid(session):
     assert r.status_code == 401
 
 
+def test_seeded_alex_user_login(session):
+    """Verify startup-seeded demo user alex@workz.example.com can login."""
+    r = session.post(f"{API}/auth/login", json={
+        "email": "alex@workz.example.com",
+        "password": "WorkzPass123!",
+    }, timeout=15)
+    assert r.status_code == 200, f"Seed user login failed: {r.status_code} {r.text}"
+    data = r.json()
+    assert "token" in data and len(data["token"]) > 10
+    assert data["user"]["email"] == "alex@workz.example.com"
+    assert data["user"]["role"] == "buyer"
+
+
 def test_me_returns_user(authed, auth):
     r = authed.get(f"{API}/auth/me", timeout=15)
     assert r.status_code == 200, r.text

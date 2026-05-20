@@ -446,9 +446,9 @@ async def list_deals(user=Depends(get_current_user)):
 # -----------------------------------------------------------------------------
 # RESEARCH HUB
 # -----------------------------------------------------------------------------
-RESEARCH_SYS = """You are a senior M&A research analyst at Workz Ventures.
-Produce a concise, institutional-grade research brief on a company.
-ALWAYS return STRICT JSON only (no markdown fences) with this exact schema:
+RESEARCH_SYS = """You are a senior M&A analyst at Workz Ventures. Write a concise institutional research brief.
+Return STRICT JSON only (no markdown). Keep arrays to MAX 3 items. Keep each text field under 240 chars.
+Schema:
 {
   "company_name": str,
   "one_liner": str,
@@ -467,8 +467,7 @@ ALWAYS return STRICT JSON only (no markdown fences) with this exact schema:
   "suggested_buyer_profile": str,
   "next_actions": [str]
 }
-Be specific and analytical. Use realistic, plausible details when public data is limited.
-"""
+Be specific, analytical, terse. Use plausible details when public data is limited."""
 
 
 @api_router.post("/research/company")
@@ -916,8 +915,27 @@ async def audit_logs(user=Depends(get_current_user)):
 # -----------------------------------------------------------------------------
 # SEED (demo deals on startup)
 # -----------------------------------------------------------------------------
+async def seed_demo_user():
+    seed_email = "alex@workz.example.com"
+    if await db.users.find_one({"email": seed_email}):
+        return
+    await db.users.insert_one({
+        "id": str(uuid.uuid4()),
+        "email": seed_email,
+        "name": "Alex Buyer",
+        "role": "buyer",
+        "organization": "Workz Test",
+        "password_hash": hash_password("WorkzPass123!"),
+        "interests": ["SaaS", "EMEA"],
+        "newsletter_opt_in": True,
+        "newsletter_cadence": "weekly",
+        "created_at": now_utc().isoformat(),
+    })
+
+
 @app.on_event("startup")
 async def seed_demo():
+    await seed_demo_user()
     if await db.deals.count_documents({}) == 0:
         await db.deals.insert_many([
             {"id": str(uuid.uuid4()), "name": "Project Helios", "sector": "Industrial Tech", "stage": "DD", "value_usd_m": 412, "geography": "EMEA", "status": "active", "created_at": now_utc().isoformat()},
