@@ -1092,7 +1092,9 @@ async def set_prefs(body: NewsletterPreferences, user=Depends(get_current_user))
 
 @api_router.post("/newsletter/draft")
 async def draft_newsletter(body: NewsletterDraftRequest, user=Depends(get_current_user)):
-    """Used by sellers to draft a broadcast newsletter to opted-in buyers."""
+    """Used by sellers (or admins) to draft a broadcast newsletter to opted-in buyers."""
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Broadcasts are seller/admin only")
     started = now_utc()
     interests = ", ".join(user.get("interests", [])) or "institutional buyers"
     topic = body.topic or "this week's deal flow and market signals"
@@ -1126,6 +1128,8 @@ async def draft_newsletter(body: NewsletterDraftRequest, user=Depends(get_curren
 @api_router.post("/newsletter/personal")
 async def personal_newsletter(body: NewsletterDraftRequest, user=Depends(get_current_user)):
     """Buyer self-service: generate AND deliver a personalized digest in one call (recipient=self)."""
+    if user.get("role") not in ("buyer", "admin"):
+        raise HTTPException(status_code=403, detail="Personal digests are buyer/admin only")
     started = now_utc()
     interests = ", ".join(user.get("interests", [])) or "general institutional buying themes"
     topic = body.topic or "today's deal flow, market signals, and portfolio updates"
@@ -1168,6 +1172,8 @@ async def personal_newsletter(body: NewsletterDraftRequest, user=Depends(get_cur
 @api_router.get("/newsletter")
 async def list_newsletters(user=Depends(get_current_user)):
     items = await db.newsletters.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    for it in items:
+        it.setdefault("kind", "broadcast")
     return items
 
 

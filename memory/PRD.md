@@ -48,8 +48,13 @@ Build an enterprise platform that combines:
   - Brief includes inline `[n]` citations across text fields (market_signals, investor_take, etc.) plus a sources list with title, URL, provider (perplexity/brave), and age
   - Frontend Research Hub shows a "live web research" pill on the brief header and renders a Sources panel with clickable URLs
   - End-to-end latency ~32-35s (within 60s ingress budget); fail-soft if either provider returns an error
-- Buyer Research Hub, Marketing Collateral Generator, Outreach, Lead Nurturing, Newsletter Center, MCP Console (admin), Agent Monitor, Integrations (Composio), Audit Logs (admin)
-- Backend tests: **47/47 pass** (was 41/41 before grounded research)
+- **Role-aware newsletter** (added 2026-05-20)
+  - **Buyer** → `POST /api/newsletter/personal` generates AND delivers a Workz-branded personal digest in one call (recipient = self, `kind=personal`, `recipients=1`). UI reframed as "Workz Ventures, curated for you · Send to my inbox".
+  - **Seller** → `POST /api/newsletter/draft` (now gated to seller/admin) creates a `kind=broadcast` draft → approve → dispatch fans out to buyer-role opted-in users only. UI reframed as "Reach the entire buyer base · Draft broadcast".
+  - Cross-role calls are 403-gated; legacy newsletter docs without `kind` are backfilled to "broadcast" on read.
+- **Seller Collateral from listing** (added 2026-05-20): seller-only "Generate from a listing" picker on `/app/collateral` pre-fills deal name, target audience (sector + geography), and key points (summary + financials + highlights) from any of the seller's own listings. Manual entry still works.
+- Buyer Research Hub, Marketing Collateral Generator, Outreach, Lead Nurturing, Newsletter, MCP Console (admin), Agent Monitor, Integrations, Audit Logs (admin)
+- Backend tests: **52/52 pass** (was 47/47 before role-aware newsletter)
 
 ## Prioritized backlog
 **P1**
