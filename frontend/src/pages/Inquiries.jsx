@@ -2,12 +2,14 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { Buildings } from "@phosphor-icons/react";
 
 const STATUSES = ["new", "reviewing", "engaged", "passed"];
 
 export default function Inquiries() {
   const { user } = useAuth();
   const [items, setItems] = useState([]);
+  const [pushing, setPushing] = useState(null);
   const isSeller = user?.role === "seller";
 
   const load = () => api.get("/inquiries").then((r) => setItems(r.data));
@@ -20,6 +22,23 @@ export default function Inquiries() {
       load();
     } catch (err) {
       toast.error("Update failed");
+    }
+  };
+
+  const pushToZoho = async (i) => {
+    setPushing(i.id);
+    try {
+      const r = await api.post(`/composio/zoho/push-lead/${i.id}`);
+      if (r.data.pushed_to_zoho) {
+        toast.success(`${i.buyer_name} pushed to Zoho CRM as Lead`);
+      } else {
+        toast(`${i.buyer_name} recorded locally — connect Zoho CRM to push live`, { duration: 5000 });
+      }
+      load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Zoho push failed");
+    } finally {
+      setPushing(null);
     }
   };
 
@@ -72,6 +91,16 @@ export default function Inquiries() {
                       → {s}
                     </button>
                   ))}
+                  <div className="overline mt-2">Sync</div>
+                  <button
+                    onClick={() => pushToZoho(i)}
+                    disabled={pushing === i.id || i.zoho_pushed}
+                    data-testid={`zoho-${i.id}`}
+                    className="text-[10px] font-mono-wz uppercase tracking-widest border border-[var(--wz-border)] px-3 py-1 hover:border-[var(--wz-gold)] hover:text-[var(--wz-gold)] transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    <Buildings size={11} />
+                    {i.zoho_pushed ? "in Zoho" : pushing === i.id ? "Syncing…" : "Push to Zoho CRM"}
+                  </button>
                 </div>
               )}
             </div>

@@ -1266,7 +1266,7 @@ async def composio_status(user=Depends(get_current_user)):
     return {
         "configured": bool(COMPOSIO_API_KEY),
         "gateway": COMPOSIO_BASE_URL,
-        "supported_apps": ["LINKEDIN", "GMAIL", "SLACK", "HUBSPOT", "SALESFORCE"],
+        "supported_apps": ["LINKEDIN", "ZOHO_CRM", "GMAIL", "SLACK", "HUBSPOT", "SALESFORCE"],
     }
 
 
@@ -1325,6 +1325,150 @@ async def remove_connection(cid: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Connection not found")
     await log_audit(user["id"], "composio.disconnect", cid)
     return {"ok": True}
+
+
+# -----------------------------------------------------------------------------
+# ZOHO CRM via Composio
+# -----------------------------------------------------------------------------
+@api_router.post("/composio/connect/zoho-crm")
+async def composio_connect_zoho_crm(user=Depends(get_current_user)):
+    """Initiate Zoho CRM OAuth via Composio (US data center, .com)."""
+    if not COMPOSIO_API_KEY:
+        raise HTTPException(status_code=400, detail="Composio API key missing")
+
+    entity_id = f"workz-{user['id']}"
+    redirect_url = f"https://app.composio.dev/connect/zoho_crm?entity={entity_id}"
+    composio_connected_id = None
+
+    # Try Composio v3 connect — multiple endpoint shapes for resilience
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as c:
+            r = await c.post(
+                f"{COMPOSIO_BASE_URL}/api/v3/connectedAccounts",
+                headers={"x-api-key": COMPOSIO_API_KEY, "Content-Type": "application/json"},
+                json={
+                    "appName": "zoho_crm",
+                    "entityId": entity_id,
+                    "region": "com",  # US data center
+                },
+            )
+            if r.status_code < 400:
+                payload = r.json()
+                redirect_url = (
+                    payload.get("redirectUrl")
+                    or payload.get("redirect_url")
+                    or payload.get("url")
+                    or redirect_url
+                )
+                composio_connected_id = (
+                    payload.get("id")
+                    or payload.get("connectedAccountId")
+                    or payload.get("connected_account_id")
+                )
+            else:
+                logger.warning(f"Composio Zoho init non-2xx ({r.status_code}): {r.text[:300]}")
+    except Exception as e:
+        logger.warning(f"Composio Zoho init failed, using placeholder: {e}")
+
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "app": "zoho_crm",
+        "region": "com",
+        "entity_id": entity_id,
+        "composio_connected_id": composio_connected_id,
+        "status": "pending",
+        "redirect_url": redirect_url,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.composio_connections.insert_one(doc)
+    await log_audit(user["id"], "composio.connect.zoho_crm", entity_id)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.post("/composio/zoho/push-lead/{inquiry_id}")
+async def push_inquiry_to_zoho(inquiry_id: str, user=Depends(get_current_user)):
+    """Seller-only: push a buyer inquiry into Zoho CRM as a Lead via Composio Proxy Execute."""
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Sellers/admin only")
+
+    inquiry = await db.inquiries.find_one({"id": inquiry_id, "seller_id": user["id"]}, {"_id": 0})
+    if not inquiry:
+        raise HTTPException(status_code=404, detail="Inquiry not found")
+
+    conn = await db.composio_connections.find_one(
+        {"user_id": user["id"], "app": "zoho_crm"}, {"_id": 0}
+    )
+    if not conn:
+        raise HTTPException(status_code=400, detail="Zoho CRM not connected — connect via Integrations first")
+
+    # Build Zoho Lead record (Insert Records requires {data: [{...}]})
+    buyer_name = (inquiry.get("buyer_name") or "Unknown Buyer").strip()
+    parts = buyer_name.split(" ", 1)
+    first_name = parts[0]
+    last_name = parts[1] if len(parts) > 1 else parts[0]
+    lead_record = {
+        "Last_Name": last_name,
+        "First_Name": first_name,
+        "Company": inquiry.get("buyer_org") or "Unknown",
+        "Email": inquiry.get("buyer_email"),
+        "Lead_Source": "Workz Ventures",
+        "Description": (
+            f"Inquiry re: {inquiry.get('listing_name')}\n\n"
+            f"{inquiry.get('message', '')}"
+        ),
+    }
+    body = {"data": [lead_record]}
+
+    # Attempt Composio Proxy Execute
+    pushed = False
+    composio_response: Dict[str, Any] = {}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as c:
+            r = await c.post(
+                f"{COMPOSIO_BASE_URL}/api/v3/tools/proxy_execute",
+                headers={"x-api-key": COMPOSIO_API_KEY, "Content-Type": "application/json"},
+                json={
+                    "toolkit": "zoho_crm",
+                    "connected_account_id": conn.get("composio_connected_id") or conn.get("entity_id"),
+                    "method": "POST",
+                    "endpoint": "/crm/v8/Leads",
+                    "body": body,
+                },
+            )
+            composio_response = {"status_code": r.status_code, "body": r.text[:500]}
+            pushed = r.status_code < 400
+    except Exception as e:
+        composio_response = {"error": str(e)}
+        logger.warning(f"Zoho push failed: {e}")
+
+    # Always mark the inquiry as synced locally so the UI reflects the action
+    await db.inquiries.update_one(
+        {"id": inquiry_id},
+        {"$set": {"zoho_pushed_at": now_utc().isoformat(), "zoho_pushed": pushed}},
+    )
+    await log_audit(user["id"], "zoho.lead.push", inquiry_id, {"pushed": pushed})
+    await log_agent_activity(
+        "zoho-sync-agent",
+        f"push-lead:{inquiry.get('listing_name')}",
+        "completed" if pushed else "failed",
+        user_id=user["id"],
+        friction=None if pushed else "composio_proxy_error",
+        meta=composio_response,
+    )
+
+    return {
+        "ok": True,
+        "pushed_to_zoho": pushed,
+        "lead": lead_record,
+        "composio": composio_response,
+        "note": (
+            "Pushed to Zoho CRM via Composio Proxy Execute."
+            if pushed
+            else "Local sync recorded; Composio Proxy Execute did not confirm — verify Zoho Auth Config in Composio dashboard."
+        ),
+    }
 
 
 # -----------------------------------------------------------------------------
