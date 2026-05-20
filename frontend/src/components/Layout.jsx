@@ -4,7 +4,7 @@ import { useAuth } from "../lib/auth";
 import {
   House, MagnifyingGlass, NotePencil, PaperPlaneTilt, Kanban,
   EnvelopeSimple, Plugs, Terminal, ChartLineUp, ListChecks, SignOut,
-  Storefront, Tag, Question, Bookmark, ChartBar,
+  Storefront, Tag, Question, Bookmark, ChartBar, Files,
 } from "@phosphor-icons/react";
 import Logo from "./Logo";
 
@@ -13,6 +13,7 @@ const BUYER_NAV = [
   { to: "/app/research", label: "Research Hub", icon: MagnifyingGlass, group: "Discovery" },
   { to: "/app/marketplace", label: "Marketplace", icon: Storefront, group: "Discovery" },
   { to: "/app/inquiries", label: "My Inquiries", icon: Question, group: "Discovery" },
+  { to: "/app/rooms", label: "Deal Rooms", icon: Files, group: "Diligence" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Engagement" },
   { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
   { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp, group: "Platform" },
@@ -24,6 +25,7 @@ const SELLER_NAV = [
   { to: "/app/collateral", label: "Collateral", icon: NotePencil, group: "Deal Marketing" },
   { to: "/app/outreach", label: "Outreach", icon: PaperPlaneTilt, group: "Deal Marketing" },
   { to: "/app/inquiries", label: "Inbound Inquiries", icon: Question, group: "Pipeline" },
+  { to: "/app/rooms", label: "Deal Rooms", icon: Files, group: "Pipeline" },
   { to: "/app/leads", label: "Lead Nurturing", icon: Kanban, group: "Pipeline" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Pipeline" },
   { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
@@ -38,6 +40,7 @@ const ADMIN_NAV = [
   { to: "/app/collateral", label: "Collateral", icon: NotePencil, group: "Seller Tools" },
   { to: "/app/outreach", label: "Outreach", icon: PaperPlaneTilt, group: "Seller Tools" },
   { to: "/app/inquiries", label: "Inquiries", icon: Question, group: "Pipeline" },
+  { to: "/app/rooms", label: "Deal Rooms", icon: Files, group: "Pipeline" },
   { to: "/app/leads", label: "Leads", icon: Kanban, group: "Pipeline" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Pipeline" },
   { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },

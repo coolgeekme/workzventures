@@ -24,6 +24,8 @@ import Audit from "./pages/Audit";
 import Marketplace from "./pages/Marketplace";
 import MyListings from "./pages/MyListings";
 import Inquiries from "./pages/Inquiries";
+import DealRooms from "./pages/DealRooms";
+import DealRoomDetail from "./pages/DealRoomDetail";
 
 function Protected({ children }) {
   const { user } = useAuth();

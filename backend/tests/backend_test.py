@@ -348,8 +348,9 @@ def test_newsletter_preferences(authed):
 
 
 @pytest.fixture(scope="session")
-def newsletter(authed):
-    r = authed.post(f"{API}/newsletter/draft", json={"topic": "Q1 deal flow"}, timeout=120)
+def newsletter(seller_authed):
+    # iter-6: /draft is now gated to seller/admin (iter-5 action item shipped)
+    r = seller_authed.post(f"{API}/newsletter/draft", json={"topic": "Q1 deal flow"}, timeout=120)
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -357,33 +358,37 @@ def newsletter(authed):
 def test_newsletter_draft(newsletter):
     assert newsletter["status"] == "draft"
     assert isinstance(newsletter["data"], dict)
-    # iter-5: /draft now tags kind='broadcast' and stamps sender_name/org for any role
+    # iter-5: /draft now tags kind='broadcast' and stamps sender_name/org for the seller caller
     assert newsletter.get("kind") == "broadcast", f"expected kind='broadcast', got {newsletter.get('kind')}"
-    assert newsletter.get("sender_name") == TEST_NAME
-    assert newsletter.get("sender_org") == "Workz Test"
+    assert newsletter.get("sender_org") == "Northstar Holdings"
     assert newsletter.get("recipients") == 0
 
 
-def test_newsletter_approve_and_dispatch(authed, newsletter):
+def test_newsletter_approve_and_dispatch(seller_authed, buyer_authed, newsletter):
     nid = newsletter["id"]
-    r = authed.post(f"{API}/newsletter/{nid}/approve", timeout=15)
+    r = seller_authed.post(f"{API}/newsletter/{nid}/approve", timeout=15)
     assert r.status_code == 200, r.text
-    r2 = authed.post(f"{API}/newsletter/{nid}/dispatch", timeout=15)
+    r2 = seller_authed.post(f"{API}/newsletter/{nid}/dispatch", timeout=15)
     assert r2.status_code == 200, r2.text
     d = r2.json()
     assert d["ok"] is True
     assert "recipients" in d
     # iter-5: dispatched broadcast recipients = count of role='buyer' AND newsletter_opt_in=true
-    # The seeded buyer alex is opted-in by default, so we expect >=1.
     assert isinstance(d["recipients"], int) and d["recipients"] >= 1, (
         f"broadcast dispatch should count at least the seeded opted-in buyer, got {d['recipients']}"
     )
     # confirm status persisted
-    r3 = authed.get(f"{API}/newsletter", timeout=15)
+    r3 = seller_authed.get(f"{API}/newsletter", timeout=15)
     rec = next(n for n in r3.json() if n["id"] == nid)
     assert rec["status"] == "dispatched"
     # iter-5: GET /api/newsletter must surface 'kind' so frontend can filter
     assert rec.get("kind") == "broadcast"
+
+
+# iter-6: buyer hitting /draft must now be 403 (role-gated)
+def test_newsletter_draft_forbidden_for_buyer(buyer_authed):
+    r = buyer_authed.post(f"{API}/newsletter/draft", json={"topic": "should be blocked"}, timeout=15)
+    assert r.status_code == 403, f"expected 403, got {r.status_code} {r.text}"
 
 
 # ----- Newsletter (iter-5): Personal digest (buyer) -----
@@ -872,3 +877,299 @@ def test_watchlist_add_get_delete(buyer_authed):
 def test_watchlist_unknown_listing(buyer_authed):
     r = buyer_authed.post(f"{API}/watchlist/nonexistent-id", timeout=15)
     assert r.status_code == 404
+
+
+# =====================================================================
+# Deal Room module (iter-6): NDA-gated workspace, file upload (text-only),
+# DRL sector templates + AI auto-match, AI findings generation with citations.
+# =====================================================================
+
+# ----- DRL templates: all 6 sector templates with item_count -----
+def test_drl_templates_returns_six(buyer_authed):
+    r = buyer_authed.get(f"{API}/drl-templates", timeout=15)
+    assert r.status_code == 200, r.text
+    templates = r.json()
+    ids = {t["id"] for t in templates}
+    expected = {"saas", "healthcare", "industrial", "finserv", "climatetech", "consumer"}
+    assert ids == expected, f"expected {expected}, got {ids}"
+    for t in templates:
+        assert "name" in t and isinstance(t["name"], str)
+        assert "item_count" in t and isinstance(t["item_count"], int) and t["item_count"] > 0
+
+
+# ----- Inquiry → engaged → seller opens deal room -----
+@pytest.fixture(scope="session")
+def engaged_inquiry(seller_authed, buyer_inquiry):
+    """Seller flips the buyer's Atlas inquiry to 'engaged' so a room can be opened."""
+    iid = buyer_inquiry["id"]
+    r = seller_authed.patch(f"{API}/inquiries/{iid}/status",
+                            json={"status": "engaged"}, timeout=15)
+    assert r.status_code == 200, r.text
+    return buyer_inquiry
+
+
+@pytest.fixture(scope="session")
+def deal_room(seller_authed, engaged_inquiry):
+    """Seller opens a deal room on the engaged inquiry."""
+    iid = engaged_inquiry["id"]
+    r = seller_authed.post(f"{API}/inquiries/{iid}/open-room", timeout=20)
+    assert r.status_code == 200, r.text
+    room = r.json()
+    assert room["status"] == "pending_nda"
+    assert room["inquiry_id"] == iid
+    assert "buyer_id" in room and "seller_id" in room
+    return room
+
+
+def test_open_room_creates_pending_nda(deal_room, engaged_inquiry):
+    assert deal_room["status"] == "pending_nda"
+    assert deal_room["nda_accepted_by_buyer_at"] in (None, "")
+    assert deal_room["drl_template_id"] in (None, "")
+    assert deal_room["inquiry_id"] == engaged_inquiry["id"]
+    # No mongo _id leak
+    assert "_id" not in deal_room
+
+
+def test_open_room_is_idempotent(seller_authed, engaged_inquiry, deal_room):
+    """Second call returns the same existing room (no duplicate)."""
+    r = seller_authed.post(f"{API}/inquiries/{engaged_inquiry['id']}/open-room", timeout=15)
+    assert r.status_code == 200, r.text
+    second = r.json()
+    assert second["id"] == deal_room["id"]
+
+
+def test_buyer_cannot_open_room(buyer_authed, engaged_inquiry):
+    """Buyer hitting /open-room must get 403."""
+    r = buyer_authed.post(f"{API}/inquiries/{engaged_inquiry['id']}/open-room", timeout=15)
+    assert r.status_code == 403, f"expected 403, got {r.status_code} {r.text}"
+
+
+# ----- Deal room listing scoped to participant -----
+def test_list_deal_rooms_seller_scope(seller_authed, deal_room):
+    r = seller_authed.get(f"{API}/deal-rooms", timeout=15)
+    assert r.status_code == 200, r.text
+    rooms = r.json()
+    assert any(x["id"] == deal_room["id"] for x in rooms)
+    rec = next(x for x in rooms if x["id"] == deal_room["id"])
+    for k in ("files_count", "requests_count", "findings_count"):
+        assert k in rec, f"missing {k}"
+        assert isinstance(rec[k], int)
+
+
+def test_list_deal_rooms_buyer_scope(buyer_authed, deal_room):
+    r = buyer_authed.get(f"{API}/deal-rooms", timeout=15)
+    assert r.status_code == 200, r.text
+    rooms = r.json()
+    assert any(x["id"] == deal_room["id"] for x in rooms)
+
+
+def test_get_deal_room_returns_files_requests_findings(seller_authed, deal_room):
+    r = seller_authed.get(f"{API}/deal-rooms/{deal_room['id']}", timeout=15)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["id"] == deal_room["id"]
+    assert isinstance(body.get("files"), list)
+    assert isinstance(body.get("requests"), list)
+    assert isinstance(body.get("findings"), list)
+    # Files endpoint must not leak content (only metadata)
+    for f in body["files"]:
+        assert "content" not in f
+
+
+def test_get_deal_room_non_participant_403(session, deal_room):
+    """Outsider (fresh registered user) cannot fetch the room."""
+    email = f"outsider_{uuid.uuid4().hex[:6]}@workz.com"
+    reg = session.post(f"{API}/auth/register", json={
+        "email": email, "password": "WorkzPass123!",
+        "name": "Outsider", "organization": "External", "role": "buyer",
+    }, timeout=15)
+    assert reg.status_code == 200
+    token = reg.json()["token"]
+    s = requests.Session()
+    s.headers.update({"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+    r = s.get(f"{API}/deal-rooms/{deal_room['id']}", timeout=15)
+    assert r.status_code == 403, f"expected 403, got {r.status_code} {r.text}"
+
+
+# ----- File upload pre-NDA must be blocked -----
+def test_file_upload_blocked_before_nda(seller_authed, deal_room):
+    r = seller_authed.post(f"{API}/deal-rooms/{deal_room['id']}/files", json={
+        "filename": "TEST_too_early.txt",
+        "folder": "operations",
+        "content": "should be rejected because NDA not accepted yet",
+    }, timeout=15)
+    assert r.status_code == 400, f"expected 400 pre-NDA, got {r.status_code} {r.text}"
+
+
+# ----- Buyer accepts NDA — flips to active and stamps timestamp -----
+@pytest.fixture(scope="session")
+def nda_accepted(buyer_authed, deal_room):
+    r = buyer_authed.post(f"{API}/deal-rooms/{deal_room['id']}/accept-nda", timeout=15)
+    assert r.status_code == 200, r.text
+    assert r.json().get("ok") is True
+    return True
+
+
+def test_accept_nda_updates_room(buyer_authed, deal_room, nda_accepted):
+    r = buyer_authed.get(f"{API}/deal-rooms/{deal_room['id']}", timeout=15)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "active"
+    assert body["nda_accepted_by_buyer_at"] not in (None, "")
+
+
+def test_seller_cannot_accept_nda(seller_authed, deal_room, nda_accepted):
+    """Even after buyer accepted, seller hitting accept-nda must 403."""
+    r = seller_authed.post(f"{API}/deal-rooms/{deal_room['id']}/accept-nda", timeout=15)
+    assert r.status_code == 403, f"expected 403, got {r.status_code}"
+
+
+# ----- DRL apply: buyer-only, wipes prior requests -----
+def test_seller_cannot_apply_drl(seller_authed, deal_room, nda_accepted):
+    r = seller_authed.post(f"{API}/deal-rooms/{deal_room['id']}/drl",
+                           json={"template_id": "industrial"}, timeout=15)
+    assert r.status_code == 403, f"expected 403, got {r.status_code} {r.text}"
+
+
+@pytest.fixture(scope="session")
+def drl_applied(buyer_authed, deal_room, nda_accepted):
+    r = buyer_authed.post(f"{API}/deal-rooms/{deal_room['id']}/drl",
+                          json={"template_id": "industrial"}, timeout=15)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body.get("ok") is True
+    assert body.get("request_count") == 9, f"industrial template has 9 items, got {body.get('request_count')}"
+    return body
+
+
+def test_drl_apply_persists_requests(buyer_authed, deal_room, drl_applied):
+    r = buyer_authed.get(f"{API}/deal-rooms/{deal_room['id']}", timeout=15)
+    assert r.status_code == 200
+    reqs = r.json()["requests"]
+    assert len(reqs) == 9
+    titles = {x["title"] for x in reqs}
+    # Spot-check a known industrial template item
+    assert "Plant capacity utilization (last 24m)" in titles
+    for x in reqs:
+        assert x["status"] == "pending"
+        assert x["template_id"] == "industrial"
+        assert x["workstream"] in {"finance", "legal", "hr", "it", "operations", "commercial"}
+
+
+def test_drl_apply_unknown_template_400(buyer_authed, deal_room):
+    r = buyer_authed.post(f"{API}/deal-rooms/{deal_room['id']}/drl",
+                          json={"template_id": "BOGUS"}, timeout=15)
+    assert r.status_code == 400
+
+
+# ----- Seller upload after NDA — triggers AI auto-match -----
+@pytest.fixture(scope="session")
+def uploaded_file(seller_authed, deal_room, drl_applied):
+    """Seller uploads a file that should auto-match an industrial DRL item."""
+    payload = {
+        "filename": "TEST_plant_capacity_2023_2024.txt",
+        "folder": "operations",
+        "content": (
+            "Plant capacity utilization summary — January 2023 to December 2024.\n"
+            "Plant A (Detroit, MI): 78% avg utilization in 2023, 84% in 2024.\n"
+            "Plant B (Monterrey, MX): 65% in 2023, 71% in 2024.\n"
+            "Plant C (Stuttgart, DE): 88% in 2023, 91% in 2024 — at capacity ceiling.\n"
+            "Bottleneck: paint line at Plant B limiting throughput by 12%.\n"
+            "Capacity utilization trend over last 24 months attached."
+        ),
+        "note": "Plant capacity overview last 24m",
+    }
+    r = seller_authed.post(f"{API}/deal-rooms/{deal_room['id']}/files",
+                           json=payload, timeout=60)  # AI call inside
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_file_upload_returns_metadata_no_content(uploaded_file):
+    # Response must not leak the raw content
+    assert "content" not in uploaded_file
+    assert uploaded_file["filename"] == "TEST_plant_capacity_2023_2024.txt"
+    assert uploaded_file["folder"] == "operations"
+    assert uploaded_file["uploaded_by_role"] == "seller"
+    assert "matched_request_id" in uploaded_file  # key always present (None or id)
+
+
+def test_file_auto_match_against_drl(buyer_authed, deal_room, uploaded_file):
+    """matched_request_id must be EITHER null OR a valid id from this room's requests."""
+    r = buyer_authed.get(f"{API}/deal-rooms/{deal_room['id']}", timeout=15)
+    assert r.status_code == 200
+    body = r.json()
+    request_ids = {x["id"] for x in body["requests"]}
+    mrid = uploaded_file.get("matched_request_id")
+    if mrid is None:
+        # Acceptable: Claude returned NONE
+        pass
+    else:
+        assert mrid in request_ids, f"matched_request_id {mrid} not in this room's requests"
+        # The matched request must now be 'satisfied' and reference the file
+        matched_req = next(x for x in body["requests"] if x["id"] == mrid)
+        assert matched_req["status"] == "satisfied"
+        assert uploaded_file["id"] in matched_req.get("matched_file_ids", [])
+
+
+def test_buyer_upload_allowed_after_nda(buyer_authed, deal_room, nda_accepted):
+    """After NDA accepted, buyer can also upload files."""
+    r = buyer_authed.post(f"{API}/deal-rooms/{deal_room['id']}/files", json={
+        "filename": f"TEST_buyer_questions_{uuid.uuid4().hex[:6]}.txt",
+        "folder": "other",
+        "content": "Buyer's follow-up questions list for management.",
+    }, timeout=30)
+    assert r.status_code == 200, r.text
+    doc = r.json()
+    assert doc["uploaded_by_role"] == "buyer"
+    # Buyer upload should NOT auto-match (only seller uploads do)
+    assert doc.get("matched_request_id") is None
+
+
+# ----- Findings generation: buyer-only, requires at least one file -----
+def test_seller_cannot_generate_findings(seller_authed, deal_room, uploaded_file):
+    r = seller_authed.post(f"{API}/deal-rooms/{deal_room['id']}/generate-findings", timeout=15)
+    assert r.status_code == 403
+
+
+def test_generate_findings_returns_structured_payload(buyer_authed, deal_room, uploaded_file):
+    r = buyer_authed.post(f"{API}/deal-rooms/{deal_room['id']}/generate-findings", timeout=120)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body.get("ok") is True
+    assert body.get("files_analyzed", 0) >= 1
+    findings = body.get("findings", [])
+    assert isinstance(findings, list)
+    if findings:  # AI is non-deterministic but should return at least 1 for the rich text we gave it
+        f0 = findings[0]
+        assert f0["severity"] in {"high", "medium", "low"}
+        assert f0["workstream"] in {"finance", "legal", "hr", "it", "operations", "commercial"}
+        assert "title" in f0 and "description" in f0
+        cit = f0.get("citation", {})
+        assert "file_id" in cit and "filename" in cit and "excerpt" in cit
+        # Verify findings persisted
+        room = buyer_authed.get(f"{API}/deal-rooms/{deal_room['id']}", timeout=15).json()
+        assert len(room["findings"]) >= len(findings)
+
+
+def test_generate_findings_empty_room_returns_400(buyer_authed, seller_authed, session):
+    """A fresh empty room (no files) should yield 400 on generate-findings."""
+    # Create a fresh buyer + seller pair and an empty engaged room
+    # (Reuse seed accounts: create a second inquiry on Helios)
+    listings = buyer_authed.get(f"{API}/marketplace", timeout=15).json()
+    helios = next(x for x in listings if x["company_name"] == "Helios MedTech")
+    inq = buyer_authed.post(f"{API}/marketplace/{helios['id']}/inquire",
+                            json={"message": "TEST empty-room inquiry"}, timeout=15)
+    assert inq.status_code == 200
+    iid = inq.json()["id"]
+    # engage
+    seller_authed.patch(f"{API}/inquiries/{iid}/status", json={"status": "engaged"}, timeout=15)
+    # open room
+    room_resp = seller_authed.post(f"{API}/inquiries/{iid}/open-room", timeout=15)
+    assert room_resp.status_code == 200
+    rid = room_resp.json()["id"]
+    # buyer accepts NDA so we get past pending_nda
+    buyer_authed.post(f"{API}/deal-rooms/{rid}/accept-nda", timeout=15)
+    # No files uploaded — generate-findings must 400
+    r = buyer_authed.post(f"{API}/deal-rooms/{rid}/generate-findings", timeout=15)
+    assert r.status_code == 400, f"expected 400 on empty room, got {r.status_code} {r.text}"

@@ -96,6 +96,17 @@ class InquiryCreate(BaseModel):
     message: str
 
 
+class FileUpload(BaseModel):
+    filename: str
+    folder: Literal["financials", "legal", "hr", "it", "operations", "commercial", "other"] = "other"
+    content: str  # extracted/pasted text content
+    note: Optional[str] = None
+
+
+class DRLApply(BaseModel):
+    template_id: str
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
@@ -1469,6 +1480,382 @@ async def push_inquiry_to_zoho(inquiry_id: str, user=Depends(get_current_user)):
             else "Local sync recorded; Composio Proxy Execute did not confirm — verify Zoho Auth Config in Composio dashboard."
         ),
     }
+
+
+# -----------------------------------------------------------------------------
+# DEAL ROOMS (NDA-gated workspace per inquiry · DRL · AI Findings)
+# -----------------------------------------------------------------------------
+DRL_TEMPLATES = {
+    "saas": {
+        "id": "saas",
+        "name": "SaaS / Software",
+        "items": [
+            {"title": "Last 3 years P&L by month", "workstream": "finance"},
+            {"title": "ARR / MRR cohort schedule (last 24m)", "workstream": "finance"},
+            {"title": "Customer concentration (top 20 customers % of revenue)", "workstream": "commercial"},
+            {"title": "Net & gross logo retention rates", "workstream": "commercial"},
+            {"title": "All material customer contracts > $100k ARR", "workstream": "legal"},
+            {"title": "Org chart + comp band schedule", "workstream": "hr"},
+            {"title": "Key employee retention/non-compete agreements", "workstream": "hr"},
+            {"title": "Stack architecture diagram + cloud spend", "workstream": "it"},
+            {"title": "Code repository access + open-source license inventory", "workstream": "it"},
+            {"title": "SOC2 / ISO27001 audit reports", "workstream": "it"},
+            {"title": "Outstanding litigation & IP assignments", "workstream": "legal"},
+        ],
+    },
+    "healthcare": {
+        "id": "healthcare",
+        "name": "Healthcare / MedTech",
+        "items": [
+            {"title": "Payer-mix breakdown last 3 years", "workstream": "finance"},
+            {"title": "Reimbursement-rate schedule", "workstream": "finance"},
+            {"title": "FDA / CE clearance documentation", "workstream": "legal"},
+            {"title": "Clinical trial outcomes + adverse events register", "workstream": "operations"},
+            {"title": "HIPAA / GDPR compliance attestation", "workstream": "legal"},
+            {"title": "Hospital / GPO contracts portfolio", "workstream": "commercial"},
+            {"title": "Manufacturing facility audits", "workstream": "operations"},
+            {"title": "Quality system (ISO 13485) documentation", "workstream": "operations"},
+            {"title": "Key physician/KOL engagement contracts", "workstream": "legal"},
+            {"title": "Cybersecurity / connected-device risk assessment", "workstream": "it"},
+        ],
+    },
+    "industrial": {
+        "id": "industrial",
+        "name": "Industrial / Manufacturing",
+        "items": [
+            {"title": "Plant capacity utilization (last 24m)", "workstream": "operations"},
+            {"title": "Customer order book / backlog schedule", "workstream": "commercial"},
+            {"title": "Supplier concentration & long-term agreements", "workstream": "commercial"},
+            {"title": "EHS audits + incident register", "workstream": "operations"},
+            {"title": "Environmental permits + remediation liabilities", "workstream": "legal"},
+            {"title": "Union agreements + pension obligations", "workstream": "hr"},
+            {"title": "Fixed asset register + depreciation schedule", "workstream": "finance"},
+            {"title": "Working capital trend (last 36m)", "workstream": "finance"},
+            {"title": "Insurance policies + claims history", "workstream": "legal"},
+        ],
+    },
+    "finserv": {
+        "id": "finserv",
+        "name": "Financial Services",
+        "items": [
+            {"title": "Regulatory licenses + filings inventory", "workstream": "legal"},
+            {"title": "AML/KYC policy + audit results", "workstream": "legal"},
+            {"title": "AUM trend + revenue per client", "workstream": "finance"},
+            {"title": "Capital adequacy + regulatory capital schedule", "workstream": "finance"},
+            {"title": "Client concentration analysis", "workstream": "commercial"},
+            {"title": "Custodian / clearing relationships", "workstream": "operations"},
+            {"title": "Cybersecurity controls + SOC2 report", "workstream": "it"},
+            {"title": "Litigation, regulatory inquiries, fines history", "workstream": "legal"},
+        ],
+    },
+    "climatetech": {
+        "id": "climatetech",
+        "name": "ClimateTech / Energy",
+        "items": [
+            {"title": "Project pipeline + commissioning schedule", "workstream": "operations"},
+            {"title": "PPA / offtake agreements portfolio", "workstream": "commercial"},
+            {"title": "Tax credit eligibility (IRA/CBAM) documentation", "workstream": "finance"},
+            {"title": "Permitting status by project", "workstream": "legal"},
+            {"title": "Technology IP portfolio + patents", "workstream": "legal"},
+            {"title": "Carbon accounting / LCA reports", "workstream": "operations"},
+            {"title": "Grid interconnection agreements", "workstream": "legal"},
+            {"title": "Capex schedule + financing structure", "workstream": "finance"},
+        ],
+    },
+    "consumer": {
+        "id": "consumer",
+        "name": "Consumer / Retail",
+        "items": [
+            {"title": "Channel mix (DTC / wholesale / marketplace)", "workstream": "commercial"},
+            {"title": "CAC / LTV by cohort (last 24m)", "workstream": "commercial"},
+            {"title": "Inventory aging + obsolescence reserve", "workstream": "finance"},
+            {"title": "Brand IP / trademark register", "workstream": "legal"},
+            {"title": "Manufacturer / supplier agreements", "workstream": "commercial"},
+            {"title": "Returns & warranty obligations", "workstream": "finance"},
+            {"title": "Social / earned-media analytics", "workstream": "commercial"},
+            {"title": "Sustainability claims + certifications", "workstream": "legal"},
+        ],
+    },
+}
+
+
+async def participant_check(room: dict, user: dict) -> str:
+    """Returns 'buyer' | 'seller' | 'admin' if participant, raises 403 otherwise."""
+    if user["id"] == room["buyer_id"]:
+        return "buyer"
+    if user["id"] == room["seller_id"]:
+        return "seller"
+    if user.get("role") == "admin":
+        return "admin"
+    raise HTTPException(status_code=403, detail="Not a participant of this deal room")
+
+
+@api_router.get("/drl-templates")
+async def list_drl_templates(user=Depends(get_current_user)):
+    return [{"id": t["id"], "name": t["name"], "item_count": len(t["items"])} for t in DRL_TEMPLATES.values()]
+
+
+@api_router.post("/inquiries/{inquiry_id}/open-room")
+async def open_deal_room(inquiry_id: str, user=Depends(get_current_user)):
+    """Seller opens a deal room against an engaged inquiry."""
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Sellers/admin only")
+    inquiry = await db.inquiries.find_one({"id": inquiry_id, "seller_id": user["id"]}, {"_id": 0})
+    if not inquiry:
+        raise HTTPException(status_code=404, detail="Inquiry not found")
+
+    existing = await db.deal_rooms.find_one({"inquiry_id": inquiry_id}, {"_id": 0})
+    if existing:
+        return existing
+
+    listing = await db.listings.find_one({"id": inquiry["listing_id"]}, {"_id": 0})
+    room = {
+        "id": str(uuid.uuid4()),
+        "inquiry_id": inquiry_id,
+        "listing_id": inquiry["listing_id"],
+        "listing_name": inquiry["listing_name"],
+        "sector": (listing or {}).get("sector"),
+        "buyer_id": inquiry["buyer_id"],
+        "buyer_name": inquiry["buyer_name"],
+        "buyer_org": inquiry.get("buyer_org"),
+        "seller_id": inquiry["seller_id"],
+        "seller_name": user["name"],
+        "seller_org": user.get("organization"),
+        "status": "pending_nda",
+        "nda_accepted_by_buyer_at": None,
+        "drl_template_id": None,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.deal_rooms.insert_one(room)
+    await db.inquiries.update_one({"id": inquiry_id}, {"$set": {"deal_room_id": room["id"]}})
+    await log_audit(user["id"], "dealroom.open", room["id"], {"listing": inquiry["listing_name"]})
+    room.pop("_id", None)
+    return room
+
+
+@api_router.get("/deal-rooms")
+async def list_deal_rooms(user=Depends(get_current_user)):
+    if user.get("role") == "admin":
+        q = {}
+    else:
+        q = {"$or": [{"buyer_id": user["id"]}, {"seller_id": user["id"]}]}
+    rooms = await db.deal_rooms.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
+    for r in rooms:
+        r["files_count"] = await db.deal_room_files.count_documents({"room_id": r["id"]})
+        r["findings_count"] = await db.deal_room_findings.count_documents({"room_id": r["id"]})
+        r["requests_count"] = await db.deal_room_requests.count_documents({"room_id": r["id"]})
+    return rooms
+
+
+@api_router.get("/deal-rooms/{rid}")
+async def get_deal_room(rid: str, user=Depends(get_current_user)):
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Deal room not found")
+    await participant_check(room, user)
+    room["files"] = await db.deal_room_files.find({"room_id": rid}, {"_id": 0, "content": 0}).sort("uploaded_at", -1).to_list(500)
+    room["requests"] = await db.deal_room_requests.find({"room_id": rid}, {"_id": 0}).sort("created_at", 1).to_list(200)
+    room["findings"] = await db.deal_room_findings.find({"room_id": rid}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return room
+
+
+@api_router.post("/deal-rooms/{rid}/accept-nda")
+async def accept_nda(rid: str, user=Depends(get_current_user)):
+    room = await db.deal_rooms.find_one({"id": rid})
+    if not room:
+        raise HTTPException(status_code=404, detail="Deal room not found")
+    if user["id"] != room["buyer_id"]:
+        raise HTTPException(status_code=403, detail="Only the buyer can accept the NDA")
+    await db.deal_rooms.update_one(
+        {"id": rid},
+        {"$set": {"status": "active", "nda_accepted_by_buyer_at": now_utc().isoformat()}},
+    )
+    await log_audit(user["id"], "dealroom.nda.accept", rid)
+    return {"ok": True}
+
+
+@api_router.post("/deal-rooms/{rid}/drl")
+async def apply_drl_template(rid: str, body: DRLApply, user=Depends(get_current_user)):
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Deal room not found")
+    role = await participant_check(room, user)
+    if role not in ("buyer", "admin"):
+        raise HTTPException(status_code=403, detail="Only the buyer can apply a DRL template")
+    template = DRL_TEMPLATES.get(body.template_id)
+    if not template:
+        raise HTTPException(status_code=400, detail="Unknown template")
+
+    # Clear previous template items
+    await db.deal_room_requests.delete_many({"room_id": rid})
+    new_docs = [
+        {
+            "id": str(uuid.uuid4()),
+            "room_id": rid,
+            "template_id": template["id"],
+            "title": item["title"],
+            "workstream": item["workstream"],
+            "status": "pending",
+            "matched_file_ids": [],
+            "created_at": now_utc().isoformat(),
+        }
+        for item in template["items"]
+    ]
+    if new_docs:
+        await db.deal_room_requests.insert_many(new_docs)
+    await db.deal_rooms.update_one({"id": rid}, {"$set": {"drl_template_id": template["id"]}})
+    await log_audit(user["id"], "dealroom.drl.apply", rid, {"template": template["id"], "count": len(new_docs)})
+    return {"ok": True, "request_count": len(new_docs)}
+
+
+@api_router.post("/deal-rooms/{rid}/files")
+async def upload_file(rid: str, body: FileUpload, user=Depends(get_current_user)):
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Deal room not found")
+    role = await participant_check(room, user)
+    if room.get("status") == "pending_nda":
+        raise HTTPException(status_code=400, detail="Buyer must accept NDA before files can be exchanged")
+
+    file_id = str(uuid.uuid4())
+    doc = {
+        "id": file_id,
+        "room_id": rid,
+        "filename": body.filename,
+        "folder": body.folder,
+        "content": body.content[:50000],  # cap to 50k chars for safety
+        "char_count": len(body.content),
+        "note": body.note,
+        "uploaded_by": user["id"],
+        "uploaded_by_role": role,
+        "uploaded_at": now_utc().isoformat(),
+        "matched_request_id": None,
+    }
+    await db.deal_room_files.insert_one(doc)
+    await log_audit(user["id"], "dealroom.file.upload", rid, {"filename": body.filename, "folder": body.folder})
+
+    # Best-effort auto-match against DRL items
+    matched_request_id = None
+    if role in ("seller", "admin"):
+        requests = await db.deal_room_requests.find({"room_id": rid, "status": "pending"}, {"_id": 0}).to_list(200)
+        if requests:
+            try:
+                lines = "\n".join(f"[{r['id']}] {r['workstream']} :: {r['title']}" for r in requests[:30])
+                prompt = (
+                    f"You are an M&A diligence coordinator. A seller uploaded a file titled '{body.filename}' "
+                    f"(folder: {body.folder}). First 800 chars of content:\n{body.content[:800]}\n\n"
+                    f"Open DRL requests:\n{lines}\n\n"
+                    "Return ONLY the id of the single best-matching request (or NONE). Reply with the id and nothing else."
+                )
+                raw = await call_claude(
+                    "You match documents to diligence requests. Reply with exactly one id or NONE.",
+                    prompt,
+                    session_id=f"match-{rid}",
+                )
+                raw_clean = (raw or "").strip().split()[0] if raw else ""
+                if raw_clean and raw_clean.upper() != "NONE":
+                    candidate = next((r for r in requests if r["id"] == raw_clean), None)
+                    if candidate:
+                        matched_request_id = candidate["id"]
+                        await db.deal_room_requests.update_one(
+                            {"id": matched_request_id},
+                            {
+                                "$set": {"status": "satisfied"},
+                                "$addToSet": {"matched_file_ids": file_id},
+                            },
+                        )
+                        await db.deal_room_files.update_one(
+                            {"id": file_id},
+                            {"$set": {"matched_request_id": matched_request_id}},
+                        )
+                        await log_agent_activity(
+                            "drl-match-agent",
+                            f"matched:{body.filename}",
+                            "completed",
+                            user_id=user["id"],
+                            meta={"request_id": matched_request_id},
+                        )
+            except Exception as e:
+                logger.warning(f"DRL auto-match failed: {e}")
+
+    doc.pop("_id", None)
+    doc.pop("content", None)
+    doc["matched_request_id"] = matched_request_id
+    return doc
+
+
+@api_router.post("/deal-rooms/{rid}/generate-findings")
+async def generate_findings(rid: str, user=Depends(get_current_user)):
+    """AI reads every uploaded file in the room and produces structured findings with citations."""
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Deal room not found")
+    role = await participant_check(room, user)
+    if role not in ("buyer", "admin"):
+        raise HTTPException(status_code=403, detail="Only the buyer can generate findings")
+
+    files = await db.deal_room_files.find({"room_id": rid}, {"_id": 0}).sort("uploaded_at", 1).to_list(50)
+    if not files:
+        raise HTTPException(status_code=400, detail="No files in room yet")
+
+    # Build numbered file inventory + excerpts (cap each at 1500 chars)
+    inventory = []
+    for idx, f in enumerate(files, start=1):
+        excerpt = (f.get("content") or "")[:1500]
+        inventory.append(f"[{idx}] file_id={f['id']} · filename={f['filename']} · folder={f['folder']}\n{excerpt}")
+    files_block = "\n\n---\n\n".join(inventory)
+
+    sys = """You are a senior M&A diligence analyst. Given a numbered file inventory, produce STRICT JSON findings.
+Return: {"findings":[{"severity":"high|medium|low","workstream":"finance|legal|hr|it|operations|commercial","title":str,"description":str,"file_index":int,"excerpt":str}]}
+Cap to 10 findings. Each excerpt must be a verbatim short quote (≤200 chars) from the referenced file. Be specific."""
+
+    started = now_utc()
+    try:
+        raw = await call_claude(sys, f"File inventory:\n\n{files_block}\n\nReturn JSON now.", session_id=f"findings-{rid}")
+        data = safe_json_loads(raw)
+    except Exception as e:
+        await log_agent_activity("findings-agent", f"room:{rid}", "failed", user_id=user["id"], friction=str(e))
+        raise HTTPException(status_code=502, detail=f"AI findings failed: {e}")
+
+    findings = data.get("findings", []) if isinstance(data, dict) else []
+    inserted = []
+    for f in findings[:10]:
+        try:
+            idx = int(f.get("file_index", 0))
+        except Exception:
+            idx = 0
+        cited_file = files[idx - 1] if 1 <= idx <= len(files) else None
+        doc = {
+            "id": str(uuid.uuid4()),
+            "room_id": rid,
+            "severity": f.get("severity", "medium"),
+            "workstream": f.get("workstream", "operations"),
+            "title": (f.get("title") or "Untitled finding")[:200],
+            "description": (f.get("description") or "")[:1000],
+            "citation": {
+                "file_id": cited_file["id"] if cited_file else None,
+                "filename": cited_file["filename"] if cited_file else None,
+                "excerpt": (f.get("excerpt") or "")[:240],
+            },
+            "created_at": now_utc().isoformat(),
+        }
+        inserted.append(doc)
+
+    if inserted:
+        await db.deal_room_findings.insert_many(inserted)
+        for d in inserted:
+            d.pop("_id", None)
+
+    duration = int((now_utc() - started).total_seconds() * 1000)
+    await log_agent_activity(
+        "findings-agent",
+        f"room:{rid} · {len(inserted)} findings",
+        "completed",
+        user_id=user["id"],
+        duration_ms=duration,
+    )
+    await log_audit(user["id"], "dealroom.findings.generate", rid, {"count": len(inserted)})
+    return {"ok": True, "findings": inserted, "files_analyzed": len(files)}
 
 
 # -----------------------------------------------------------------------------

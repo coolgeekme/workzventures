@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { Buildings } from "@phosphor-icons/react";
+import { Buildings, FileText } from "@phosphor-icons/react";
 
 const STATUSES = ["new", "reviewing", "engaged", "passed"];
 
@@ -39,6 +40,16 @@ export default function Inquiries() {
       toast.error(err?.response?.data?.detail || "Zoho push failed");
     } finally {
       setPushing(null);
+    }
+  };
+
+  const openRoom = async (i) => {
+    try {
+      const r = await api.post(`/inquiries/${i.id}/open-room`);
+      toast.success("Deal room opened");
+      window.location.href = `/app/rooms/${r.data.id}`;
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Failed to open room");
     }
   };
 
@@ -101,6 +112,24 @@ export default function Inquiries() {
                     <Buildings size={11} />
                     {i.zoho_pushed ? "in Zoho" : pushing === i.id ? "Syncing…" : "Push to Zoho CRM"}
                   </button>
+                  {i.status === "engaged" && !i.deal_room_id && (
+                    <button
+                      onClick={() => openRoom(i)}
+                      data-testid={`open-room-${i.id}`}
+                      className="text-[10px] font-mono-wz uppercase tracking-widest border border-[var(--wz-amber)] text-[var(--wz-amber)] px-3 py-1 hover:bg-[var(--wz-amber)] hover:text-black transition-colors flex items-center gap-1.5"
+                    >
+                      <FileText size={11} /> Open Deal Room
+                    </button>
+                  )}
+                  {i.deal_room_id && (
+                    <Link
+                      to={`/app/rooms/${i.deal_room_id}`}
+                      data-testid={`go-room-${i.id}`}
+                      className="text-[10px] font-mono-wz uppercase tracking-widest border border-[var(--wz-positive)] text-[var(--wz-positive)] px-3 py-1 hover:bg-[var(--wz-positive)] hover:text-black transition-colors flex items-center gap-1.5"
+                    >
+                      <FileText size={11} /> Deal Room →
+                    </Link>
+                  )}
                 </div>
               )}
             </div>
