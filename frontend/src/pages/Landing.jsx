@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { ArrowUpRight, ChartLineUp, Terminal, Sparkle } from "@phosphor-icons/react";
+import { ArrowUpRight, ChartLineUp, Terminal, Compass } from "@phosphor-icons/react";
 import Logo, { WORKZ_HERO_URL } from "../components/Logo";
 
 const HERO_IMG = WORKZ_HERO_URL;
@@ -73,7 +73,7 @@ export default function Landing() {
 
         <div className="mt-12 wz-grid grid-cols-1 md:grid-cols-3">
           {[
-            { i: Sparkle, t: "Buyer Research Hub", d: "Get an instant institutional brief on any company — profile, leadership, market signals, and sources you can trust." },
+            { i: Compass, t: "Buyer Research Hub", d: "Get an instant institutional brief on any company — profile, leadership, market signals, and sources you can trust." },
             { i: ChartLineUp, t: "Personalized Newsletters", d: "Curated deal spotlights, market analyses, and portfolio updates delivered to your inbox, tailored to your interests." },
             { i: Terminal, t: "AI Agents that work for you", d: "AI Agents prospect targets, draft outreach, and prepare marketing collateral so your team can focus on closing deals." },
           ].map((f) => {

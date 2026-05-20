@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
-import { MagnifyingGlass, Sparkle } from "@phosphor-icons/react";
+import { MagnifyingGlass } from "@phosphor-icons/react";
 
 export default function ResearchHub() {
   const [form, setForm] = useState({ company_name: "", sector: "", region: "", notes: "" });
@@ -68,7 +68,7 @@ export default function ResearchHub() {
 
       {loading && (
         <div className="mt-6 wz-card p-6 font-mono-wz text-sm text-[var(--wz-text-secondary)]" data-testid="research-loading">
-          <div className="flex items-center gap-3"><Sparkle size={16} className="text-[var(--wz-gold)]" /> AI researcher streaming…</div>
+          <div className="flex items-center gap-3"><div className="dot-blink" /> Researcher streaming…</div>
           <div className="mt-3 h-1 bg-[var(--wz-border)] overflow-hidden">
             <div className="h-full bg-[var(--wz-gold)] animate-pulse" style={{ width: "60%" }} />
           </div>

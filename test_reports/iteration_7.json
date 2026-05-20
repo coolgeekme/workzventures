@@ -1,0 +1,43 @@
+{
+  "summary": "Iter-7 regression for Deal Room enhancements: (a) E-commerce/DTC DRL template, (b) typed-name NDA e-signature, (c) GridFS binary file upload + download, (d) page-level citations in AI findings, (e) /app/rooms and /app/rooms/:id frontend routes. Backend: 86/86 pytest cases PASS in 223s (13 new iter-7 tests added on top of prior 73; all 73 prior tests still green — existing nda_accepted fixture migrated to send signed_name body). Frontend: NDA gate UI, Files tab upload-mode switcher, file picker accept attr, Download button, citation 'p.N' rendering, and new routes — all verified live against alex@workz.example.com on the existing Helios room and the fresh pending-NDA Acme room.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/deal-rooms/{rid}/files/binary", "issue": "File input accept attribute on frontend allows .pdf,.docx,.txt,.md,.csv,.xlsx,.png,.jpg,.jpeg but backend extract_pages_from_bytes only handles PDF/DOCX/TXT explicitly. An .xlsx or .png upload will fall through to a 1-page placeholder or empty pages with no clear 415/400 — recommend either narrowing the frontend accept attr to the actually supported types or adding an explicit 415 response on unsupported MIME."},
+      {"endpoint": "POST /api/deal-rooms/{rid}/files/binary", "issue": "Empty multipart file returns 400 correctly, but the >25MB cap was NOT exercised in this run because uploading a 25MB body via test harness against the public preview URL is rate-limit/cost prohibitive. Code path inspected and looks correct; recommend a unit test with a stubbed UploadFile of size 26*1024*1024 to lock in 413."},
+      {"endpoint": "GET /api/deal-rooms/{rid}/files/{fid}/download", "issue": "Audit log entry 'dealroom.file.download' creation was not asserted in tests (would require querying /api/audit/logs with kind filter after download). Spec mentioned this side-effect — recommend adding a kind='dealroom.file.download' filter to /audit/logs and asserting the entry appears after a download call."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Deal Room - Files tab", "issues": ["File input accept attribute accepts .png/.jpg/.jpeg/.xlsx/.md/.csv but backend extract_pages_from_bytes only handles PDF/DOCX/TXT — UX promise broader than backend support. User uploading a PNG will get a successful upload with page_count=1 and no extractable text, then findings generation will silently ignore it."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Narrow frontend file input `accept` to '.pdf,.docx,.txt' OR add explicit 415 Unsupported Media Type for non-PDF/DOCX/TXT mime types in /files/binary endpoint.",
+    "Add a unit/integration test that uploads a 26MB stub file and asserts 413 response — current public-URL test suite skips this case.",
+    "Add audit-log assertion test for 'dealroom.file.download' kind after a successful download (introspect via /api/audit/logs kind filter)."
+  ],
+  "critical_code_review_comments": [
+    "server.py has grown further with GridFS imports + 2 new endpoints + extract helpers — iter-6 split-into-routers recommendation is increasingly urgent. Also: deal_room_files_fs GridFS bucket has no startup index on metadata.room_id, so downloads + counts will scan every file across all rooms once volume grows.",
+    "extract_pages_from_bytes silently returns a single 'placeholder' page for unknown filetypes — should raise a 415 instead so the client knows the file was useless for findings/copilot.",
+    "Carried over from iter-6: open-room still doesn't gate on inquiry.status=='engaged'; auto-match still has silent except branch; /drl still wipes prior requests including satisfied; findings still don't post-verify excerpt against file content; CORS '*' with credentials true; no email unique index.",
+    "Frontend DealRoomDetail.jsx is 622 lines — could split NDA gate, files-tab, drl-tab, findings-tab, copilot-tab into sub-components for testability."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py — renamed test_drl_templates_returns_six → test_drl_templates_returns_all_sectors; added test_drl_template_ecommerce_present; migrated nda_accepted fixture + test_seller_cannot_accept_nda + empty-room test to send signed_name body; added test_accept_nda_empty_name_rejected, test_accept_nda_short_name_rejected, test_accept_nda_updates_room asserts nda_signed_name+nda_signed_by_user_id; added 9 new tests for binary upload (GridFS metadata, empty=400, pending_nda=400, non-participant=403), download (streams content with attachment+filename, 404 on missing, 403 outsider, 400 on text-only file), findings page citation int, and legacy text upload backwards-compat."
+  ],
+  "success_rate": {"backend": "100% (86/86)", "frontend": "100% (NDA gate state machine, routes, upload-mode switch, file picker accept attr, download click triggers binary download, findings render 'p.N' next to citation — all verified)"},
+  "test_credentials": "Buyer seed: alex@workz.example.com / WorkzPass123!  ·  Seller seed: mira@workz.example.com / WorkzPass123!  ·  Fresh per-run test buyer: test_<uuid8>@workz.com / WorkzPass123!",
+  "seed_data_creation": "Per-run TEST_-prefixed binary file (TEST_iter7_binary.txt) uploaded to the existing Atlas Logistics room via GridFS endpoint. Plus all iter-6 seed data carried over. No persistent seeds beyond what iter-6 already created.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "86/86 backend tests now green (~223s runtime including 2 generate-findings AI calls + 1 auto-match AI call). The iter-7 fixture chain reuses the iter-6 chain (buyer_inquiry → engaged → deal_room → nda_accepted → drl_applied → uploaded_file (text)) and adds binary_uploaded_file as a sibling of uploaded_file. nda_accepted now sends {'signed_name': 'Alex Buyer-Test'} — DO NOT call accept-nda without a body in any new tests, the pydantic NDAAccept model enforces min_length=2. test_findings_include_page_citation uses both legacy text file (uploaded_file) and the new binary file (binary_uploaded_file) so the LLM can choose either; old text files default page=1 per the spec. Live UI test confirmed: existing Helios room 89c80c64-b622-49cc-9930-db77d352340e shows 5 findings each citing test_msa.docx p.1 — page integers are flowing end-to-end. The fresh TEST_Acme_707972 room (06411c22-...) is correctly in PENDING_NDA state with full NDA gate UI rendering the typed-name input, ESIGN-Act ack checkbox, and disabled Sign button until both filled.",
+  "rca of the issue": "N/A — no new bugs found. All five iter-7 deltas (ecommerce template, typed-name NDA, GridFS upload/download, page citations, /app/rooms routes) ship clean and match the agent-to-agent context note. Only design improvement is the frontend file-picker accept attribute being broader than backend supports — non-blocking, UX hardening."
+}

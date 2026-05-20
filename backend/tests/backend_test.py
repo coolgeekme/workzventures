@@ -884,17 +884,28 @@ def test_watchlist_unknown_listing(buyer_authed):
 # DRL sector templates + AI auto-match, AI findings generation with citations.
 # =====================================================================
 
-# ----- DRL templates: all 6 sector templates with item_count -----
-def test_drl_templates_returns_six(buyer_authed):
+# ----- DRL templates: all 7 sector templates (iter-7: + ecommerce) -----
+def test_drl_templates_returns_all_sectors(buyer_authed):
     r = buyer_authed.get(f"{API}/drl-templates", timeout=15)
     assert r.status_code == 200, r.text
     templates = r.json()
     ids = {t["id"] for t in templates}
-    expected = {"saas", "healthcare", "industrial", "finserv", "climatetech", "consumer"}
-    assert ids == expected, f"expected {expected}, got {ids}"
+    expected = {"saas", "healthcare", "industrial", "finserv", "climatetech", "consumer", "ecommerce"}
+    assert expected.issubset(ids), f"missing templates. got {ids}, need {expected - ids}"
     for t in templates:
         assert "name" in t and isinstance(t["name"], str)
         assert "item_count" in t and isinstance(t["item_count"], int) and t["item_count"] > 0
+
+
+def test_drl_template_ecommerce_present(buyer_authed):
+    """iter-7: new E-commerce/DTC DRL template."""
+    r = buyer_authed.get(f"{API}/drl-templates", timeout=15)
+    assert r.status_code == 200, r.text
+    templates = r.json()
+    ec = next((t for t in templates if t["id"] == "ecommerce"), None)
+    assert ec is not None, f"'ecommerce' template missing. ids={[t['id'] for t in templates]}"
+    assert "E-commerce" in ec["name"] or "DTC" in ec["name"], f"unexpected name: {ec['name']}"
+    assert ec["item_count"] == 11, f"expected 11 items, got {ec['item_count']}"
 
 
 # ----- Inquiry → engaged → seller opens deal room -----
@@ -1001,12 +1012,29 @@ def test_file_upload_blocked_before_nda(seller_authed, deal_room):
     assert r.status_code == 400, f"expected 400 pre-NDA, got {r.status_code} {r.text}"
 
 
-# ----- Buyer accepts NDA — flips to active and stamps timestamp -----
+# ----- Buyer accepts NDA (iter-7: requires typed signed_name) -----
+def test_accept_nda_empty_name_rejected(buyer_authed, deal_room):
+    """iter-7: empty signed_name must be rejected by pydantic (422)."""
+    r = buyer_authed.post(f"{API}/deal-rooms/{deal_room['id']}/accept-nda",
+                          json={"signed_name": ""}, timeout=15)
+    assert r.status_code in (400, 422), f"expected 4xx for empty name, got {r.status_code} {r.text}"
+
+
+def test_accept_nda_short_name_rejected(buyer_authed, deal_room):
+    """iter-7: signed_name <2 chars must be rejected."""
+    r = buyer_authed.post(f"{API}/deal-rooms/{deal_room['id']}/accept-nda",
+                          json={"signed_name": "A"}, timeout=15)
+    assert r.status_code in (400, 422), f"expected 4xx for 1-char name, got {r.status_code} {r.text}"
+
+
 @pytest.fixture(scope="session")
 def nda_accepted(buyer_authed, deal_room):
-    r = buyer_authed.post(f"{API}/deal-rooms/{deal_room['id']}/accept-nda", timeout=15)
+    r = buyer_authed.post(f"{API}/deal-rooms/{deal_room['id']}/accept-nda",
+                          json={"signed_name": "Alex Buyer-Test"}, timeout=15)
     assert r.status_code == 200, r.text
-    assert r.json().get("ok") is True
+    body = r.json()
+    assert body.get("ok") is True
+    assert body.get("signed_name") == "Alex Buyer-Test"
     return True
 
 
@@ -1016,11 +1044,15 @@ def test_accept_nda_updates_room(buyer_authed, deal_room, nda_accepted):
     body = r.json()
     assert body["status"] == "active"
     assert body["nda_accepted_by_buyer_at"] not in (None, "")
+    # iter-7: persisted signed name + signer user id
+    assert body.get("nda_signed_name") == "Alex Buyer-Test"
+    assert body.get("nda_signed_by_user_id") not in (None, "")
 
 
 def test_seller_cannot_accept_nda(seller_authed, deal_room, nda_accepted):
     """Even after buyer accepted, seller hitting accept-nda must 403."""
-    r = seller_authed.post(f"{API}/deal-rooms/{deal_room['id']}/accept-nda", timeout=15)
+    r = seller_authed.post(f"{API}/deal-rooms/{deal_room['id']}/accept-nda",
+                           json={"signed_name": "Mira Seller"}, timeout=15)
     assert r.status_code == 403, f"expected 403, got {r.status_code}"
 
 
@@ -1169,7 +1201,190 @@ def test_generate_findings_empty_room_returns_400(buyer_authed, seller_authed, s
     assert room_resp.status_code == 200
     rid = room_resp.json()["id"]
     # buyer accepts NDA so we get past pending_nda
-    buyer_authed.post(f"{API}/deal-rooms/{rid}/accept-nda", timeout=15)
+    buyer_authed.post(f"{API}/deal-rooms/{rid}/accept-nda",
+                      json={"signed_name": "Empty Room Tester"}, timeout=15)
     # No files uploaded — generate-findings must 400
     r = buyer_authed.post(f"{API}/deal-rooms/{rid}/generate-findings", timeout=15)
     assert r.status_code == 400, f"expected 400 on empty room, got {r.status_code} {r.text}"
+
+
+# =====================================================================
+# iter-7: Binary file upload (GridFS) + download + page-level citations
+# =====================================================================
+
+@pytest.fixture(scope="session")
+def binary_uploaded_file(seller_authed, deal_room, nda_accepted):
+    """iter-7: seller uploads a TXT via multipart binary endpoint -> GridFS."""
+    rid = deal_room["id"]
+    files = {
+        "file": (
+            "TEST_iter7_binary.txt",
+            (
+                "Page-1 Plant Capacity Summary\n"
+                "Plant A Detroit 78% utilization 2023.\n"
+                "Plant B Monterrey 65% utilization 2023.\n"
+                "Bottleneck identified at paint line on Plant B.\n"
+            ).encode("utf-8"),
+            "text/plain",
+        ),
+    }
+    data = {"folder": "operations", "note": "iter-7 binary upload"}
+    # Strip Content-Type: application/json header so requests sets multipart boundary
+    s = requests.Session()
+    s.headers.update({"Authorization": seller_authed.headers["Authorization"]})
+    r = s.post(f"{API}/deal-rooms/{rid}/files/binary", files=files, data=data, timeout=60)
+    assert r.status_code == 200, f"binary upload failed: {r.status_code} {r.text}"
+    return r.json()
+
+
+def test_binary_upload_returns_gridfs_metadata(binary_uploaded_file):
+    """iter-7: response must include id, filename, page_count, size_bytes, gridfs_id, storage='gridfs'."""
+    f = binary_uploaded_file
+    for key in ("id", "filename", "page_count", "size_bytes", "gridfs_id", "storage"):
+        assert key in f, f"missing key {key} in binary upload response: {f.keys()}"
+    assert f["storage"] == "gridfs"
+    assert f["filename"] == "TEST_iter7_binary.txt"
+    assert isinstance(f["page_count"], int) and f["page_count"] >= 1
+    assert isinstance(f["size_bytes"], int) and f["size_bytes"] > 0
+    assert f["gridfs_id"]  # non-empty
+    assert "content" not in f  # no raw content leak
+
+
+def test_binary_upload_empty_file_400(seller_authed, deal_room, nda_accepted):
+    """iter-7: empty file must be rejected with 400."""
+    rid = deal_room["id"]
+    s = requests.Session()
+    s.headers.update({"Authorization": seller_authed.headers["Authorization"]})
+    files = {"file": ("TEST_empty.txt", b"", "text/plain")}
+    data = {"folder": "operations"}
+    r = s.post(f"{API}/deal-rooms/{rid}/files/binary", files=files, data=data, timeout=15)
+    assert r.status_code == 400, f"expected 400 for empty file, got {r.status_code} {r.text}"
+
+
+def test_binary_upload_pending_nda_400(seller_authed, session):
+    """iter-7: binary upload must 400 when room is in pending_nda status."""
+    # Need a fresh room. Use Vertex listing inquiry from buyer.
+    # We register a fresh buyer to create a clean inquiry chain.
+    email = f"bin_buyer_{uuid.uuid4().hex[:6]}@workz.com"
+    reg = session.post(f"{API}/auth/register", json={
+        "email": email, "password": "WorkzPass123!",
+        "name": "Bin Buyer", "organization": "X", "role": "buyer",
+    }, timeout=15)
+    assert reg.status_code == 200
+    bs = requests.Session()
+    bs.headers.update({"Content-Type": "application/json",
+                       "Authorization": f"Bearer {reg.json()['token']}"})
+    listings = bs.get(f"{API}/marketplace", timeout=15).json()
+    if not listings:
+        pytest.skip("no listings available")
+    target = listings[0]
+    inq = bs.post(f"{API}/marketplace/{target['id']}/inquire",
+                  json={"message": "TEST iter-7 pending_nda upload"}, timeout=15)
+    assert inq.status_code == 200
+    iid = inq.json()["id"]
+    seller_authed.patch(f"{API}/inquiries/{iid}/status", json={"status": "engaged"}, timeout=15)
+    room_resp = seller_authed.post(f"{API}/inquiries/{iid}/open-room", timeout=15)
+    assert room_resp.status_code == 200
+    rid = room_resp.json()["id"]
+    # No NDA accepted -> still pending_nda
+    s = requests.Session()
+    s.headers.update({"Authorization": seller_authed.headers["Authorization"]})
+    files = {"file": ("TEST_pre_nda.txt", b"should reject", "text/plain")}
+    data = {"folder": "operations"}
+    r = s.post(f"{API}/deal-rooms/{rid}/files/binary", files=files, data=data, timeout=15)
+    assert r.status_code == 400, f"expected 400 pending_nda, got {r.status_code} {r.text}"
+
+
+def test_binary_upload_non_participant_403(session, deal_room):
+    """iter-7: outsider cannot upload to room."""
+    email = f"outsider_bin_{uuid.uuid4().hex[:6]}@workz.com"
+    reg = session.post(f"{API}/auth/register", json={
+        "email": email, "password": "WorkzPass123!",
+        "name": "Outsider", "organization": "Ext", "role": "buyer",
+    }, timeout=15)
+    assert reg.status_code == 200
+    token = reg.json()["token"]
+    s = requests.Session()
+    s.headers.update({"Authorization": f"Bearer {token}"})
+    files = {"file": ("TEST_evil.txt", b"hack", "text/plain")}
+    data = {"folder": "operations"}
+    r = s.post(f"{API}/deal-rooms/{deal_room['id']}/files/binary",
+               files=files, data=data, timeout=15)
+    assert r.status_code == 403, f"expected 403 outsider, got {r.status_code}"
+
+
+def test_binary_download_streams_content(seller_authed, deal_room, binary_uploaded_file):
+    """iter-7: download returns the binary with Content-Disposition attachment."""
+    rid = deal_room["id"]
+    fid = binary_uploaded_file["id"]
+    r = seller_authed.get(f"{API}/deal-rooms/{rid}/files/{fid}/download",
+                          timeout=30, stream=False)
+    assert r.status_code == 200, f"download failed: {r.status_code} {r.text[:200]}"
+    cd = r.headers.get("Content-Disposition", "")
+    assert "attachment" in cd.lower(), f"missing attachment in Content-Disposition: {cd}"
+    assert "TEST_iter7_binary.txt" in cd, f"filename missing from CD: {cd}"
+    body = r.content
+    assert b"Plant Capacity Summary" in body, "downloaded body doesn't match upload"
+
+
+def test_binary_download_non_existent_404(buyer_authed, deal_room):
+    rid = deal_room["id"]
+    r = buyer_authed.get(f"{API}/deal-rooms/{rid}/files/nonexistent-file-id/download", timeout=15)
+    assert r.status_code == 404, f"expected 404, got {r.status_code}"
+
+
+def test_binary_download_non_participant_403(session, deal_room, binary_uploaded_file):
+    email = f"outsider_dl_{uuid.uuid4().hex[:6]}@workz.com"
+    reg = session.post(f"{API}/auth/register", json={
+        "email": email, "password": "WorkzPass123!",
+        "name": "Outsider DL", "organization": "Ext", "role": "buyer",
+    }, timeout=15)
+    assert reg.status_code == 200
+    s = requests.Session()
+    s.headers.update({"Authorization": f"Bearer {reg.json()['token']}"})
+    rid = deal_room["id"]
+    fid = binary_uploaded_file["id"]
+    r = s.get(f"{API}/deal-rooms/{rid}/files/{fid}/download", timeout=15)
+    assert r.status_code == 403, f"expected 403 outsider download, got {r.status_code}"
+
+
+def test_binary_download_text_only_file_400(buyer_authed, deal_room, uploaded_file):
+    """iter-7: legacy text-only file (no gridfs_id) should not be downloadable -> 400."""
+    rid = deal_room["id"]
+    fid = uploaded_file["id"]  # text-based legacy file
+    r = buyer_authed.get(f"{API}/deal-rooms/{rid}/files/{fid}/download", timeout=15)
+    assert r.status_code == 400, f"expected 400 for non-gridfs file, got {r.status_code} {r.text}"
+
+
+def test_findings_include_page_citation(buyer_authed, deal_room, binary_uploaded_file, uploaded_file):
+    """iter-7: generate-findings now includes citation.page (int >=1)."""
+    rid = deal_room["id"]
+    r = buyer_authed.post(f"{API}/deal-rooms/{rid}/generate-findings", timeout=120)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    findings = body.get("findings", [])
+    if not findings:
+        pytest.skip("Claude returned no findings (non-deterministic) — citation.page check skipped")
+    # At least one finding should have a page integer
+    pages_seen = []
+    for f in findings:
+        cit = f.get("citation", {})
+        if "page" in cit and cit["page"] is not None:
+            assert isinstance(cit["page"], int), f"page must be int, got {type(cit['page'])}"
+            assert cit["page"] >= 1, f"page must be >=1, got {cit['page']}"
+            pages_seen.append(cit["page"])
+    assert pages_seen, f"no findings included citation.page integer. findings={findings}"
+
+
+# ----- Backwards-compat: legacy text-based POST /files still works -----
+def test_legacy_text_upload_still_works(buyer_authed, deal_room, nda_accepted):
+    """iter-7 regression: text-based POST /api/deal-rooms/{rid}/files must still 200."""
+    r = buyer_authed.post(f"{API}/deal-rooms/{deal_room['id']}/files", json={
+        "filename": f"TEST_legacy_text_{uuid.uuid4().hex[:6]}.txt",
+        "folder": "other",
+        "content": "Legacy text-based upload — should still work post-iter-7.",
+    }, timeout=30)
+    assert r.status_code == 200, f"legacy text upload broke: {r.status_code} {r.text}"
+    doc = r.json()
+    assert doc["uploaded_by_role"] == "buyer"
+    assert "id" in doc and "filename" in doc

@@ -15,12 +15,25 @@ from typing import List, Optional, Literal, Dict, Any
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Header, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
+from bson import ObjectId
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
 import bcrypt
 import jwt as pyjwt
 import httpx
+import io
+from fastapi import UploadFile, File, Form
+from fastapi.responses import StreamingResponse
+
+try:
+    from pypdf import PdfReader
+except Exception:  # pragma: no cover
+    PdfReader = None
+try:
+    from docx import Document as DocxDocument
+except Exception:  # pragma: no cover
+    DocxDocument = None
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
@@ -49,6 +62,7 @@ logger = logging.getLogger("workz")
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
+gridfs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="deal_room_files_fs")
 
 app = FastAPI(title="Workz Ventures AI Platform", version="1.0.0")
 api_router = APIRouter(prefix="/api")
@@ -103,8 +117,16 @@ class FileUpload(BaseModel):
     note: Optional[str] = None
 
 
+class NDAAccept(BaseModel):
+    signed_name: str = Field(..., min_length=2, max_length=120)
+
+
 class DRLApply(BaseModel):
     template_id: str
+
+
+class CopilotAsk(BaseModel):
+    message: str
 
 
 class LoginRequest(BaseModel):
@@ -305,8 +327,63 @@ def safe_json_loads(raw: str) -> dict:
 
 
 # -----------------------------------------------------------------------------
-# MCP Action Registry
+# File extraction helpers (PDF / DOCX / TXT → per-page text)
 # -----------------------------------------------------------------------------
+def extract_pages_from_bytes(filename: str, data: bytes) -> List[Dict[str, Any]]:
+    """Return list of {page:int, text:str}. Page is 1-indexed. Falls back to single-page."""
+    name = (filename or "").lower()
+    pages: List[Dict[str, Any]] = []
+    try:
+        if name.endswith(".pdf") and PdfReader is not None:
+            reader = PdfReader(io.BytesIO(data))
+            for i, p in enumerate(reader.pages, start=1):
+                try:
+                    txt = p.extract_text() or ""
+                except Exception:
+                    txt = ""
+                pages.append({"page": i, "text": txt.strip()})
+        elif name.endswith(".docx") and DocxDocument is not None:
+            doc = DocxDocument(io.BytesIO(data))
+            buf: List[str] = []
+            for para in doc.paragraphs:
+                if para.text:
+                    buf.append(para.text)
+            # Approximate "pages" by chunking every ~40 paragraphs
+            chunk_size = 40
+            if not buf:
+                pages.append({"page": 1, "text": ""})
+            else:
+                for idx in range(0, len(buf), chunk_size):
+                    pages.append({"page": idx // chunk_size + 1, "text": "\n".join(buf[idx:idx + chunk_size])})
+        else:
+            # Plain text / markdown / csv / unknown — treat as one page
+            try:
+                txt = data.decode("utf-8", errors="ignore")
+            except Exception:
+                txt = ""
+            pages.append({"page": 1, "text": txt})
+    except Exception as e:
+        logger.warning(f"extract_pages_from_bytes failed for {filename}: {e}")
+        pages = [{"page": 1, "text": ""}]
+    if not pages:
+        pages = [{"page": 1, "text": ""}]
+    # Cap each page to 12k chars to bound token cost downstream
+    for p in pages:
+        if len(p["text"]) > 12000:
+            p["text"] = p["text"][:12000]
+    return pages
+
+
+def pages_to_flat_text(pages: List[Dict[str, Any]], cap: int = 50000) -> str:
+    out = []
+    total = 0
+    for p in pages:
+        chunk = f"[p.{p['page']}]\n{p['text']}\n"
+        if total + len(chunk) > cap:
+            break
+        out.append(chunk)
+        total += len(chunk)
+    return "\n".join(out)
 MCP_ACTIONS = [
     {
         "id": "research.company.summarize",
@@ -1562,6 +1639,23 @@ DRL_TEMPLATES = {
             {"title": "Capex schedule + financing structure", "workstream": "finance"},
         ],
     },
+    "ecommerce": {
+        "id": "ecommerce",
+        "name": "E-commerce / DTC",
+        "items": [
+            {"title": "Shopify / platform export — last 36m orders", "workstream": "commercial"},
+            {"title": "Paid acquisition spend by channel (Meta / Google / TikTok)", "workstream": "commercial"},
+            {"title": "CAC, payback period & LTV by cohort (last 24m)", "workstream": "commercial"},
+            {"title": "Repeat-purchase rate & 90-day reorder cohort", "workstream": "commercial"},
+            {"title": "SKU-level gross margin schedule", "workstream": "finance"},
+            {"title": "Inventory aging + on-hand by SKU + 3PL contract", "workstream": "operations"},
+            {"title": "Return rate by SKU + refund liability accrual", "workstream": "finance"},
+            {"title": "Influencer / affiliate agreements + spend log", "workstream": "commercial"},
+            {"title": "Email / SMS list size, opt-in basis & deliverability", "workstream": "it"},
+            {"title": "Trademark register + product safety / labelling compliance", "workstream": "legal"},
+            {"title": "Manufacturer + supplier agreements with lead times", "workstream": "operations"},
+        ],
+    },
     "consumer": {
         "id": "consumer",
         "name": "Consumer / Retail",
@@ -1655,25 +1749,33 @@ async def get_deal_room(rid: str, user=Depends(get_current_user)):
     if not room:
         raise HTTPException(status_code=404, detail="Deal room not found")
     await participant_check(room, user)
-    room["files"] = await db.deal_room_files.find({"room_id": rid}, {"_id": 0, "content": 0}).sort("uploaded_at", -1).to_list(500)
+    room["files"] = await db.deal_room_files.find({"room_id": rid}, {"_id": 0, "content": 0, "pages": 0}).sort("uploaded_at", -1).to_list(500)
     room["requests"] = await db.deal_room_requests.find({"room_id": rid}, {"_id": 0}).sort("created_at", 1).to_list(200)
     room["findings"] = await db.deal_room_findings.find({"room_id": rid}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return room
 
 
 @api_router.post("/deal-rooms/{rid}/accept-nda")
-async def accept_nda(rid: str, user=Depends(get_current_user)):
+async def accept_nda(rid: str, body: NDAAccept, user=Depends(get_current_user)):
     room = await db.deal_rooms.find_one({"id": rid})
     if not room:
         raise HTTPException(status_code=404, detail="Deal room not found")
     if user["id"] != room["buyer_id"]:
         raise HTTPException(status_code=403, detail="Only the buyer can accept the NDA")
+    signed_name = (body.signed_name or "").strip()
+    if len(signed_name) < 2:
+        raise HTTPException(status_code=400, detail="Typed full name required to sign the NDA")
     await db.deal_rooms.update_one(
         {"id": rid},
-        {"$set": {"status": "active", "nda_accepted_by_buyer_at": now_utc().isoformat()}},
+        {"$set": {
+            "status": "active",
+            "nda_accepted_by_buyer_at": now_utc().isoformat(),
+            "nda_signed_name": signed_name,
+            "nda_signed_by_user_id": user["id"],
+        }},
     )
-    await log_audit(user["id"], "dealroom.nda.accept", rid)
-    return {"ok": True}
+    await log_audit(user["id"], "dealroom.nda.accept", rid, {"signed_name": signed_name})
+    return {"ok": True, "signed_name": signed_name}
 
 
 @api_router.post("/deal-rooms/{rid}/drl")
@@ -1793,6 +1895,158 @@ async def upload_file(rid: str, body: FileUpload, user=Depends(get_current_user)
     return doc
 
 
+async def _auto_match_drl(rid: str, file_id: str, filename: str, folder: str, text_preview: str, user_id: str):
+    """Best-effort DRL auto-match for a newly uploaded file (seller-side)."""
+    requests = await db.deal_room_requests.find({"room_id": rid, "status": "pending"}, {"_id": 0}).to_list(200)
+    if not requests:
+        return None
+    try:
+        lines = "\n".join(f"[{r['id']}] {r['workstream']} :: {r['title']}" for r in requests[:30])
+        prompt = (
+            f"You are an M&A diligence coordinator. A seller uploaded a file titled '{filename}' "
+            f"(folder: {folder}). First 800 chars of content:\n{text_preview[:800]}\n\n"
+            f"Open DRL requests:\n{lines}\n\n"
+            "Return ONLY the id of the single best-matching request (or NONE). Reply with the id and nothing else."
+        )
+        raw = await call_claude(
+            "You match documents to diligence requests. Reply with exactly one id or NONE.",
+            prompt,
+            session_id=f"match-{rid}",
+        )
+        raw_clean = (raw or "").strip().split()[0] if raw else ""
+        if raw_clean and raw_clean.upper() != "NONE":
+            candidate = next((r for r in requests if r["id"] == raw_clean), None)
+            if candidate:
+                await db.deal_room_requests.update_one(
+                    {"id": candidate["id"]},
+                    {"$set": {"status": "satisfied"}, "$addToSet": {"matched_file_ids": file_id}},
+                )
+                await db.deal_room_files.update_one(
+                    {"id": file_id},
+                    {"$set": {"matched_request_id": candidate["id"]}},
+                )
+                await log_agent_activity(
+                    "drl-match-agent", f"matched:{filename}", "completed",
+                    user_id=user_id, meta={"request_id": candidate["id"]},
+                )
+                return candidate["id"]
+    except Exception as e:
+        logger.warning(f"DRL auto-match failed: {e}")
+        await log_agent_activity(
+            "drl-match-agent", f"match:{filename}", "failed",
+            user_id=user_id, friction=str(e),
+        )
+    return None
+
+
+@api_router.post("/deal-rooms/{rid}/files/binary")
+async def upload_file_binary(
+    rid: str,
+    file: UploadFile = File(...),
+    folder: str = Form("other"),
+    note: Optional[str] = Form(None),
+    user=Depends(get_current_user),
+):
+    """Multipart binary upload — stored in GridFS, text extracted per-page for AI matching/findings."""
+    if folder not in ("financials", "legal", "hr", "it", "operations", "commercial", "other"):
+        folder = "other"
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Deal room not found")
+    role = await participant_check(room, user)
+    if room.get("status") == "pending_nda":
+        raise HTTPException(status_code=400, detail="Buyer must accept NDA before files can be exchanged")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    # Cap at 25 MB
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File exceeds 25 MB limit")
+
+    file_id = str(uuid.uuid4())
+    filename = file.filename or f"upload-{file_id}"
+
+    # Stream into GridFS
+    gridfs_id = await gridfs_bucket.upload_from_stream(
+        filename,
+        io.BytesIO(data),
+        metadata={
+            "room_id": rid,
+            "file_id": file_id,
+            "uploaded_by": user["id"],
+            "content_type": file.content_type or "application/octet-stream",
+        },
+    )
+
+    # Extract per-page text
+    pages = extract_pages_from_bytes(filename, data)
+    flat = pages_to_flat_text(pages)
+
+    doc = {
+        "id": file_id,
+        "room_id": rid,
+        "filename": filename,
+        "folder": folder,
+        "content_type": file.content_type or "application/octet-stream",
+        "size_bytes": len(data),
+        "page_count": len(pages),
+        "pages": pages,           # per-page text for citation
+        "content": flat,          # flattened text for legacy compatibility
+        "char_count": len(flat),
+        "gridfs_id": str(gridfs_id),
+        "storage": "gridfs",
+        "note": note,
+        "uploaded_by": user["id"],
+        "uploaded_by_role": role,
+        "uploaded_at": now_utc().isoformat(),
+        "matched_request_id": None,
+    }
+    await db.deal_room_files.insert_one(doc)
+    await log_audit(user["id"], "dealroom.file.upload", rid, {"filename": filename, "folder": folder, "bytes": len(data)})
+
+    matched_request_id = None
+    if role in ("seller", "admin"):
+        matched_request_id = await _auto_match_drl(rid, file_id, filename, folder, flat, user["id"])
+
+    doc.pop("_id", None)
+    doc.pop("content", None)
+    doc.pop("pages", None)
+    doc["matched_request_id"] = matched_request_id
+    return doc
+
+
+@api_router.get("/deal-rooms/{rid}/files/{file_id}/download")
+async def download_file(rid: str, file_id: str, user=Depends(get_current_user)):
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Deal room not found")
+    await participant_check(room, user)
+    f = await db.deal_room_files.find_one({"id": file_id, "room_id": rid}, {"_id": 0})
+    if not f:
+        raise HTTPException(status_code=404, detail="File not found")
+    if not f.get("gridfs_id"):
+        raise HTTPException(status_code=400, detail="This file has no binary content (text-only upload)")
+    try:
+        grid_out = await gridfs_bucket.open_download_stream(ObjectId(f["gridfs_id"]))
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Binary not found: {e}")
+
+    async def streamer():
+        while True:
+            chunk = await grid_out.readchunk()
+            if not chunk:
+                break
+            yield chunk
+
+    await log_audit(user["id"], "dealroom.file.download", rid, {"filename": f["filename"]})
+    return StreamingResponse(
+        streamer(),
+        media_type=f.get("content_type") or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{f["filename"]}"'},
+    )
+
+
 @api_router.post("/deal-rooms/{rid}/generate-findings")
 async def generate_findings(rid: str, user=Depends(get_current_user)):
     """AI reads every uploaded file in the room and produces structured findings with citations."""
@@ -1807,16 +2061,26 @@ async def generate_findings(rid: str, user=Depends(get_current_user)):
     if not files:
         raise HTTPException(status_code=400, detail="No files in room yet")
 
-    # Build numbered file inventory + excerpts (cap each at 1500 chars)
+    # Build numbered file inventory with per-page markers so the model can cite pages
     inventory = []
     for idx, f in enumerate(files, start=1):
-        excerpt = (f.get("content") or "")[:1500]
-        inventory.append(f"[{idx}] file_id={f['id']} · filename={f['filename']} · folder={f['folder']}\n{excerpt}")
+        pages = f.get("pages") or []
+        if pages:
+            # Per-page excerpts, cap each page to 800 chars, max 6 pages per file to bound tokens
+            page_blocks = []
+            for p in pages[:6]:
+                page_blocks.append(f"  <page n={p['page']}>\n  {p.get('text','')[:800]}\n  </page>")
+            body_block = "\n".join(page_blocks)
+        else:
+            body_block = (f.get("content") or "")[:1500]
+        inventory.append(
+            f"[{idx}] file_id={f['id']} · filename={f['filename']} · folder={f['folder']} · page_count={f.get('page_count', 1)}\n{body_block}"
+        )
     files_block = "\n\n---\n\n".join(inventory)
 
-    sys = """You are a senior M&A diligence analyst. Given a numbered file inventory, produce STRICT JSON findings.
-Return: {"findings":[{"severity":"high|medium|low","workstream":"finance|legal|hr|it|operations|commercial","title":str,"description":str,"file_index":int,"excerpt":str}]}
-Cap to 10 findings. Each excerpt must be a verbatim short quote (≤200 chars) from the referenced file. Be specific."""
+    sys = """You are a senior M&A diligence analyst. Given a numbered file inventory with per-page markers <page n=X>, produce STRICT JSON findings.
+Return: {"findings":[{"severity":"high|medium|low","workstream":"finance|legal|hr|it|operations|commercial","title":str,"description":str,"file_index":int,"page":int,"excerpt":str}]}
+Cap to 10 findings. Each excerpt MUST be a verbatim short quote (≤200 chars) drawn from the exact referenced page. "page" MUST be the integer from the <page n=X> tag the excerpt came from (use 1 if unknown). Be specific."""
 
     started = now_utc()
     try:
@@ -1834,6 +2098,13 @@ Cap to 10 findings. Each excerpt must be a verbatim short quote (≤200 chars) f
         except Exception:
             idx = 0
         cited_file = files[idx - 1] if 1 <= idx <= len(files) else None
+        try:
+            page_num = int(f.get("page") or 1)
+        except Exception:
+            page_num = 1
+        page_count = (cited_file or {}).get("page_count", 1) or 1
+        if page_num < 1 or page_num > page_count:
+            page_num = 1
         doc = {
             "id": str(uuid.uuid4()),
             "room_id": rid,
@@ -1844,6 +2115,7 @@ Cap to 10 findings. Each excerpt must be a verbatim short quote (≤200 chars) f
             "citation": {
                 "file_id": cited_file["id"] if cited_file else None,
                 "filename": cited_file["filename"] if cited_file else None,
+                "page": page_num if cited_file else None,
                 "excerpt": (f.get("excerpt") or "")[:240],
             },
             "created_at": now_utc().isoformat(),
@@ -1865,6 +2137,128 @@ Cap to 10 findings. Each excerpt must be a verbatim short quote (≤200 chars) f
     )
     await log_audit(user["id"], "dealroom.findings.generate", rid, {"count": len(inserted)})
     return {"ok": True, "findings": inserted, "files_analyzed": len(files)}
+
+
+# --- Co-pilot (chat against the file corpus, with citations) ---
+COPILOT_SYS = """You are the Workz Ventures Vault Co-pilot — a senior M&A diligence analyst assisting a buyer.
+You answer questions strictly from the provided file inventory. Cite the file you draw from inline as [filename].
+If the answer is not in the files, say so explicitly. Keep answers under 220 words. Tone: institutional, terse, analytical."""
+
+
+@api_router.get("/deal-rooms/{rid}/copilot")
+async def get_copilot_history(rid: str, user=Depends(get_current_user)):
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    await participant_check(room, user)
+    msgs = await db.deal_room_messages.find({"room_id": rid}, {"_id": 0}).sort("created_at", 1).to_list(200)
+    return msgs
+
+
+@api_router.post("/deal-rooms/{rid}/copilot")
+async def ask_copilot(rid: str, body: CopilotAsk, user=Depends(get_current_user)):
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    role = await participant_check(room, user)
+    if room.get("status") == "pending_nda":
+        raise HTTPException(status_code=400, detail="NDA must be accepted before using the Co-pilot")
+
+    # Store user message
+    user_msg = {
+        "id": str(uuid.uuid4()),
+        "room_id": rid,
+        "role": "user",
+        "user_id": user["id"],
+        "user_name": user.get("name"),
+        "content": body.message[:2000],
+        "citations": [],
+        "created_at": now_utc().isoformat(),
+    }
+    await db.deal_room_messages.insert_one(user_msg)
+
+    # Build context from files
+    files = await db.deal_room_files.find({"room_id": rid}, {"_id": 0}).sort("uploaded_at", 1).to_list(30)
+    if not files:
+        empty_reply = "No documents have been uploaded to this Vault yet. Ask the seller to upload diligence materials, then re-ask."
+        asst_msg = {
+            "id": str(uuid.uuid4()),
+            "room_id": rid,
+            "role": "assistant",
+            "user_id": "copilot",
+            "user_name": "Vault Co-pilot",
+            "content": empty_reply,
+            "citations": [],
+            "created_at": now_utc().isoformat(),
+        }
+        await db.deal_room_messages.insert_one(asst_msg)
+        user_msg.pop("_id", None)
+        asst_msg.pop("_id", None)
+        return {"user_message": user_msg, "assistant_message": asst_msg}
+
+    # Build inventory with excerpts
+    inventory_lines = []
+    for f in files:
+        content = (f.get("content") or "")[:2500]
+        inventory_lines.append(
+            f"== {f['filename']} (folder={f['folder']}) ==\n{content}"
+        )
+    inventory = "\n\n".join(inventory_lines)
+
+    # Recent conversation (last 8 messages)
+    history = await db.deal_room_messages.find(
+        {"room_id": rid, "id": {"$ne": user_msg["id"]}},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(8)
+    history.reverse()
+    transcript = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in history)
+
+    prompt = (
+        f"FILE INVENTORY (only source you may cite):\n{inventory}\n\n"
+        + (f"PRIOR CONVERSATION:\n{transcript}\n\n" if transcript else "")
+        + f"BUYER QUESTION: {body.message}\n\nAnswer now."
+    )
+
+    started = now_utc()
+    try:
+        answer = await call_claude(COPILOT_SYS, prompt, session_id=f"copilot-{rid}-{user['id']}")
+    except Exception as e:
+        logger.exception("Copilot failed")
+        raise HTTPException(status_code=502, detail=f"Co-pilot failed: {e}")
+
+    # Extract cited filenames the model used in [filename] brackets
+    import re
+    cited_names = set(re.findall(r"\[([^\[\]]+\.[a-zA-Z0-9]+)\]", answer or ""))
+    citations = []
+    for f in files:
+        if f["filename"] in cited_names:
+            citations.append({"file_id": f["id"], "filename": f["filename"]})
+
+    asst_msg = {
+        "id": str(uuid.uuid4()),
+        "room_id": rid,
+        "role": "assistant",
+        "user_id": "copilot",
+        "user_name": "Vault Co-pilot",
+        "content": (answer or "").strip(),
+        "citations": citations,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.deal_room_messages.insert_one(asst_msg)
+    duration = int((now_utc() - started).total_seconds() * 1000)
+    await log_agent_activity(
+        "vault-copilot",
+        f"ask:{body.message[:60]}",
+        "completed",
+        user_id=user["id"],
+        duration_ms=duration,
+        meta={"citations": len(citations)},
+    )
+    await log_audit(user["id"], "vault.copilot.ask", rid)
+
+    user_msg.pop("_id", None)
+    asst_msg.pop("_id", None)
+    return {"user_message": user_msg, "assistant_message": asst_msg}
 
 
 # -----------------------------------------------------------------------------

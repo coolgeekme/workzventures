@@ -55,6 +55,8 @@ function AppRoutes() {
       <Route path="/app/marketplace" element={<Protected><Marketplace /></Protected>} />
       <Route path="/app/listings" element={<Protected><MyListings /></Protected>} />
       <Route path="/app/inquiries" element={<Protected><Inquiries /></Protected>} />
+      <Route path="/app/rooms" element={<Protected><DealRooms /></Protected>} />
+      <Route path="/app/rooms/:id" element={<Protected><DealRoomDetail /></Protected>} />
       <Route path="/app/collateral" element={<Protected><Collateral /></Protected>} />
       <Route path="/app/outreach" element={<Protected><Outreach /></Protected>} />
       <Route path="/app/leads" element={<Protected><Leads /></Protected>} />

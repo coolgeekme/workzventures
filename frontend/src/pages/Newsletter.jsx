@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { EnvelopeSimple, CheckCircle, PaperPlaneTilt, Sparkle, Megaphone } from "@phosphor-icons/react";
+import { EnvelopeSimple, CheckCircle, PaperPlaneTilt, Megaphone } from "@phosphor-icons/react";
 
 const COVER = "https://customer-assets.emergentagent.com/job_buyer-intel-lab/artifacts/mtl2u4cl_eb9c42c75e492db9ec952105c8ad0f0d.png";
 const INTERESTS = ["SaaS", "HealthTech", "Industrial", "FinServ", "ClimateTech", "Consumer", "EMEA", "NA", "APAC"];
@@ -138,7 +138,7 @@ function BuyerDigest() {
       {/* Generate */}
       <div className="wz-card p-6 mt-6" data-mcp-action="newsletter.draft" data-testid="draft-panel">
         <div className="flex items-center gap-3 mb-3">
-          <Sparkle size={18} className="text-[var(--wz-gold)]" />
+          <EnvelopeSimple size={18} className="text-[var(--wz-gold)]" />
           <div className="font-display text-lg tracking-tight">Generate today's digest</div>
         </div>
         <div className="grid md:grid-cols-[1fr_auto] gap-3">

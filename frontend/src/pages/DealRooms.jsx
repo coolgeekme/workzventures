@@ -16,13 +16,13 @@ export default function DealRooms() {
   return (
     <div data-testid="deal-rooms-page" className="px-8 py-8">
       <div className="overline mb-3" style={{ color: isSeller ? "var(--wz-amber)" : "var(--wz-gold)" }}>
-        Deal Rooms
+        The Vault
       </div>
       <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium">
         {isSeller ? "Active diligence with engaged buyers." : "Your active diligence workspaces."}
       </h1>
       <p className="text-sm text-[var(--wz-text-secondary)] mt-2 max-w-2xl">
-        NDA-gated, AI-assisted workspaces opened against engaged inquiries. Upload files, work the DRL, and generate findings with citations — all in one place.
+        NDA-gated, Co-pilot-assisted workspaces opened against engaged inquiries. Upload files, work the DRL, ask the Co-pilot, generate findings with citations — all in one place.
       </p>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-8" data-testid="rooms-grid">
@@ -66,9 +66,9 @@ export default function DealRooms() {
           <div className="wz-card p-10 text-center text-sm text-[var(--wz-text-tertiary)] lg:col-span-2">
             <FileText size={28} className="mx-auto mb-3 text-[var(--wz-text-tertiary)]" />
             {isSeller ? (
-              <>No deal rooms yet. Open one from an engaged inquiry on the <Link to="/app/inquiries" className="text-[var(--wz-amber)] hover:underline">Inquiries page</Link>.</>
+              <>No vaults yet. Open one from an engaged inquiry on the <Link to="/app/inquiries" className="text-[var(--wz-amber)] hover:underline">Inquiries page</Link>.</>
             ) : (
-              <>No deal rooms yet. Sellers open these when they engage with your inquiry.</>
+              <>No vaults yet. Sellers open these when they engage with your inquiry.</>
             )}
           </div>
         )}

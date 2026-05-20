@@ -46,10 +46,10 @@ export default function Inquiries() {
   const openRoom = async (i) => {
     try {
       const r = await api.post(`/inquiries/${i.id}/open-room`);
-      toast.success("Deal room opened");
+      toast.success("Vault opened");
       window.location.href = `/app/rooms/${r.data.id}`;
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Failed to open room");
+      toast.error(err?.response?.data?.detail || "Failed to open Vault");
     }
   };
 
@@ -118,7 +118,7 @@ export default function Inquiries() {
                       data-testid={`open-room-${i.id}`}
                       className="text-[10px] font-mono-wz uppercase tracking-widest border border-[var(--wz-amber)] text-[var(--wz-amber)] px-3 py-1 hover:bg-[var(--wz-amber)] hover:text-black transition-colors flex items-center gap-1.5"
                     >
-                      <FileText size={11} /> Open Deal Room
+                      <FileText size={11} /> Open Vault
                     </button>
                   )}
                   {i.deal_room_id && (
@@ -127,7 +127,7 @@ export default function Inquiries() {
                       data-testid={`go-room-${i.id}`}
                       className="text-[10px] font-mono-wz uppercase tracking-widest border border-[var(--wz-positive)] text-[var(--wz-positive)] px-3 py-1 hover:bg-[var(--wz-positive)] hover:text-black transition-colors flex items-center gap-1.5"
                     >
-                      <FileText size={11} /> Deal Room →
+                      <FileText size={11} /> Open Vault →
                     </Link>
                   )}
                 </div>
