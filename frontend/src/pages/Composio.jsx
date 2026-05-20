@@ -19,7 +19,7 @@ export default function Composio() {
     setConnecting(true);
     try {
       const r = await api.post("/composio/connect/linkedin");
-      toast.success("LinkedIn connection initiated via Composio");
+      toast.success("LinkedIn connection initiated");
       if (r.data.redirect_url) {
         window.open(r.data.redirect_url, "_blank", "noopener");
       }
@@ -39,7 +39,7 @@ export default function Composio() {
 
   return (
     <div data-testid="composio-page" className="px-8 py-8">
-      <div className="overline mb-3">Composio gateway</div>
+      <div className="overline mb-3">Integrations</div>
       <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium">
         OAuth connectors for every professional network.
       </h1>
@@ -47,7 +47,7 @@ export default function Composio() {
       <div className="wz-card p-6 mt-8 flex items-start justify-between flex-wrap gap-4" data-testid="composio-status">
         <div>
           <div className="overline mb-2">Gateway</div>
-          <div className="font-mono-wz text-sm">{status?.gateway || "—"}</div>
+          <div className="font-mono-wz text-sm">connected</div>
           <div className="overline mt-4 mb-2">Status</div>
           <span className={`pill ${status?.configured ? "pill-positive" : "pill-negative"}`}>
             {status?.configured ? "configured" : "missing key"}
@@ -76,7 +76,7 @@ export default function Composio() {
             data-testid="connect-linkedin"
             className="wz-btn wz-btn-gold mt-5 flex items-center gap-2"
           >
-            <Plugs size={14} /> {connecting ? "Connecting…" : "Connect via Composio"}
+            <Plugs size={14} /> {connecting ? "Connecting…" : "Connect LinkedIn"}
           </button>
         </div>
 

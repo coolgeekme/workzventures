@@ -53,7 +53,7 @@ export default function Outreach() {
         <label className="block">
           <div className="overline mb-2">Channel</div>
           <select data-testid="o-channel" className="wz-input" value={form.channel} onChange={(e) => setForm({ ...form, channel: e.target.value })}>
-            <option value="linkedin">LinkedIn (Composio)</option>
+            <option value="linkedin">LinkedIn</option>
             <option value="email">Email</option>
           </select>
         </label>

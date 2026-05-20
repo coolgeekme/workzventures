@@ -32,6 +32,14 @@ function Protected({ children }) {
   return <Layout>{children}</Layout>;
 }
 
+function AdminOnly({ children }) {
+  const { user } = useAuth();
+  const location = useLocation();
+  if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
+  if (user.role !== "admin") return <Navigate to="/app/dashboard" replace />;
+  return <Layout>{children}</Layout>;
+}
+
 function AppRoutes() {
   useEffect(() => { installMCP(); }, []);
   return (
@@ -49,10 +57,10 @@ function AppRoutes() {
       <Route path="/app/outreach" element={<Protected><Outreach /></Protected>} />
       <Route path="/app/leads" element={<Protected><Leads /></Protected>} />
       <Route path="/app/newsletter" element={<Protected><Newsletter /></Protected>} />
-      <Route path="/app/mcp" element={<Protected><MCPConsole /></Protected>} />
+      <Route path="/app/mcp" element={<AdminOnly><MCPConsole /></AdminOnly>} />
       <Route path="/app/agents" element={<Protected><AgentMonitor /></Protected>} />
       <Route path="/app/composio" element={<Protected><Composio /></Protected>} />
-      <Route path="/app/audit" element={<Protected><Audit /></Protected>} />
+      <Route path="/app/audit" element={<AdminOnly><Audit /></AdminOnly>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

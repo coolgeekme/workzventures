@@ -82,7 +82,7 @@ export default function Newsletter() {
             <div className="overline mb-2">Subscription</div>
             <div className="font-display text-xl tracking-tight">AI-personalized newsletter</div>
             <p className="text-sm text-[var(--wz-text-secondary)] mt-1 max-w-lg">
-              Opt in to receive deal spotlights, market analyses, and portfolio updates curated by Claude Sonnet 4.5 for your interest profile.
+              Opt in to receive deal spotlights, market analyses, and portfolio updates curated by our AI for your interest profile.
             </p>
           </div>
           <label className="flex items-center gap-3 cursor-pointer" data-testid="opt-toggle">
@@ -148,7 +148,7 @@ export default function Newsletter() {
             className="wz-input" value={topic} onChange={(e) => setTopic(e.target.value)}
           />
           <button onClick={draft} disabled={loading} data-testid="draft-btn" className="wz-btn wz-btn-gold flex items-center gap-2">
-            {loading ? "Drafting…" : "Draft with Claude"}
+            {loading ? "Drafting…" : "Draft with AI"}
           </button>
         </div>
       </div>

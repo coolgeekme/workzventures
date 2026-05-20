@@ -1,8 +1,8 @@
 import { Link } from "react-router-dom";
 import { ArrowUpRight, ChartLineUp, Terminal, Sparkle } from "@phosphor-icons/react";
-import Logo from "../components/Logo";
+import Logo, { WORKZ_HERO_URL } from "../components/Logo";
 
-const HERO_IMG = "https://static.prod-images.emergentagent.com/jobs/99d61e05-18d6-4593-8525-63fadbb097b3/images/051604875a1f24b758170839747cdade0243dbdcd5308a8e08000fd5dc35d2c1.png";
+const HERO_IMG = WORKZ_HERO_URL;
 
 export default function Landing() {
   return (
@@ -31,7 +31,7 @@ export default function Landing() {
           </h1>
           <p className="mt-8 text-[var(--wz-text-secondary)] max-w-xl leading-relaxed">
             An AI-augmented marketing agency platform that pairs an institutional-grade Buyer Research Hub
-            with WebMCP-discoverable agent actions, Composio-managed OAuth, and JWT-secured access.
+            with WebMCP-discoverable agent actions, managed OAuth integrations, and JWT-secured access.
             Buyers get curated research and personalized newsletters; agents handle prospecting, outreach,
             and collateral end-to-end.
           </p>
@@ -60,23 +60,26 @@ export default function Landing() {
         </div>
 
         <div className="relative h-[520px] wz-card overflow-hidden">
-          <img src={HERO_IMG} alt="Workz" className="absolute inset-0 w-full h-full object-cover opacity-80" />
-          <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[var(--wz-bg)]/30 to-[var(--wz-bg)]" />
-          <div className="absolute bottom-6 left-6 right-6">
+          <img src={HERO_IMG} alt="Workz" className="absolute inset-0 w-full h-full object-cover" />
+          <div className="absolute inset-0 bg-gradient-to-b from-[var(--wz-bg)]/40 via-transparent to-[var(--wz-bg)]/80" />
+          <div className="absolute top-6 left-6 right-6 flex items-center justify-between">
             <div className="overline">Live · platform telemetry</div>
-            <div className="mt-3 grid grid-cols-3 gap-2 text-xs font-mono-wz">
-              <div className="border border-[var(--wz-border)] bg-[var(--wz-bg)]/80 backdrop-blur p-2">
-                <div className="text-[var(--wz-positive)]">▲ +12.4%</div>
-                <div className="overline mt-1">engagement</div>
-              </div>
-              <div className="border border-[var(--wz-border)] bg-[var(--wz-bg)]/80 backdrop-blur p-2">
-                <div className="text-[var(--wz-gold)]">42</div>
-                <div className="overline mt-1">active deals</div>
-              </div>
-              <div className="border border-[var(--wz-border)] bg-[var(--wz-bg)]/80 backdrop-blur p-2">
-                <div className="text-[var(--wz-amber)]">9</div>
-                <div className="overline mt-1">mcp actions</div>
-              </div>
+            <div className="flex items-center gap-2 text-xs font-mono-wz">
+              <div className="dot-blink" /><span className="text-[var(--wz-positive)]">online</span>
+            </div>
+          </div>
+          <div className="absolute top-16 left-6 right-6 grid grid-cols-3 gap-2 text-xs font-mono-wz">
+            <div className="border border-[var(--wz-border)] bg-[var(--wz-bg)]/80 backdrop-blur p-2">
+              <div className="text-[var(--wz-positive)]">▲ +12.4%</div>
+              <div className="overline mt-1">engagement</div>
+            </div>
+            <div className="border border-[var(--wz-border)] bg-[var(--wz-bg)]/80 backdrop-blur p-2">
+              <div className="text-[var(--wz-gold)]">42</div>
+              <div className="overline mt-1">active deals</div>
+            </div>
+            <div className="border border-[var(--wz-border)] bg-[var(--wz-bg)]/80 backdrop-blur p-2">
+              <div className="text-[var(--wz-amber)]">9</div>
+              <div className="overline mt-1">mcp actions</div>
             </div>
           </div>
         </div>
@@ -90,9 +93,9 @@ export default function Landing() {
 
         <div className="mt-12 wz-grid grid-cols-1 md:grid-cols-3">
           {[
-            { i: Sparkle, t: "Buyer Research Hub", d: "Claude Sonnet 4.5 synthesizes company profiles, leadership, and market signals on-demand for any target." },
+            { i: Sparkle, t: "Buyer Research Hub", d: "Our AI synthesizes company profiles, leadership, and market signals on-demand for any target." },
             { i: ChartLineUp, t: "Personalized Newsletters", d: "AI drafts deal spotlights, market analyses, and portfolio updates that align with each buyer's interest profile." },
-            { i: Terminal, t: "WebMCP Action Surface", d: "Every platform workflow is exposed via data-mcp-action attributes and navigator.mcpActions.register() for Claude in Chrome, LangChain, Hermes." },
+            { i: Terminal, t: "WebMCP Action Surface", d: "Every platform workflow is exposed via data-mcp-action attributes and navigator.mcpActions.register() for AI browsing agents." },
           ].map((f) => {
             const Icon = f.i;
             return (
@@ -108,7 +111,7 @@ export default function Landing() {
 
       <footer className="border-t border-[var(--wz-border)] px-8 py-8 flex justify-between text-xs text-[var(--wz-text-tertiary)]">
         <span className="font-mono-wz">WORKZ // 2026</span>
-        <span>JWT · Composio · WebMCP · Claude Sonnet 4.5</span>
+        <span>JWT · Integrations · WebMCP · AI agents</span>
       </footer>
     </div>
   );

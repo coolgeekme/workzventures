@@ -39,7 +39,7 @@ export default function ResearchHub() {
         Synthesize any company on demand.
       </h1>
       <p className="text-sm text-[var(--wz-text-secondary)] mt-3 max-w-2xl">
-        Claude Sonnet 4.5 aggregates public web + market signals into an institutional research brief — profile, leadership, growth drivers, risks, and a Workz-style investor take.
+        Our AI researcher aggregates public web + market signals into an institutional research brief — profile, leadership, growth drivers, risks, and a Workz-style investor take.
       </p>
 
       <form onSubmit={submit} data-mcp-action="research.company.summarize" className="wz-card p-6 mt-8 grid grid-cols-1 md:grid-cols-4 gap-4" data-testid="research-form">
@@ -68,7 +68,7 @@ export default function ResearchHub() {
 
       {loading && (
         <div className="mt-6 wz-card p-6 font-mono-wz text-sm text-[var(--wz-text-secondary)]" data-testid="research-loading">
-          <div className="flex items-center gap-3"><Sparkle size={16} className="text-[var(--wz-gold)]" /> claude-sonnet-4.5 streaming…</div>
+          <div className="flex items-center gap-3"><Sparkle size={16} className="text-[var(--wz-gold)]" /> AI researcher streaming…</div>
           <div className="mt-3 h-1 bg-[var(--wz-border)] overflow-hidden">
             <div className="h-full bg-[var(--wz-gold)] animate-pulse" style={{ width: "60%" }} />
           </div>

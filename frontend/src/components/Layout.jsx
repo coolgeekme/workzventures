@@ -14,10 +14,8 @@ const BUYER_NAV = [
   { to: "/app/marketplace", label: "Marketplace", icon: Storefront, group: "Discovery" },
   { to: "/app/inquiries", label: "My Inquiries", icon: Question, group: "Discovery" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Engagement" },
-  { to: "/app/composio", label: "Composio", icon: Plugs, group: "Platform" },
-  { to: "/app/mcp", label: "MCP Console", icon: Terminal, group: "Platform" },
+  { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
   { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp, group: "Platform" },
-  { to: "/app/audit", label: "Audit Logs", icon: ListChecks, group: "Platform" },
 ];
 
 const SELLER_NAV = [
@@ -28,10 +26,8 @@ const SELLER_NAV = [
   { to: "/app/inquiries", label: "Inbound Inquiries", icon: Question, group: "Pipeline" },
   { to: "/app/leads", label: "Lead Nurturing", icon: Kanban, group: "Pipeline" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Pipeline" },
-  { to: "/app/composio", label: "Composio", icon: Plugs, group: "Platform" },
-  { to: "/app/mcp", label: "MCP Console", icon: Terminal, group: "Platform" },
+  { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
   { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp, group: "Platform" },
-  { to: "/app/audit", label: "Audit Logs", icon: ListChecks, group: "Platform" },
 ];
 
 const ADMIN_NAV = [
@@ -44,10 +40,10 @@ const ADMIN_NAV = [
   { to: "/app/inquiries", label: "Inquiries", icon: Question, group: "Pipeline" },
   { to: "/app/leads", label: "Leads", icon: Kanban, group: "Pipeline" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Pipeline" },
-  { to: "/app/composio", label: "Composio", icon: Plugs, group: "Platform" },
-  { to: "/app/mcp", label: "MCP Console", icon: Terminal, group: "Platform" },
-  { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp, group: "Platform" },
-  { to: "/app/audit", label: "Audit Logs", icon: ListChecks, group: "Platform" },
+  { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
+  { to: "/app/mcp", label: "MCP Console", icon: Terminal, group: "Platform (Admin)" },
+  { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp, group: "Platform (Admin)" },
+  { to: "/app/audit", label: "Audit Logs", icon: ListChecks, group: "Platform (Admin)" },
 ];
 
 function navFor(role) {

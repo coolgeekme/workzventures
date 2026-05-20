@@ -2,9 +2,9 @@ import { useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "../lib/auth";
-import Logo from "../components/Logo";
+import Logo, { WORKZ_HERO_URL } from "../components/Logo";
 
-const BG = "https://static.prod-images.emergentagent.com/jobs/99d61e05-18d6-4593-8525-63fadbb097b3/images/051604875a1f24b758170839747cdade0243dbdcd5308a8e08000fd5dc35d2c1.png";
+const BG = WORKZ_HERO_URL;
 
 export default function Login() {
   const { login } = useAuth();
@@ -33,7 +33,7 @@ export default function Login() {
     <div className="min-h-screen grid lg:grid-cols-2 grain" data-testid="login-page">
       <div className="relative hidden lg:block border-r border-[var(--wz-border)]">
         <img src={BG} alt="Workz" className="absolute inset-0 w-full h-full object-cover opacity-70" />
-        <div className="absolute inset-0 bg-gradient-to-br from-[var(--wz-bg)]/40 via-transparent to-[var(--wz-bg)]" />
+        <div className="absolute inset-0 bg-gradient-to-br from-[var(--wz-bg)]/30 via-transparent to-[var(--wz-bg)]/40" />
         <div className="absolute top-10 left-10 right-10">
           <div className="flex items-center gap-3">
             <Logo size="lg" testid="login-logo" />
@@ -44,10 +44,7 @@ export default function Login() {
           </div>
         </div>
         <div className="absolute bottom-10 left-10 right-10">
-          <div className="overline mb-3">Authorized buyers only</div>
-          <div className="font-display text-3xl tracking-tight max-w-md">
-            The control room for institutional buyer engagement.
-          </div>
+          <div className="overline">Authorized buyers & sellers only</div>
         </div>
       </div>
 
