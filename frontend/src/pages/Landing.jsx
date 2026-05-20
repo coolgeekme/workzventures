@@ -1,0 +1,114 @@
+import { Link } from "react-router-dom";
+import { ArrowUpRight, ChartLineUp, Terminal, Sparkle } from "@phosphor-icons/react";
+
+const HERO_IMG = "https://static.prod-images.emergentagent.com/jobs/99d61e05-18d6-4593-8525-63fadbb097b3/images/051604875a1f24b758170839747cdade0243dbdcd5308a8e08000fd5dc35d2c1.png";
+
+export default function Landing() {
+  return (
+    <div className="min-h-screen grain" data-testid="landing">
+      <header className="border-b border-[var(--wz-border)] px-8 py-5 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-[var(--wz-gold)] flex items-center justify-center text-black font-bold font-mono-wz">W</div>
+          <div>
+            <div className="font-display font-medium tracking-tighter text-lg leading-none">Workz Ventures</div>
+            <div className="overline mt-1">AI-Augmented Marketing Agency</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <Link to="/login" data-testid="cta-signin" className="wz-btn-ghost wz-btn text-sm">Sign in</Link>
+          <Link to="/register" data-testid="cta-getstarted" className="wz-btn wz-btn-gold text-sm">Request access</Link>
+        </div>
+      </header>
+
+      <section className="px-8 pt-20 pb-24 grid lg:grid-cols-[1.1fr_1fr] gap-12 items-center max-w-[1400px] mx-auto">
+        <div>
+          <div className="overline mb-6">Workz Ventures · 2026 platform</div>
+          <h1 className="font-display text-4xl sm:text-5xl lg:text-6xl tracking-tighter font-medium leading-[1.02]">
+            Where institutional<br />
+            <span className="text-[var(--wz-gold)]">buyers</span> meet<br />
+            autonomous <span className="italic">AI agents.</span>
+          </h1>
+          <p className="mt-8 text-[var(--wz-text-secondary)] max-w-xl leading-relaxed">
+            An AI-augmented marketing agency platform that pairs an institutional-grade Buyer Research Hub
+            with WebMCP-discoverable agent actions, Composio-managed OAuth, and JWT-secured access.
+            Buyers get curated research and personalized newsletters; agents handle prospecting, outreach,
+            and collateral end-to-end.
+          </p>
+
+          <div className="mt-10 flex flex-wrap gap-3">
+            <Link to="/register" className="wz-btn flex items-center gap-2" data-testid="hero-register">
+              Open the terminal <ArrowUpRight size={16} />
+            </Link>
+            <Link to="/login" className="wz-btn-ghost wz-btn flex items-center gap-2" data-testid="hero-login">
+              Sign in
+            </Link>
+          </div>
+
+          <div className="mt-14 grid grid-cols-3 gap-6 max-w-lg">
+            {[
+              { k: "$14.7B", v: "AUM under coverage" },
+              { k: "142d", v: "avg exit velocity" },
+              { k: "97.4%", v: "agent success rate" },
+            ].map((s) => (
+              <div key={s.k}>
+                <div className="font-mono-wz text-xl text-white">{s.k}</div>
+                <div className="overline mt-1">{s.v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="relative h-[520px] wz-card overflow-hidden">
+          <img src={HERO_IMG} alt="Workz" className="absolute inset-0 w-full h-full object-cover opacity-80" />
+          <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[var(--wz-bg)]/30 to-[var(--wz-bg)]" />
+          <div className="absolute bottom-6 left-6 right-6">
+            <div className="overline">Live · platform telemetry</div>
+            <div className="mt-3 grid grid-cols-3 gap-2 text-xs font-mono-wz">
+              <div className="border border-[var(--wz-border)] bg-[var(--wz-bg)]/80 backdrop-blur p-2">
+                <div className="text-[var(--wz-positive)]">▲ +12.4%</div>
+                <div className="overline mt-1">engagement</div>
+              </div>
+              <div className="border border-[var(--wz-border)] bg-[var(--wz-bg)]/80 backdrop-blur p-2">
+                <div className="text-[var(--wz-gold)]">42</div>
+                <div className="overline mt-1">active deals</div>
+              </div>
+              <div className="border border-[var(--wz-border)] bg-[var(--wz-bg)]/80 backdrop-blur p-2">
+                <div className="text-[var(--wz-amber)]">9</div>
+                <div className="overline mt-1">mcp actions</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="border-t border-[var(--wz-border)] px-8 py-20 max-w-[1400px] mx-auto">
+        <div className="overline mb-4">Capabilities</div>
+        <h2 className="font-display text-2xl sm:text-3xl lg:text-4xl tracking-tight font-medium max-w-2xl">
+          A unified control room for the modern M&A marketing team.
+        </h2>
+
+        <div className="mt-12 wz-grid grid-cols-1 md:grid-cols-3">
+          {[
+            { i: Sparkle, t: "Buyer Research Hub", d: "Claude Sonnet 4.5 synthesizes company profiles, leadership, and market signals on-demand for any target." },
+            { i: ChartLineUp, t: "Personalized Newsletters", d: "AI drafts deal spotlights, market analyses, and portfolio updates that align with each buyer's interest profile." },
+            { i: Terminal, t: "WebMCP Action Surface", d: "Every platform workflow is exposed via data-mcp-action attributes and navigator.mcpActions.register() for Claude in Chrome, LangChain, Hermes." },
+          ].map((f) => {
+            const Icon = f.i;
+            return (
+              <div key={f.t} className="p-8">
+                <Icon size={22} className="text-[var(--wz-gold)]" />
+                <div className="mt-6 font-display text-xl tracking-tight">{f.t}</div>
+                <div className="mt-2 text-sm text-[var(--wz-text-secondary)] leading-relaxed">{f.d}</div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <footer className="border-t border-[var(--wz-border)] px-8 py-8 flex justify-between text-xs text-[var(--wz-text-tertiary)]">
+        <span className="font-mono-wz">WORKZ // 2026</span>
+        <span>JWT · Composio · WebMCP · Claude Sonnet 4.5</span>
+      </footer>
+    </div>
+  );
+}

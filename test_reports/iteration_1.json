@@ -1,0 +1,35 @@
+{
+  "summary": "Backend regression for Workz Ventures: 23 pytest cases covering auth, dashboard, deals, research, collateral, outreach, leads, newsletter, MCP, agents, composio, audit. 21/23 PASS via public URL. Only 2 failures (research/company + research/history) — root cause is a 60s ingress gateway timeout: the Claude call for the 16-field research schema takes ~73s end-to-end. Direct call to the backend on :8001 returns 200 with a fully populated brief (company_name, leadership, market_signals, etc.) and persists in /api/research/history. All other Claude endpoints (collateral, outreach draft, newsletter draft) finish under ~30s and pass via public URL. Composio LinkedIn connect, MCP manifest (public), MCP actions (9 entries), agent activity/stats, audit logs, JWT auth flow, and MOCKED dispatch flows (campaign launch, newsletter approve+dispatch) all behave per spec.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/research/company", "issue": "Claude completion for the 16-field research JSON schema takes ~73s; exceeds the 60s public ingress timeout and returns 502 to clients. Endpoint logic is correct (direct localhost:8001 call returns 200 with full structured brief). Mitigations: (a) split the schema into a smaller required core + optional enrichment, (b) lower max_tokens / truncate prompt, (c) switch to streaming/background job + GET poll, or (d) use a faster Claude variant for the first pass.", "priority": "HIGH"}
+    ],
+    "minor": []
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Reduce /api/research/company latency below 60s OR convert to async (POST returns 202 + job id, GET /api/research/{id} polls). Currently 502s via the public preview URL because of ingress timeout, even though the underlying logic and persistence work."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 950+ lines — consider splitting into routers/ modules (auth, research, collateral, outreach, leads, newsletter, mcp, composio, audit).",
+    "safe_json_loads on Claude responses silently falls back to {'raw': raw} on parse failure — downstream code accesses data['company_name'] without checking; add validation and a 502 if essential fields missing.",
+    "All /api/research, /collateral, /outreach POSTs run Claude synchronously inside the request — at this preview ingress 60s budget, any prompt-growth will start 502-ing. Recommend background job pattern.",
+    "Composio v3 call is made without retry/backoff and silently swallows failures via except Exception. Log level is warning — fine, but should record status code in audit log for traceability.",
+    "/api/agents/activity and /api/audit/logs are not paginated and return up to 100/200 records every call.",
+    "CORS uses '*' with allow_credentials=True — combination is rejected by browsers; should be restricted to known origins."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (new)"
+  ],
+  "success_rate": {"backend": "91% (21/23)", "frontend": "not tested (skipped per request)"},
+  "test_credentials": "Fresh user per run: test_<uuid8>@workz.com / WorkzPass123!. Seed user alex@workz.example.com from /app/memory/test_credentials.md is NOT actually seeded in DB — login would fail. Document or add seed.",
+  "seed_data_creation": "Deals seeded automatically on startup (Helios, Atlas, Meridian, Nautilus, Vertex). Test user is registered fresh inside the pytest session fixture; one TEST_Lead Person row created. No persistent test data cleanup added (low priority for now).",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run `pytest /app/backend/tests/backend_test.py -v` after the research-timeout fix. 21 tests already pass on public URL. The two research tests will pass once the endpoint returns within ~55s (or returns 202+job id pattern, in which case the tests need updating). All other endpoints are stable. Note: Pydantic EmailStr rejects .test TLD — use .com/.org for any test email. Seed user in test_credentials.md does not exist in DB — register a fresh user instead.",
+  "rca of the issue": "POST /api/research/company calls Claude Sonnet 4.5 synchronously with a system prompt demanding a 16-field deeply nested JSON brief (leadership array, market_signals, growth_drivers, risks, competitive_landscape, next_actions, etc.). Measured end-to-end latency through the public URL: 60.6s -> 502 (hard ingress cap). Measured against the internal backend (http://localhost:8001) for the same payload: HTTP 200 in 73.3s with a valid, persisted brief (verified data.company_name, data.leadership[], data.market_signals[]). Fix: shrink schema OR make the endpoint asynchronous (return job id, generate in background, expose GET /api/research/{id}). Other Claude endpoints (collateral, outreach, newsletter) stay under ~30s because their schemas are smaller, so they pass on the public URL."
+}

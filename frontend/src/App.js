@@ -1,54 +1,77 @@
 import { useEffect } from "react";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { Toaster } from "sonner";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { AuthProvider, useAuth } from "./lib/auth";
+import { installMCP } from "./lib/mcp";
 
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
+import Landing from "./pages/Landing";
+import Login from "./pages/Login";
+import Register from "./pages/Register";
+import Layout from "./components/Layout";
+import Dashboard from "./pages/Dashboard";
+import ResearchHub from "./pages/ResearchHub";
+import Collateral from "./pages/Collateral";
+import Outreach from "./pages/Outreach";
+import Leads from "./pages/Leads";
+import Newsletter from "./pages/Newsletter";
+import MCPConsole from "./pages/MCPConsole";
+import AgentMonitor from "./pages/AgentMonitor";
+import Composio from "./pages/Composio";
+import Audit from "./pages/Audit";
 
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
+function Protected({ children }) {
+  const { user } = useAuth();
+  const location = useLocation();
+  if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
+  return <Layout>{children}</Layout>;
+}
 
+function AppRoutes() {
+  useEffect(() => { installMCP(); }, []);
   return (
-    <div>
-      <header className="App-header">
-        <a
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
-
-function App() {
-  return (
-    <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </div>
+    <Routes>
+      <Route path="/" element={<Landing />} />
+      <Route path="/login" element={<Login />} />
+      <Route path="/register" element={<Register />} />
+      <Route path="/app" element={<Navigate to="/app/dashboard" replace />} />
+      <Route path="/app/dashboard" element={<Protected><Dashboard /></Protected>} />
+      <Route path="/app/research" element={<Protected><ResearchHub /></Protected>} />
+      <Route path="/app/collateral" element={<Protected><Collateral /></Protected>} />
+      <Route path="/app/outreach" element={<Protected><Outreach /></Protected>} />
+      <Route path="/app/leads" element={<Protected><Leads /></Protected>} />
+      <Route path="/app/newsletter" element={<Protected><Newsletter /></Protected>} />
+      <Route path="/app/mcp" element={<Protected><MCPConsole /></Protected>} />
+      <Route path="/app/agents" element={<Protected><AgentMonitor /></Protected>} />
+      <Route path="/app/composio" element={<Protected><Composio /></Protected>} />
+      <Route path="/app/audit" element={<Protected><Audit /></Protected>} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <div className="App">
+      <AuthProvider>
+        <BrowserRouter>
+          <AppRoutes />
+          <Toaster
+            theme="dark"
+            position="top-right"
+            toastOptions={{
+              style: {
+                background: "#121316",
+                border: "1px solid #27282D",
+                color: "#fff",
+                borderRadius: 2,
+                fontFamily: "'IBM Plex Sans', sans-serif",
+              },
+            }}
+          />
+        </BrowserRouter>
+      </AuthProvider>
+    </div>
+  );
+}
