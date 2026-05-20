@@ -53,8 +53,18 @@ Build an enterprise platform that combines:
   - **Seller** → `POST /api/newsletter/draft` (now gated to seller/admin) creates a `kind=broadcast` draft → approve → dispatch fans out to buyer-role opted-in users only. UI reframed as "Reach the entire buyer base · Draft broadcast".
   - Cross-role calls are 403-gated; legacy newsletter docs without `kind` are backfilled to "broadcast" on read.
 - **Seller Collateral from listing** (added 2026-05-20): seller-only "Generate from a listing" picker on `/app/collateral` pre-fills deal name, target audience (sector + geography), and key points (summary + financials + highlights) from any of the seller's own listings. Manual entry still works.
-- Buyer Research Hub, Marketing Collateral Generator, Outreach, Lead Nurturing, Newsletter, MCP Console (admin), Agent Monitor, Integrations, Audit Logs (admin)
-- Backend tests: **52/52 pass** (was 47/47 before role-aware newsletter)
+- **Deal Room module** (added 2026-05-20)
+  - NDA-gated workspace opened per (listing × buyer × seller) inquiry — only available once the seller flips the inquiry to `engaged`
+  - **Status lifecycle**: pending_nda → active → closed
+  - **DRL templates** (6): SaaS, Healthcare, Industrial, FinServ, ClimateTech, Consumer — buyer picks one; instantly creates a structured request list with workstream tags (finance / legal / hr / it / operations / commercial)
+  - **AI auto-matching**: when a seller uploads a file, Claude maps it to the best DRL request and auto-marks the request `satisfied`
+  - **AI Findings**: buyer taps "Generate findings" → Claude reads every uploaded file and returns structured findings with severity / workstream / citation (verbatim quote + file id)
+  - Audit + agent-activity entries on every action (open, NDA accept, DRL apply, upload, match, findings)
+  - 13 new endpoints: `/drl-templates`, `/inquiries/{id}/open-room`, `/deal-rooms` (list + detail), `/accept-nda`, `/drl`, `/files`, `/generate-findings`
+  - 4 new Mongo collections: `deal_rooms`, `deal_room_files`, `deal_room_requests`, `deal_room_findings`
+  - Frontend: new sidebar entry "Deal Rooms" (under Pipeline) for both buyer + seller; list page + tabbed detail page (Files · DRL · Findings); NDA-acceptance modal; "Open Deal Room" CTA on engaged inquiries; "Deal Room →" link once one exists
+- Buyer Research Hub, Marketing Collateral Generator, Outreach, Lead Nurturing, Newsletter (personal + broadcast), MCP Console (admin), Agent Monitor, Integrations (LinkedIn + Zoho CRM via Composio), Audit Logs (admin)
+- Backend tests: **73/73 pass** (was 52/52 before Deal Rooms)
 
 ## Prioritized backlog
 **P1**

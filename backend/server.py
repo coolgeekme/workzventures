@@ -1603,6 +1603,8 @@ async def open_deal_room(inquiry_id: str, user=Depends(get_current_user)):
     inquiry = await db.inquiries.find_one({"id": inquiry_id, "seller_id": user["id"]}, {"_id": 0})
     if not inquiry:
         raise HTTPException(status_code=404, detail="Inquiry not found")
+    if inquiry.get("status") != "engaged":
+        raise HTTPException(status_code=400, detail="Inquiry must be 'engaged' before opening a deal room")
 
     existing = await db.deal_rooms.find_one({"inquiry_id": inquiry_id}, {"_id": 0})
     if existing:
@@ -1777,6 +1779,13 @@ async def upload_file(rid: str, body: FileUpload, user=Depends(get_current_user)
                         )
             except Exception as e:
                 logger.warning(f"DRL auto-match failed: {e}")
+                await log_agent_activity(
+                    "drl-match-agent",
+                    f"match:{body.filename}",
+                    "failed",
+                    user_id=user["id"],
+                    friction=str(e),
+                )
 
     doc.pop("_id", None)
     doc.pop("content", None)
