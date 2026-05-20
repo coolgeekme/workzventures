@@ -1,0 +1,100 @@
+{
+  "project_name": "Workz Ventures - Enhanced AI-Driven Buyer & Marketing Agency",
+  "theme": "dark",
+  "archetype": "Archetype 4 (Swiss & High-Contrast) + Archetype 5 (Jewel & Luxury)",
+  "vibe": "Bloomberg Terminal meets a high-end strategy consultancy. Editorial typography, data-dense layouts, intentional incompleteness, functional minimalism, highly confident, premium, and professional.",
+  "colors": {
+    "background": "#08080A",
+    "surface": "#121316",
+    "surface_hover": "#1A1B1F",
+    "border": "#27282D",
+    "primary": "#FFFFFF",
+    "primary_foreground": "#000000",
+    "accent_brand": "#C8A97E",
+    "accent_amber": "#FFB000",
+    "metric_positive": "#00FF66",
+    "metric_negative": "#FF3B30",
+    "text_primary": "#FFFFFF",
+    "text_secondary": "#A1A1AA",
+    "text_tertiary": "#71717A"
+  },
+  "typography": {
+    "font_families": {
+      "headings": "'Cabinet Grotesk', sans-serif",
+      "body": "'IBM Plex Sans', sans-serif",
+      "mono": "'JetBrains Mono', monospace"
+    },
+    "font_imports": [
+      "@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap');",
+      "@import url('https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@800,500,700,400,300&display=swap');"
+    ],
+    "rules": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl tracking-tighter font-medium font-headings",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl tracking-tight font-medium font-headings",
+      "h3": "text-xl sm:text-2xl tracking-tight font-headings",
+      "body": "text-sm sm:text-base font-body text-text_secondary leading-relaxed",
+      "metrics": "font-mono font-medium tracking-tight text-white",
+      "overline": "uppercase tracking-[0.2em] text-[10px] sm:text-xs font-mono text-text_tertiary"
+    }
+  },
+  "layout_and_spacing": {
+    "strategy": "The 'Control Room Grid' for Dashboards, 'F-pattern hierarchy' for scanning data.",
+    "dashboard_grid": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4, tight gaps (gap-4 or gap-6). Utilize full height (`h-full`).",
+    "border_strategy": "Grid Borders (The Technical Look). Expose the skeleton. Container: `border-collapse`. Items: subtle borders (`border-r border-b border-border`).",
+    "spacing_scale": "Dense inside widgets (`p-4` or `p-6`) to maximize data visibility. Generous padding around the main dashboard container (`p-8` to `p-12`)."
+  },
+  "components": {
+    "cards_and_widgets": "Flat background (`bg-surface`), sharp corners or max 4px radius (`rounded-sm`), 1px subtle border (`border-border`), no shadow. On hover, slight lift and border color brightens to `border-text_tertiary`.",
+    "buttons": "Square or very slightly rounded (`rounded-sm`). Primary CTA: `bg-primary text-primary_foreground hover:bg-gray-200`. Secondary: `border border-border text-white hover:bg-surface_hover`. Danger/Action: `text-accent_amber border-accent_amber`.",
+    "tables_and_data": "Dense layout. Use monospace (`JetBrains Mono`) for all numbers, IDs, and financial metrics. Left-aligned text, right-aligned metrics. Subdued header text using overline typography.",
+    "forms_and_inputs": "Minimalist inputs. `bg-transparent border-b border-border` or strict boxed inputs with `border-border`. No heavy glows, just a crisp 1px highlight on focus.",
+    "navigation_sidebar": "Solid dark background (`bg-background`). High contrast active states with a 2px left border using `border-primary` or `border-accent_brand`. Overline text for category groups."
+  },
+  "motion_and_interactions": {
+    "hover_states": "Crisp and immediate. Text brightness increases, border contrast increases. No bouncy animations.",
+    "transitions": "Use `transition-colors duration-200 ease-in-out` for UI elements.",
+    "loading": "Terminal-style loading. Use monospace percentage counters or subtle linear progress bars at the top of cards, rather than generic spinning circles."
+  },
+  "icons_and_assets": {
+    "library": "@phosphor-icons/react",
+    "style": "Regular or Light weight for dashboard density. Use sharp, un-rounded icons if possible.",
+    "installation": "yarn add @phosphor-icons/react"
+  },
+  "image_urls": {
+    "login_background": {
+      "url": "https://static.prod-images.emergentagent.com/jobs/99d61e05-18d6-4593-8525-63fadbb097b3/images/051604875a1f24b758170839747cdade0243dbdcd5308a8e08000fd5dc35d2c1.png",
+      "description": "Architectural high-end dark institutional building structure. Use this for the Auth/Login page as an immersive side-panel."
+    },
+    "newsletter_cover": {
+      "url": "https://static.prod-images.emergentagent.com/jobs/99d61e05-18d6-4593-8525-63fadbb097b3/images/5cd58ebd0d3fa73fe174fd8942a03605c23c536b3bff18e72a17d700bd86c4b4.png",
+      "description": "Premium black textured paper with subtle gold line. Use this in the Marketing Collateral Generator and Newsletter Center as a cover/placeholder for generated assets."
+    },
+    "avatars": [
+      {
+        "url": "https://images.unsplash.com/photo-1767175620484-1ed37931a0d1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MTN8MHwxfHNlYXJjaHwzfHxidXNpbmVzcyUyMGV4ZWN1dGl2ZSUyMHBvcnRyYWl0JTIwZGFyayUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzc5Mjk5NTY1fDA&ixlib=rb-4.1.0&q=85",
+        "description": "Executive portrait for Buyer profiles or Leadership Insights"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1758600587730-a11917c13b85?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MTN8MHwxfHNlYXJjaHwyfHxidXNpbmVzcyUyMGV4ZWN1dGl2ZSUyMHBvcnRyYWl0JTIwZGFyayUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzc5Mjk5NTY1fDA&ixlib=rb-4.1.0&q=85",
+        "description": "Executive portrait for Lead Nurturing pipelines"
+      },
+      {
+        "url": "https://images.pexels.com/photos/10040258/pexels-photo-10040258.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Executive portrait for Agent Activity Monitor or Audit Logs"
+      }
+    ]
+  },
+  "critical_testing_rules": {
+    "data_testid": "All interactive and key informational elements MUST include a `data-testid` attribute (e.g., `data-testid=\"login-submit-button\"`, `data-testid=\"buyer-kpi-aum\"`). This is mandatory for automated testing."
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the dark theme and avoid pure black or pure gray. Use the provided tinted `#08080A` and `#121316`.",
+    "Do not use purple or teal gradients. Use flat solid colors for all UI elements. Color is functional.",
+    "Implement 'Grid Borders' style for dashboard layouts: expose the structure. Do not overuse isolated floating cards; prefer a unified grid.",
+    "All numbers, stats, and financial metrics MUST use `JetBrains Mono` font.",
+    "For headings, strictly use `Cabinet Grotesk` and apply `tracking-tight` or `tracking-tighter`.",
+    "Ensure `data-testid` is added to all buttons, links, inputs, and major data points.",
+    "For the MCP Actions Console and Agent Activity Monitor, adopt a heavily terminal-inspired look (Monospace text, green/amber status indicators).",
+    "For the Marketing/Newsletter pages, lean into the 'Jewel & Luxury' archetype (use `Cabinet Grotesk`, generous spacing, and the `newsletter_cover` image)."
+  ]
+}
