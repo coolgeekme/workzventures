@@ -1,0 +1,43 @@
+{
+  "summary": "Backend regression after Brave Search + Perplexity Sonar Pro grounded-research integration. 47/47 pytest cases PASS against the public REACT_APP_BACKEND_URL. Added 6 new tests for grounded research (Klarna) covering: response carries `sources` array (>=5, 1..n contiguous indices, valid provider in {perplexity, brave}, http url), `live_research_used: true`, end-to-end latency < 60s (measured ~32-35s), inline [n] citations across market_signals/investor_take/one_liner, backward-compatible schema (company_name/leadership/market_signals still present), and persistence via GET /api/research/history (sources + live_research_used round-trip). All 41 prior tests still green: auth, role-aware dashboards (buyer + seller), listings CRUD with seller-gate (buyer POST /api/listings => 403), marketplace (status=live only, Vertex draft hidden), inquiries (POST increments inquiry_count, sellers see inbound, buyers outbound, PATCH status valid/invalid/wrong-role), watchlist GET/POST/DELETE incl. idempotent re-add and 404 on unknown, collateral, outreach draft+launch (MOCKED), leads, newsletter draft+dispatch (MOCKED), MCP actions+manifest, agent activity+stats, composio status+linkedin connect, audit logs.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/research/company", "issue": "Brave/Perplexity calls fail-soft (return empty lists on key/error). Endpoint does not surface a header or warning when live_research_used=false, so client cannot distinguish a partial-degraded brief from a fully grounded one beyond the boolean."},
+      {"endpoint": "POST /api/research/company", "issue": "Synchronous 30-35s response sits inside the 60s ingress budget — fine today, but no headroom if either provider slows down. Consider an async job pattern (POST 202 + GET poll)."},
+      {"endpoint": "PATCH /api/inquiries/{id}/status", "issue": "Still returns 404 (not 403) when a non-owning user (buyer) targets a valid inquiry. Safe but semantically loose — carried over from iteration 3."},
+      {"endpoint": "PATCH /api/inquiries/{id}/status", "issue": "Accepts raw dict body; no Pydantic InquiryStatusUpdate model — carried over."},
+      {"endpoint": "PATCH /api/listings/{lid}", "issue": "Reuses ListingCreate (full body) for partial updates — carried over."},
+      {"endpoint": "GET /api/dashboard/stats (admin)", "issue": "Admin fallback branch computes counts globally — carried over."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now ~1417 lines — split into routers/ modules (auth, listings, marketplace, inquiries, watchlist, research, collateral, outreach, leads, newsletter, mcp, composio, audit) for maintainability.",
+    "search_brave() / query_perplexity() should log the upstream status code on non-2xx so partial-degraded briefs are diagnosable from backend logs; currently they fail-soft to [] / {} which is invisible without instrumentation.",
+    "build_sources() concatenates perplexity citations first then brave hits, but performs no URL dedup — a URL that appears in both providers will be listed twice with two different [n] indices. Add normalization (strip query/fragment + lowercase host) and dedup.",
+    "Claude prompt asks for [n] inline citations but there is no post-validation that any [n] reference actually maps to a real source index — model could hallucinate [7] when only 5 sources exist. Add a regex sanity check + drop/clamp invalid citations.",
+    "POST /api/research/company is still synchronous and now does 3 sequential phases (parallel search → Claude → Mongo insert). ~33s of the 60s budget — move to async job + poll before any provider gets slower.",
+    "safe_json_loads silently degrades to {'raw': raw} on parse failure; downstream code accesses data['company_name'] etc. without validation — add a 502 on missing essential fields.",
+    "GET /api/listings is NOT role-gated — a buyer gets an empty list instead of 403; rename to /api/listings/mine or gate explicitly (carried over).",
+    "/api/watchlist/{lid} POST is idempotent but returns {'ok': True, 'already': True} — consider 200 vs 201 distinction (carried over).",
+    "CORS uses '*' with allow_credentials=True — browser-rejected combination; restrict to known origins (carried over).",
+    "/api/agents/activity (100) and /api/audit/logs (200) are still not paginated (carried over).",
+    "seed_demo_user has no unique index on users.email — minor race risk (carried over)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (added 6 grounded-research tests + klarna_brief session fixture with latency capture; total now 47 tests, 41 prior + 6 new)"
+  ],
+  "success_rate": {"backend": "100% (47/47)", "frontend": "not tested (skipped per request)"},
+  "test_credentials": "Buyer: alex@workz.example.com / WorkzPass123!  ·  Seller: mira@workz.example.com / WorkzPass123!  ·  Plus a fresh test_<uuid8>@workz.com buyer registered per pytest session.",
+  "seed_data_creation": "No new seed data this iteration. Existing seeds verified: alex (buyer, Cascade Capital), mira (seller, Northstar Holdings) and 3 listings under mira (Helios MedTech live, Atlas Logistics live, Vertex Climate draft); 5 global deals.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend fully green (47/47). Grounded research is real: Klarna call returned >=5 sources with mixed perplexity+brave providers, live_research_used=true, ~32-35s round-trip, inline [n] citations present, and persists via /api/research/history. Tests intentionally tolerate >=5 sources (not exactly 12) to absorb upstream variance. If you tighten the schema (e.g., require both perplexity AND brave providers), update test_grounded_research_has_sources_array. The klarna_brief fixture is session-scoped — runs once per pytest invocation to keep total runtime ~2.5 min. Carried-over notes: GET /api/listings not role-gated; PATCH /api/inquiries returns 404 not 403 for cross-role; CORS '*' + credentials=True is invalid for browsers.",
+  "rca of the issue": "N/A — no bugs found this iteration. Brave + Perplexity Sonar Pro integration is functioning end-to-end: parallel asyncio.gather of search_brave() and query_perplexity() returns within ~3-6s, Claude then produces a grounded JSON brief with [n] citations using the merged source list, and the final document is persisted with `sources` + `live_research_used`. Mocked surfaces (Resend newsletter dispatch, LinkedIn outreach launch) remain mocked as expected."
+}

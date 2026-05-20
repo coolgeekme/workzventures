@@ -38,6 +38,8 @@ JWT_EXPIRY_HOURS = int(os.environ.get("JWT_EXPIRY_HOURS", "72"))
 EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
 COMPOSIO_API_KEY = os.environ.get("COMPOSIO_API_KEY", "")
 COMPOSIO_BASE_URL = os.environ.get("COMPOSIO_BASE_URL", "https://backend.composio.dev")
+BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "")
+PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY", "")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -670,6 +672,7 @@ async def remove_watch(lid: str, user=Depends(get_current_user)):
 # -----------------------------------------------------------------------------
 RESEARCH_SYS = """You are a senior M&A analyst at Workz Ventures. Write a concise institutional research brief.
 Return STRICT JSON only (no markdown). Keep arrays to MAX 3 items. Keep each text field under 240 chars.
+You are given an indexed list of LIVE web SOURCES. Cite them inline as [1], [2], ... inside text fields where you make a claim derived from the source. Do not invent citations beyond the list provided.
 Schema:
 {
   "company_name": str,
@@ -689,42 +692,186 @@ Schema:
   "suggested_buyer_profile": str,
   "next_actions": [str]
 }
-Be specific, analytical, terse. Use plausible details when public data is limited."""
+Be specific, analytical, terse. Prefer claims grounded in the provided SOURCES; otherwise mark with a [-] placeholder."""
+
+
+# -----------------------------------------------------------------------------
+# Real-time web research helpers (Brave + Perplexity Sonar)
+# -----------------------------------------------------------------------------
+async def search_brave(query: str, count: int = 6) -> List[dict]:
+    if not BRAVE_API_KEY:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as c:
+            r = await c.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                headers={"X-Subscription-Token": BRAVE_API_KEY, "Accept": "application/json"},
+                params={"q": query, "count": count, "country": "US", "search_lang": "en"},
+            )
+            if r.status_code >= 400:
+                logger.warning(f"Brave {r.status_code}: {r.text[:200]}")
+                return []
+            data = r.json()
+            results = (data.get("web") or {}).get("results") or []
+            return [
+                {
+                    "title": x.get("title") or "",
+                    "url": x.get("url") or "",
+                    "snippet": (x.get("description") or "")[:300],
+                    "age": x.get("age") or x.get("page_age") or "",
+                    "provider": "brave",
+                }
+                for x in results[:count]
+                if x.get("url")
+            ]
+    except Exception as e:
+        logger.warning(f"Brave search failed: {e}")
+        return []
+
+
+async def query_perplexity(prompt: str, model: str = "sonar-pro") -> dict:
+    """Returns {'text': str, 'citations': [url, url...]}."""
+    if not PERPLEXITY_API_KEY:
+        return {"text": "", "citations": []}
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as c:
+            r = await c.post(
+                "https://api.perplexity.ai/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "You are a research analyst. Provide a concise factual overview for institutional investors. Cite all material claims.",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 900,
+                },
+            )
+            if r.status_code >= 400:
+                logger.warning(f"Perplexity {r.status_code}: {r.text[:300]}")
+                return {"text": "", "citations": []}
+            data = r.json()
+            text = ""
+            choices = data.get("choices") or []
+            if choices:
+                text = (choices[0].get("message") or {}).get("content") or ""
+            citations = data.get("citations") or data.get("search_results") or []
+            urls = []
+            for c2 in citations:
+                if isinstance(c2, str):
+                    urls.append(c2)
+                elif isinstance(c2, dict) and c2.get("url"):
+                    urls.append(c2["url"])
+            return {"text": text, "citations": urls}
+    except Exception as e:
+        logger.warning(f"Perplexity failed: {e}")
+        return {"text": "", "citations": []}
+
+
+def build_sources(perplexity_urls: List[str], brave_hits: List[dict]) -> List[dict]:
+    """Merge Perplexity citations + Brave results into a numbered, deduped source list."""
+    seen = set()
+    sources = []
+    idx = 1
+    for url in perplexity_urls:
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        sources.append({"index": idx, "url": url, "title": "", "provider": "perplexity"})
+        idx += 1
+    for hit in brave_hits:
+        url = hit.get("url")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        sources.append({
+            "index": idx,
+            "url": url,
+            "title": hit.get("title", ""),
+            "snippet": hit.get("snippet", ""),
+            "age": hit.get("age", ""),
+            "provider": "brave",
+        })
+        idx += 1
+    return sources
 
 
 @api_router.post("/research/company")
 async def research_company(body: CompanyResearchRequest, user=Depends(get_current_user)):
     started = now_utc()
-    user_prompt = (
-        f"Company: {body.company_name}\n"
+    company = body.company_name
+
+    # Phase 1: gather live web evidence in parallel (Perplexity Sonar + Brave)
+    sonar_prompt = (
+        f"Provide an institutional-investor overview of {company}"
+        + (f" (sector hint: {body.sector})" if body.sector else "")
+        + (f" (region: {body.region})" if body.region else "")
+        + ". Cover business model, recent news, leadership, competitive position, and any 2026 events."
+    )
+    brave_query = f"{company} {body.sector or ''} company news 2026".strip()
+
+    perplexity_task = query_perplexity(sonar_prompt)
+    brave_task = search_brave(brave_query, count=6)
+    perplexity_res, brave_res = await asyncio.gather(perplexity_task, brave_task)
+
+    sources = build_sources(perplexity_res.get("citations", []), brave_res)
+
+    # Phase 2: feed grounded context to Claude
+    sources_block = "\n".join(
+        f"[{s['index']}] {s.get('title') or s['url']} — {s['url']}"
+        + (f" :: {s.get('snippet')}" if s.get("snippet") else "")
+        for s in sources
+    ) or "(no live sources available — proceed with model knowledge)"
+
+    perplexity_summary = (perplexity_res.get("text") or "").strip()
+    grounded_user = (
+        f"Company: {company}\n"
         f"Sector hint: {body.sector or 'unspecified'}\n"
         f"Region hint: {body.region or 'global'}\n"
-        f"Buyer notes: {body.notes or 'none'}\n"
-        "Generate the JSON brief now."
+        f"Buyer notes: {body.notes or 'none'}\n\n"
+        f"LIVE WEB-RESEARCH SUMMARY (from real-time search):\n{perplexity_summary or '(none)'}\n\n"
+        f"SOURCES (cite as [n] inline):\n{sources_block}\n\n"
+        "Now produce the JSON brief, embedding [n] citations where you reference a source."
     )
+
     try:
-        raw = await call_claude(RESEARCH_SYS, user_prompt, session_id=f"research-{user['id']}")
+        raw = await call_claude(RESEARCH_SYS, grounded_user, session_id=f"research-{user['id']}")
         data = safe_json_loads(raw)
     except Exception as e:
         logger.exception("Claude research failed")
-        await log_agent_activity("research-agent", f"research:{body.company_name}", "failed",
+        await log_agent_activity("research-agent", f"research:{company}", "failed",
                                  user_id=user["id"], friction=str(e))
         raise HTTPException(status_code=502, detail=f"AI research failed: {e}")
 
     doc = {
         "id": str(uuid.uuid4()),
         "user_id": user["id"],
-        "company_name": body.company_name,
+        "company_name": company,
         "sector": body.sector,
         "region": body.region,
         "data": data,
+        "sources": sources,
+        "live_research_used": bool(perplexity_summary or brave_res),
         "created_at": now_utc().isoformat(),
     }
     await db.research.insert_one(doc)
     duration = int((now_utc() - started).total_seconds() * 1000)
-    await log_agent_activity("research-agent", f"research:{body.company_name}", "completed",
-                             user_id=user["id"], duration_ms=duration)
-    await log_audit(user["id"], "research.create", body.company_name)
+    await log_agent_activity(
+        "research-agent",
+        f"research:{company} · grounded({len(sources)} sources)",
+        "completed",
+        user_id=user["id"],
+        duration_ms=duration,
+        meta={"sources_count": len(sources), "providers": list({s["provider"] for s in sources})},
+    )
+    await log_audit(user["id"], "research.create", company, {"sources": len(sources)})
     doc.pop("_id", None)
     return doc
 

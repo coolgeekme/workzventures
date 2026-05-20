@@ -162,6 +162,104 @@ def test_research_history(authed, research_brief):
     assert any(i["id"] == research_brief["id"] for i in items)
 
 
+# ----- Grounded research (Brave + Perplexity Sonar Pro) -----
+@pytest.fixture(scope="session")
+def klarna_brief(authed):
+    """Run a fresh grounded research call for Klarna and measure latency."""
+    started = time.time()
+    r = authed.post(f"{API}/research/company",
+                    json={"company_name": "Klarna", "sector": "FinTech"},
+                    timeout=90)
+    elapsed = time.time() - started
+    assert r.status_code == 200, f"klarna research failed: {r.status_code} {r.text[:500]}"
+    payload = r.json()
+    payload["_elapsed_s"] = elapsed
+    return payload
+
+
+def test_grounded_research_has_sources_array(klarna_brief):
+    """Response must include numbered `sources` array with provider tags."""
+    assert "sources" in klarna_brief, "response missing `sources` array"
+    sources = klarna_brief["sources"]
+    assert isinstance(sources, list), "`sources` must be a list"
+    assert len(sources) >= 5, f"expected >=5 sources for Klarna, got {len(sources)}"
+    providers = set()
+    for idx, s in enumerate(sources):
+        assert isinstance(s, dict), f"source {idx} not a dict"
+        assert "index" in s and isinstance(s["index"], int), f"source {idx} missing/invalid index"
+        assert "url" in s and isinstance(s["url"], str) and s["url"].startswith("http"), \
+            f"source {idx} missing/invalid url: {s.get('url')}"
+        assert "provider" in s and s["provider"] in ("perplexity", "brave"), \
+            f"source {idx} invalid provider: {s.get('provider')}"
+        providers.add(s["provider"])
+    # Sources are 1-indexed and contiguous
+    indices = [s["index"] for s in sources]
+    assert indices == list(range(1, len(sources) + 1)), f"sources not 1..n contiguous: {indices}"
+    # We expect both providers to contribute when keys are set
+    assert "perplexity" in providers or "brave" in providers, \
+        f"expected at least one of perplexity/brave, got {providers}"
+
+
+def test_grounded_research_live_flag(klarna_brief):
+    """`live_research_used` must be True when Brave+Perplexity keys are present."""
+    assert klarna_brief.get("live_research_used") is True, \
+        f"expected live_research_used=True, got {klarna_brief.get('live_research_used')}"
+
+
+def test_grounded_research_latency_under_60s(klarna_brief):
+    elapsed = klarna_brief.get("_elapsed_s", 0)
+    assert elapsed < 60, f"research latency {elapsed:.1f}s exceeds 60s budget"
+
+
+def test_grounded_research_inline_citations(klarna_brief):
+    """Brief text fields should reference [n] citations inline."""
+    import re
+    data = klarna_brief.get("data") or {}
+    # Collect any string content from market_signals + investor_take + one_liner
+    text_blobs = []
+    ms = data.get("market_signals")
+    if isinstance(ms, list):
+        for item in ms:
+            if isinstance(item, str):
+                text_blobs.append(item)
+            elif isinstance(item, dict):
+                text_blobs.extend(str(v) for v in item.values() if isinstance(v, str))
+    it = data.get("investor_take")
+    if isinstance(it, str):
+        text_blobs.append(it)
+    elif isinstance(it, dict):
+        text_blobs.extend(str(v) for v in it.values() if isinstance(v, str))
+    if isinstance(data.get("one_liner"), str):
+        text_blobs.append(data["one_liner"])
+    combined = " \n ".join(text_blobs)
+    citation_re = re.compile(r"\[\d+\]")
+    found = citation_re.findall(combined)
+    assert found, (
+        f"expected at least one [n] inline citation across market_signals/investor_take/one_liner; "
+        f"got none. combined sample: {combined[:400]!r}"
+    )
+
+
+def test_grounded_research_schema_backward_compat(klarna_brief):
+    """Older schema fields must still be present even with grounded enrichment."""
+    data = klarna_brief.get("data") or {}
+    assert isinstance(data, dict)
+    assert "company_name" in data, f"missing company_name. keys={list(data.keys())}"
+    assert "leadership" in data and isinstance(data["leadership"], list)
+    assert "market_signals" in data and isinstance(data["market_signals"], list)
+
+
+def test_grounded_research_persists_with_sources(authed, klarna_brief):
+    """The new fields must survive a GET /api/research/history round-trip."""
+    r = authed.get(f"{API}/research/history", timeout=15)
+    assert r.status_code == 200, r.text
+    items = r.json()
+    match = next((i for i in items if i["id"] == klarna_brief["id"]), None)
+    assert match is not None, "klarna brief not present in history"
+    assert "sources" in match and isinstance(match["sources"], list) and len(match["sources"]) >= 5
+    assert match.get("live_research_used") is True
+
+
 # ----- Collateral -----
 def test_collateral_one_pager(authed):
     r = authed.post(f"{API}/collateral/generate", json={

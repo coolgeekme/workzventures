@@ -77,12 +77,17 @@ export default function ResearchHub() {
 
       {current && D && (
         <div className="mt-8 wz-card" data-testid="research-result">
-          <div className="border-b border-[var(--wz-border)] px-6 py-5 flex items-center justify-between">
+          <div className="border-b border-[var(--wz-border)] px-6 py-5 flex items-center justify-between gap-3 flex-wrap">
             <div>
               <div className="font-display text-2xl tracking-tight">{D.company_name || current.company_name}</div>
               <div className="text-sm text-[var(--wz-text-secondary)] mt-1">{D.one_liner}</div>
             </div>
-            <span className="pill pill-gold">{D.sector || current.sector || "—"}</span>
+            <div className="flex items-center gap-2">
+              {current.live_research_used && (
+                <span className="pill pill-positive" data-testid="live-research-pill">live web research</span>
+              )}
+              <span className="pill pill-gold">{D.sector || current.sector || "—"}</span>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-[var(--wz-border)]">
@@ -138,6 +143,36 @@ export default function ResearchHub() {
                   <li key={i} className="flex gap-3">
                     <span className="font-mono-wz text-[var(--wz-gold)]">{String(i + 1).padStart(2, "0")}</span>
                     <span>{a}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
+          {Array.isArray(current.sources) && current.sources.length > 0 && (
+            <div className="px-6 py-5 border-t border-[var(--wz-border)]" data-testid="research-sources">
+              <div className="flex items-center justify-between mb-3">
+                <div className="overline">Sources · live web</div>
+                <span className="font-mono-wz text-[10px] text-[var(--wz-text-tertiary)]">
+                  {current.sources.length} cited
+                </span>
+              </div>
+              <ol className="space-y-2">
+                {current.sources.map((s) => (
+                  <li key={s.index} className="grid grid-cols-[24px_1fr_80px] gap-3 items-start text-xs">
+                    <span className="font-mono-wz text-[var(--wz-gold)]">[{s.index}]</span>
+                    <a
+                      href={s.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[var(--wz-text-secondary)] hover:text-white underline-offset-4 hover:underline truncate"
+                      data-testid={`source-${s.index}`}
+                    >
+                      {s.title || s.url}
+                    </a>
+                    <span className="font-mono-wz text-[10px] uppercase tracking-widest text-[var(--wz-text-tertiary)] text-right">
+                      {s.provider}{s.age ? ` · ${s.age}` : ""}
+                    </span>
                   </li>
                 ))}
               </ol>
