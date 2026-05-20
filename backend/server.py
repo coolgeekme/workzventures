@@ -61,7 +61,7 @@ class UserPublic(BaseModel):
     id: str
     email: EmailStr
     name: str
-    role: Literal["admin", "buyer", "analyst"] = "buyer"
+    role: Literal["admin", "buyer", "seller"] = "buyer"
     organization: Optional[str] = None
     interests: List[str] = Field(default_factory=list)
     newsletter_opt_in: bool = False
@@ -73,7 +73,25 @@ class RegisterRequest(BaseModel):
     password: str
     name: str
     organization: Optional[str] = None
-    role: Literal["admin", "buyer", "analyst"] = "buyer"
+    role: Literal["admin", "buyer", "seller"] = "buyer"
+
+
+class ListingCreate(BaseModel):
+    company_name: str
+    sector: str
+    geography: str
+    asking_price_usd_m: float
+    revenue_usd_m: Optional[float] = None
+    ebitda_usd_m: Optional[float] = None
+    employees: Optional[int] = None
+    headline: str
+    summary: str
+    highlights: List[str] = Field(default_factory=list)
+    status: Literal["draft", "live", "under_loi", "closed"] = "draft"
+
+
+class InquiryCreate(BaseModel):
+    message: str
 
 
 class LoginRequest(BaseModel):
@@ -424,7 +442,54 @@ async def dashboard_stats(user=Depends(get_current_user)):
     activities = await db.agent_activity.count_documents({})
     success = await db.agent_activity.count_documents({"status": "completed"})
     success_rate = round((success / activities * 100) if activities else 0, 1)
+
+    role = user.get("role", "buyer")
+    uid = user["id"]
+
+    if role == "seller":
+        my_listings = await db.listings.count_documents({"seller_id": uid})
+        live_listings = await db.listings.count_documents({"seller_id": uid, "status": "live"})
+        inbound = await db.inquiries.count_documents({"seller_id": uid})
+        pipeline_value = 0.0
+        async for d in db.listings.find({"seller_id": uid}, {"_id": 0, "asking_price_usd_m": 1}):
+            pipeline_value += float(d.get("asking_price_usd_m") or 0)
+        my_campaigns = await db.outreach.count_documents({"user_id": uid})
+        my_leads = await db.leads.count_documents({"user_id": uid})
+        my_newsletters = await db.newsletters.count_documents({"user_id": uid})
+        return {
+            "role": role,
+            "my_listings": my_listings,
+            "live_listings": live_listings,
+            "inbound_inquiries": inbound,
+            "pipeline_value_usd_m": round(pipeline_value, 1),
+            "my_campaigns": my_campaigns,
+            "my_leads": my_leads,
+            "my_newsletters": my_newsletters,
+            "agent_success_rate": success_rate,
+            "agent_runs": activities,
+        }
+
+    if role == "buyer":
+        marketplace_count = await db.listings.count_documents({"status": "live"})
+        my_research = await db.research.count_documents({"user_id": uid})
+        my_inquiries = await db.inquiries.count_documents({"buyer_id": uid})
+        my_newsletters_received = await db.newsletters.count_documents({"status": "dispatched"})
+        watchlist_count = await db.watchlist.count_documents({"user_id": uid})
+        return {
+            "role": role,
+            "marketplace_listings": marketplace_count,
+            "my_research_count": my_research,
+            "my_inquiries": my_inquiries,
+            "watchlist_count": watchlist_count,
+            "newsletters_received": my_newsletters_received,
+            "aum_usd_b": 14.7,
+            "agent_success_rate": success_rate,
+            "exit_velocity_days": 142,
+        }
+
+    # admin / fallback — global view
     return {
+        "role": role,
         "aum_usd_b": 14.7,
         "active_deals": deals,
         "pipeline_leads": leads,
@@ -434,6 +499,8 @@ async def dashboard_stats(user=Depends(get_current_user)):
         "agent_success_rate": success_rate,
         "agent_runs": activities,
         "exit_velocity_days": 142,
+        "marketplace_listings": await db.listings.count_documents({"status": "live"}),
+        "total_inquiries": await db.inquiries.count_documents({}),
     }
 
 
@@ -441,6 +508,161 @@ async def dashboard_stats(user=Depends(get_current_user)):
 async def list_deals(user=Depends(get_current_user)):
     deals = await db.deals.find({}, {"_id": 0}).to_list(200)
     return deals
+
+
+# -----------------------------------------------------------------------------
+# LISTINGS · MARKETPLACE · INQUIRIES · WATCHLIST
+# -----------------------------------------------------------------------------
+@api_router.get("/listings")
+async def my_listings(user=Depends(get_current_user)):
+    """Seller view — list my listings."""
+    items = await db.listings.find({"seller_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return items
+
+
+@api_router.post("/listings")
+async def create_listing(body: ListingCreate, user=Depends(get_current_user)):
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Sellers only")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "seller_id": user["id"],
+        "seller_name": user.get("name"),
+        "seller_org": user.get("organization"),
+        **body.model_dump(),
+        "inquiry_count": 0,
+        "view_count": 0,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.listings.insert_one(doc)
+    await log_audit(user["id"], "listing.create", body.company_name)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.patch("/listings/{lid}")
+async def update_listing(lid: str, body: ListingCreate, user=Depends(get_current_user)):
+    res = await db.listings.update_one(
+        {"id": lid, "seller_id": user["id"]},
+        {"$set": body.model_dump()},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    await log_audit(user["id"], "listing.update", lid)
+    return {"ok": True}
+
+
+@api_router.delete("/listings/{lid}")
+async def delete_listing(lid: str, user=Depends(get_current_user)):
+    res = await db.listings.delete_one({"id": lid, "seller_id": user["id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    await log_audit(user["id"], "listing.delete", lid)
+    return {"ok": True}
+
+
+@api_router.get("/marketplace")
+async def marketplace(user=Depends(get_current_user)):
+    """Buyer view — public live listings from every seller."""
+    items = await db.listings.find({"status": "live"}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return items
+
+
+@api_router.get("/marketplace/{lid}")
+async def marketplace_detail(lid: str, user=Depends(get_current_user)):
+    item = await db.listings.find_one({"id": lid}, {"_id": 0})
+    if not item:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    await db.listings.update_one({"id": lid}, {"$inc": {"view_count": 1}})
+    return item
+
+
+@api_router.post("/marketplace/{lid}/inquire")
+async def inquire(lid: str, body: InquiryCreate, user=Depends(get_current_user)):
+    listing = await db.listings.find_one({"id": lid}, {"_id": 0})
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "listing_id": lid,
+        "listing_name": listing["company_name"],
+        "seller_id": listing["seller_id"],
+        "buyer_id": user["id"],
+        "buyer_name": user.get("name"),
+        "buyer_org": user.get("organization"),
+        "buyer_email": user.get("email"),
+        "message": body.message,
+        "status": "new",
+        "created_at": now_utc().isoformat(),
+    }
+    await db.inquiries.insert_one(doc)
+    await db.listings.update_one({"id": lid}, {"$inc": {"inquiry_count": 1}})
+    await log_audit(user["id"], "inquiry.create", lid)
+    await log_agent_activity("matchmaking-agent", f"inquiry:{listing['company_name']}", "completed", user_id=user["id"])
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/inquiries")
+async def list_inquiries(user=Depends(get_current_user)):
+    """Sellers see inbound; buyers see outbound; admin sees all."""
+    role = user.get("role", "buyer")
+    if role == "seller":
+        q = {"seller_id": user["id"]}
+    elif role == "buyer":
+        q = {"buyer_id": user["id"]}
+    else:
+        q = {}
+    items = await db.inquiries.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return items
+
+
+@api_router.patch("/inquiries/{iid}/status")
+async def update_inquiry(iid: str, body: dict, user=Depends(get_current_user)):
+    new_status = body.get("status")
+    if new_status not in ("new", "reviewing", "engaged", "passed"):
+        raise HTTPException(status_code=400, detail="Invalid status")
+    res = await db.inquiries.update_one(
+        {"id": iid, "seller_id": user["id"]},
+        {"$set": {"status": new_status}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Inquiry not found")
+    await log_audit(user["id"], "inquiry.status", iid, {"status": new_status})
+    return {"ok": True}
+
+
+@api_router.get("/watchlist")
+async def get_watchlist(user=Depends(get_current_user)):
+    items = await db.watchlist.find({"user_id": user["id"]}, {"_id": 0}).to_list(100)
+    return items
+
+
+@api_router.post("/watchlist/{lid}")
+async def add_watch(lid: str, user=Depends(get_current_user)):
+    if await db.watchlist.find_one({"user_id": user["id"], "listing_id": lid}):
+        return {"ok": True, "already": True}
+    listing = await db.listings.find_one({"id": lid}, {"_id": 0})
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "listing_id": lid,
+        "company_name": listing["company_name"],
+        "sector": listing["sector"],
+        "asking_price_usd_m": listing["asking_price_usd_m"],
+        "created_at": now_utc().isoformat(),
+    }
+    await db.watchlist.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.delete("/watchlist/{lid}")
+async def remove_watch(lid: str, user=Depends(get_current_user)):
+    await db.watchlist.delete_one({"user_id": user["id"], "listing_id": lid})
+    return {"ok": True}
 
 
 # -----------------------------------------------------------------------------
@@ -917,20 +1139,96 @@ async def audit_logs(user=Depends(get_current_user)):
 # -----------------------------------------------------------------------------
 async def seed_demo_user():
     seed_email = "alex@workz.example.com"
-    if await db.users.find_one({"email": seed_email}):
-        return
-    await db.users.insert_one({
-        "id": str(uuid.uuid4()),
-        "email": seed_email,
-        "name": "Alex Buyer",
-        "role": "buyer",
-        "organization": "Workz Test",
-        "password_hash": hash_password("WorkzPass123!"),
-        "interests": ["SaaS", "EMEA"],
-        "newsletter_opt_in": True,
-        "newsletter_cadence": "weekly",
-        "created_at": now_utc().isoformat(),
-    })
+    if not await db.users.find_one({"email": seed_email}):
+        await db.users.insert_one({
+            "id": str(uuid.uuid4()),
+            "email": seed_email,
+            "name": "Alex Buyer",
+            "role": "buyer",
+            "organization": "Cascade Capital",
+            "password_hash": hash_password("WorkzPass123!"),
+            "interests": ["SaaS", "EMEA"],
+            "newsletter_opt_in": True,
+            "newsletter_cadence": "weekly",
+            "created_at": now_utc().isoformat(),
+        })
+
+    seller_email = "mira@workz.example.com"
+    seller = await db.users.find_one({"email": seller_email})
+    if not seller:
+        seller_id = str(uuid.uuid4())
+        await db.users.insert_one({
+            "id": seller_id,
+            "email": seller_email,
+            "name": "Mira Seller",
+            "role": "seller",
+            "organization": "Northstar Holdings",
+            "password_hash": hash_password("WorkzPass123!"),
+            "interests": ["HealthTech", "Industrial"],
+            "newsletter_opt_in": False,
+            "created_at": now_utc().isoformat(),
+        })
+    else:
+        seller_id = seller["id"]
+
+    # Seed sample seller listings if none yet
+    if await db.listings.count_documents({"seller_id": seller_id}) == 0:
+        sample = [
+            {
+                "company_name": "Helios MedTech",
+                "sector": "HealthTech",
+                "geography": "EMEA",
+                "asking_price_usd_m": 412.0,
+                "revenue_usd_m": 142.0,
+                "ebitda_usd_m": 38.0,
+                "employees": 320,
+                "headline": "Category-leading EU surgical robotics platform",
+                "summary": "DACH-dominant surgical robotics with 38% YoY growth and 27% EBITDA margins. Recurring revenue ~62%.",
+                "highlights": ["32 hospital systems under contract", "FDA + CE marked", "Founder-led, succession-ready"],
+                "status": "live",
+            },
+            {
+                "company_name": "Atlas Logistics",
+                "sector": "Industrial",
+                "geography": "NA",
+                "asking_price_usd_m": 287.0,
+                "revenue_usd_m": 318.0,
+                "ebitda_usd_m": 54.0,
+                "employees": 1240,
+                "headline": "Asset-light North-American 3PL with a tech moat",
+                "summary": "Tier-1 retail accounts, AI-driven route optimization, 18% EBITDA margins growing.",
+                "highlights": ["Top-50 retailer concentration <20%", "Proprietary routing engine", "Cross-dock footprint in 12 cities"],
+                "status": "live",
+            },
+            {
+                "company_name": "Vertex Climate",
+                "sector": "ClimateTech",
+                "geography": "EMEA",
+                "asking_price_usd_m": 178.0,
+                "revenue_usd_m": 64.0,
+                "ebitda_usd_m": 12.0,
+                "employees": 180,
+                "headline": "Industrial carbon-capture for hard-to-abate sectors",
+                "summary": "Patented amine-free capture, two operating plants, €40M backlog.",
+                "highlights": ["3 LOI in pipeline", "EU CBAM tailwind", "Founder + CTO contracted to stay 24 months"],
+                "status": "draft",
+            },
+        ]
+        await db.listings.insert_many([
+            {
+                "id": str(uuid.uuid4()),
+                "seller_id": seller_id,
+                "seller_name": "Mira Seller",
+                "seller_org": "Northstar Holdings",
+                **s,
+                "inquiry_count": 0,
+                "view_count": 0,
+                "created_at": now_utc().isoformat(),
+            } for s in sample
+        ])
+
+    # Migrate any legacy analyst-role users to buyer
+    await db.users.update_many({"role": "analyst"}, {"$set": {"role": "buyer"}})
 
 
 @app.on_event("startup")

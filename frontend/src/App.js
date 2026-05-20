@@ -11,6 +11,7 @@ import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
+import DashboardRouter from "./pages/DashboardRouter";
 import ResearchHub from "./pages/ResearchHub";
 import Collateral from "./pages/Collateral";
 import Outreach from "./pages/Outreach";
@@ -20,6 +21,9 @@ import MCPConsole from "./pages/MCPConsole";
 import AgentMonitor from "./pages/AgentMonitor";
 import Composio from "./pages/Composio";
 import Audit from "./pages/Audit";
+import Marketplace from "./pages/Marketplace";
+import MyListings from "./pages/MyListings";
+import Inquiries from "./pages/Inquiries";
 
 function Protected({ children }) {
   const { user } = useAuth();
@@ -36,8 +40,11 @@ function AppRoutes() {
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/app" element={<Navigate to="/app/dashboard" replace />} />
-      <Route path="/app/dashboard" element={<Protected><Dashboard /></Protected>} />
+      <Route path="/app/dashboard" element={<Protected><DashboardRouter /></Protected>} />
       <Route path="/app/research" element={<Protected><ResearchHub /></Protected>} />
+      <Route path="/app/marketplace" element={<Protected><Marketplace /></Protected>} />
+      <Route path="/app/listings" element={<Protected><MyListings /></Protected>} />
+      <Route path="/app/inquiries" element={<Protected><Inquiries /></Protected>} />
       <Route path="/app/collateral" element={<Protected><Collateral /></Protected>} />
       <Route path="/app/outreach" element={<Protected><Outreach /></Protected>} />
       <Route path="/app/leads" element={<Protected><Leads /></Protected>} />

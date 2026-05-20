@@ -1,0 +1,88 @@
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
+import { api } from "../lib/api";
+import { useAuth } from "../lib/auth";
+
+const STATUSES = ["new", "reviewing", "engaged", "passed"];
+
+export default function Inquiries() {
+  const { user } = useAuth();
+  const [items, setItems] = useState([]);
+  const isSeller = user?.role === "seller";
+
+  const load = () => api.get("/inquiries").then((r) => setItems(r.data));
+  useEffect(() => { load(); }, []);
+
+  const setStatus = async (i, status) => {
+    try {
+      await api.patch(`/inquiries/${i.id}/status`, { status });
+      toast.success(`${i.buyer_name} → ${status}`);
+      load();
+    } catch (err) {
+      toast.error("Update failed");
+    }
+  };
+
+  return (
+    <div data-testid="inquiries-page" className="px-8 py-8">
+      <div className="overline mb-3" style={{ color: isSeller ? "var(--wz-amber)" : "var(--wz-gold)" }}>
+        {isSeller ? "Inbound inquiries" : "My inquiries"}
+      </div>
+      <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium">
+        {isSeller ? "Buyer interest signals." : "Your conversations."}
+      </h1>
+      <p className="text-sm text-[var(--wz-text-secondary)] mt-2 max-w-2xl">
+        {isSeller
+          ? "Buyers reaching out about your listings. Triage from new → reviewing → engaged."
+          : "Listings you have inquired about. Sellers will respond directly through the platform."}
+      </p>
+
+      <div className="mt-8 space-y-4" data-testid="inquiry-list">
+        {items.map((i) => (
+          <div key={i.id} className="wz-card p-6">
+            <div className="flex items-start justify-between gap-6 flex-wrap">
+              <div className="flex-1 min-w-[260px]">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className={`pill ${i.status === "engaged" ? "pill-positive" : i.status === "passed" ? "pill-negative" : i.status === "reviewing" ? "pill-gold" : "pill-amber"}`}>{i.status}</span>
+                  <span className="text-xs font-mono-wz text-[var(--wz-text-tertiary)]">
+                    {new Date(i.created_at).toLocaleString()}
+                  </span>
+                </div>
+                <div className="font-display text-xl tracking-tight">
+                  {isSeller ? i.buyer_name : i.listing_name}
+                </div>
+                <div className="text-xs text-[var(--wz-text-secondary)] mt-1">
+                  {isSeller ? `${i.buyer_org} · ${i.buyer_email}` : `to seller`}
+                  {!isSeller && i.listing_name && <> · re: <span className="text-[var(--wz-gold)]">{i.listing_name}</span></>}
+                </div>
+                <blockquote className="mt-4 border-l-2 border-[var(--wz-gold)] pl-4 text-sm italic text-[var(--wz-text-secondary)] leading-relaxed">
+                  "{i.message}"
+                </blockquote>
+              </div>
+              {isSeller && (
+                <div className="flex flex-col gap-2" data-testid={`triage-${i.id}`}>
+                  <div className="overline">Triage</div>
+                  {STATUSES.filter((s) => s !== i.status).map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => setStatus(i, s)}
+                      className="text-[10px] font-mono-wz uppercase tracking-widest border border-[var(--wz-border)] px-3 py-1 hover:border-[var(--wz-amber)] hover:text-[var(--wz-amber)] transition-colors"
+                      data-testid={`set-${i.id}-${s}`}
+                    >
+                      → {s}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+        {items.length === 0 && (
+          <div className="wz-card p-10 text-center text-sm text-[var(--wz-text-tertiary)]">
+            {isSeller ? "No inbound inquiries yet — list a company and run an outreach campaign to attract buyers." : "You have not sent any inquiries yet — browse the marketplace to get started."}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

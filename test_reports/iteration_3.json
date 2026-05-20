@@ -1,0 +1,41 @@
+{
+  "summary": "Backend regression for Buyer vs Seller workspace differentiation. 41/41 pytest cases PASS against the public REACT_APP_BACKEND_URL. Updated test_dashboard_stats_buyer to assert the new buyer payload (marketplace_listings, my_research_count, my_inquiries, watchlist_count, newsletters_received, aum_usd_b, exit_velocity_days, agent_success_rate, role='buyer'). Added 17 new tests covering: seller seed login + role, register endpoint accepting role='seller', dashboard stats seller payload (my_listings>=3, live_listings>=2, pipeline_value_usd_m, inbound_inquiries, my_campaigns/leads/newsletters), seller-only POST /api/listings (buyer => 403), seller seed listings (Helios live, Atlas live, Vertex draft), PATCH+DELETE own listings, /api/marketplace returns only status=live across sellers (Vertex draft NOT visible), /api/marketplace/{id} detail, POST /api/marketplace/{id}/inquire (inquiry_count increments), seller inbound vs buyer outbound /api/inquiries, PATCH /api/inquiries/{id}/status valid (reviewing) + invalid status 400 + buyer cannot patch (404 scoped by seller_id), watchlist GET/POST/DELETE incl. idempotent re-add and 404 on unknown listing. All pre-existing flows (auth, research, collateral, outreach draft+launch MOCKED, leads, newsletter draft+dispatch MOCKED, MCP, agents, composio, audit) still green.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PATCH /api/inquiries/{id}/status", "issue": "When a non-seller (buyer) hits this endpoint with a valid inquiry id, the API returns 404 (not 403). This is technically safe (scoped by seller_id in the update query) but a 403 would be more semantically accurate and clearer for clients."},
+      {"endpoint": "PATCH /api/inquiries/{id}/status", "issue": "Accepts raw dict body (no Pydantic model), so the only validation is the in-handler tuple check. Consider adding an InquiryStatusUpdate Pydantic model with a Literal type for consistency with other endpoints."},
+      {"endpoint": "PATCH /api/listings/{lid}", "issue": "Uses ListingCreate (full body) for partial updates — clients must resend all fields. Consider a ListingUpdate model with Optional fields for true PATCH semantics."},
+      {"endpoint": "GET /api/dashboard/stats (admin)", "issue": "Admin/fallback branch still computes deals/leads/campaigns globally (no scoping), which may leak counts across tenants in a multi-tenant deployment. Not a bug for current single-tenant demo."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now ~1270 lines — split into routers/ modules (auth, listings, marketplace, inquiries, watchlist, research, collateral, outreach, leads, newsletter, mcp, composio, audit) for maintainability.",
+    "POST /api/listings is correctly gated to seller/admin, but GET /api/listings is NOT gated — a buyer calling GET /api/listings gets back an empty list (because seller_id=user.id is a buyer) instead of a 403. Either gate it explicitly or rename to /api/listings/mine.",
+    "PATCH /api/inquiries/{id}/status returns 404 for both 'not found' and 'wrong owner' — fine for security-via-obscurity but consider distinguishing 403 vs 404 for cleaner API.",
+    "PATCH /api/inquiries/{id}/status takes body: dict (no Pydantic schema). Inconsistent with the rest of the codebase — add an InquiryStatusUpdate model.",
+    "PATCH /api/listings/{lid} reuses ListingCreate so a partial update forces clients to resend every field; add an Optional-field ListingUpdate model for proper PATCH semantics.",
+    "/api/watchlist/{lid} POST is idempotent but silently returns {'ok': True, 'already': True} — consider 200 vs 201 distinction or a clearer response shape.",
+    "Several Claude-backed POST endpoints (research, collateral, outreach draft, newsletter draft) remain synchronous, 15–35s each. Consider async job pattern (POST 202 + GET poll) — research currently ~33s of the 60s ingress budget.",
+    "safe_json_loads silently degrades to {'raw': raw} on parse failure; downstream code accesses data['company_name'] etc. without validation — add a 502 on missing essential fields.",
+    "CORS uses '*' with allow_credentials=True — combination is rejected by browsers; restrict to known origins.",
+    "/api/agents/activity (100) and /api/audit/logs (200) are still not paginated.",
+    "seed_demo_user has no unique index on users.email — minor race risk across worker restarts; the find_one guard mitigates but a Mongo unique index would be cleaner."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (replaced test_dashboard_stats with test_dashboard_stats_buyer; added 17 tests covering seller login, register role=seller, seller dashboard, listings CRUD + role gating, marketplace visibility, inquiries (create/list/patch/role-scoping), watchlist CRUD)"
+  ],
+  "success_rate": {"backend": "100% (41/41)", "frontend": "not tested (skipped per request)"},
+  "test_credentials": "Buyer: alex@workz.example.com / WorkzPass123!  ·  Seller: mira@workz.example.com / WorkzPass123!  ·  Plus a fresh test_<uuid8>@workz.com buyer registered per pytest session.",
+  "seed_data_creation": "Verified on startup: alex (buyer, Cascade Capital), mira (seller, Northstar Holdings) and 3 listings under mira (Helios MedTech live, Atlas Logistics live, Vertex Climate draft); 5 global deals (Helios/Atlas/Meridian/Nautilus/Vertex). Legacy role='analyst' migrated to 'buyer' at startup (verified by code path; no analyst users currently in DB).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend is fully green (41/41) for the role-differentiated workspaces. Pytest suite at /app/backend/tests/backend_test.py — re-runs cleanly because every mutating test prefixes data with TEST_ and uses a fresh per-session UUID buyer. Buyer/seller fixtures log in via the seeded mira/alex accounts (NOT the throwaway buyer), so tests assume seed_demo_user has run on startup. If you add new role-gated endpoints, follow the seller_authed/buyer_authed fixture pattern at the bottom of the file. Note: GET /api/listings is NOT role-gated — a buyer can call it but gets an empty list. Decide whether to harden or rename.",
+  "rca of the issue": "N/A — no bugs to RCA this iteration. The only behavior worth flagging is that PATCH /api/inquiries/{id}/status returns 404 (not 403) when a buyer tries to update an inquiry, because the update is scoped by seller_id in the Mongo filter; this is safe but semantically loose."
+}

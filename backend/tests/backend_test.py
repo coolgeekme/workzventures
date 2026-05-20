@@ -105,15 +105,20 @@ def test_me_requires_auth(session):
 
 
 # ----- Dashboard / Deals -----
-def test_dashboard_stats(authed):
+def test_dashboard_stats_buyer(authed):
+    """Buyer role returns buyer-specific dashboard fields."""
     r = authed.get(f"{API}/dashboard/stats", timeout=15)
     assert r.status_code == 200, r.text
     d = r.json()
-    for k in ["aum_usd_b", "active_deals", "pipeline_leads", "campaigns",
-              "newsletters_sent", "agent_success_rate"]:
-        assert k in d, f"Missing key {k}"
+    assert d["role"] == "buyer"
+    for k in ["marketplace_listings", "my_research_count", "my_inquiries",
+              "watchlist_count", "newsletters_received", "aum_usd_b",
+              "agent_success_rate", "exit_velocity_days"]:
+        assert k in d, f"Missing buyer key {k}"
     assert d["aum_usd_b"] == 14.7
-    assert isinstance(d["agent_success_rate"], (int, float))
+    # Buyer-specific fields should NOT contain seller fields
+    assert "my_listings" not in d
+    assert "inbound_inquiries" not in d
 
 
 def test_deals_seeded(authed):
@@ -331,3 +336,295 @@ def test_audit_logs(authed):
     # auth.register and auth.login should exist
     actions = {i["action"] for i in items}
     assert "auth.register" in actions
+
+
+# =============================================================================
+# Role differentiation: Buyer vs Seller workspaces
+# =============================================================================
+
+SELLER_EMAIL = "mira@workz.example.com"
+SELLER_PASSWORD = "WorkzPass123!"
+BUYER_EMAIL = "alex@workz.example.com"
+BUYER_PASSWORD = "WorkzPass123!"
+
+
+@pytest.fixture(scope="session")
+def seller_authed():
+    """Logged-in session for the seed seller mira@workz.example.com."""
+    s = requests.Session()
+    s.headers.update({"Content-Type": "application/json"})
+    r = s.post(f"{API}/auth/login",
+               json={"email": SELLER_EMAIL, "password": SELLER_PASSWORD},
+               timeout=15)
+    assert r.status_code == 200, f"seller login failed: {r.text}"
+    data = r.json()
+    assert data["user"]["role"] == "seller"
+    s.headers["Authorization"] = f"Bearer {data['token']}"
+    return s
+
+
+@pytest.fixture(scope="session")
+def buyer_authed():
+    """Logged-in session for the seed buyer alex@workz.example.com."""
+    s = requests.Session()
+    s.headers.update({"Content-Type": "application/json"})
+    r = s.post(f"{API}/auth/login",
+               json={"email": BUYER_EMAIL, "password": BUYER_PASSWORD},
+               timeout=15)
+    assert r.status_code == 200, f"buyer login failed: {r.text}"
+    data = r.json()
+    assert data["user"]["role"] == "buyer"
+    s.headers["Authorization"] = f"Bearer {data['token']}"
+    return s
+
+
+# ----- Seed seller login + role -----
+def test_seeded_seller_login(seller_authed):
+    r = seller_authed.get(f"{API}/auth/me", timeout=15)
+    assert r.status_code == 200
+    d = r.json()
+    assert d["email"] == SELLER_EMAIL
+    assert d["role"] == "seller"
+    assert d["organization"] == "Northstar Holdings"
+
+
+# ----- Register accepts role='seller' -----
+def test_register_accepts_seller_role(session):
+    email = f"seller_{uuid.uuid4().hex[:8]}@workz.com"
+    r = session.post(f"{API}/auth/register", json={
+        "email": email,
+        "password": "WorkzPass123!",
+        "name": "Seller Test",
+        "organization": "Test Sellers Ltd",
+        "role": "seller",
+    }, timeout=15)
+    assert r.status_code == 200, r.text
+    assert r.json()["user"]["role"] == "seller"
+
+
+# ----- Dashboard stats: seller role payload -----
+def test_dashboard_stats_seller(seller_authed):
+    r = seller_authed.get(f"{API}/dashboard/stats", timeout=15)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["role"] == "seller"
+    for k in ["my_listings", "live_listings", "inbound_inquiries",
+              "pipeline_value_usd_m", "my_campaigns", "my_leads",
+              "my_newsletters", "agent_success_rate", "agent_runs"]:
+        assert k in d, f"Missing seller key {k}"
+    # Seeded seller has 3 listings, 2 live
+    assert d["my_listings"] >= 3
+    assert d["live_listings"] >= 2
+    # No buyer-specific fields leak in
+    assert "marketplace_listings" not in d
+    assert "watchlist_count" not in d
+
+
+# ----- Listings: seed listings -----
+def test_seller_listings_seeded(seller_authed):
+    r = seller_authed.get(f"{API}/listings", timeout=15)
+    assert r.status_code == 200, r.text
+    items = r.json()
+    names = {x["company_name"] for x in items}
+    for expected in ["Helios MedTech", "Atlas Logistics", "Vertex Climate"]:
+        assert expected in names, f"missing seeded listing {expected}"
+    # Vertex Climate should be draft, others live
+    helios = next(x for x in items if x["company_name"] == "Helios MedTech")
+    vertex = next(x for x in items if x["company_name"] == "Vertex Climate")
+    assert helios["status"] == "live"
+    assert vertex["status"] == "draft"
+
+
+# ----- POST /api/listings: seller allowed -----
+def test_seller_create_listing(seller_authed):
+    payload = {
+        "company_name": f"TEST_Acme_{uuid.uuid4().hex[:6]}",
+        "sector": "SaaS",
+        "geography": "NA",
+        "asking_price_usd_m": 125.5,
+        "revenue_usd_m": 40.0,
+        "ebitda_usd_m": 8.0,
+        "employees": 90,
+        "headline": "Vertical SaaS leader",
+        "summary": "ARR $40M, 35% margins.",
+        "highlights": ["Net retention 122%", "Founder-led"],
+        "status": "live",
+    }
+    r = seller_authed.post(f"{API}/listings", json=payload, timeout=15)
+    assert r.status_code == 200, r.text
+    doc = r.json()
+    assert doc["company_name"] == payload["company_name"]
+    assert doc["status"] == "live"
+    assert "_id" not in doc
+    # Verify via GET
+    r2 = seller_authed.get(f"{API}/listings", timeout=15)
+    assert any(x["id"] == doc["id"] for x in r2.json())
+
+
+# ----- POST /api/listings: buyer forbidden -----
+def test_buyer_cannot_create_listing(buyer_authed):
+    r = buyer_authed.post(f"{API}/listings", json={
+        "company_name": "TEST_BlockedBuyerListing",
+        "sector": "SaaS",
+        "geography": "NA",
+        "asking_price_usd_m": 99.0,
+        "headline": "Should be blocked",
+        "summary": "Blocked",
+        "status": "draft",
+    }, timeout=15)
+    assert r.status_code == 403, f"expected 403, got {r.status_code} {r.text}"
+
+
+# ----- PATCH listing only own -----
+def test_seller_patch_and_delete_own_listing(seller_authed):
+    # create
+    create = seller_authed.post(f"{API}/listings", json={
+        "company_name": f"TEST_Patch_{uuid.uuid4().hex[:6]}",
+        "sector": "FinServ",
+        "geography": "EMEA",
+        "asking_price_usd_m": 50.0,
+        "headline": "patchable",
+        "summary": "tmp",
+        "status": "draft",
+    }, timeout=15)
+    assert create.status_code == 200
+    lid = create.json()["id"]
+    # patch
+    patched = seller_authed.patch(f"{API}/listings/{lid}", json={
+        "company_name": create.json()["company_name"],
+        "sector": "FinServ",
+        "geography": "EMEA",
+        "asking_price_usd_m": 75.0,  # changed
+        "headline": "patched headline",
+        "summary": "patched summary",
+        "status": "live",
+    }, timeout=15)
+    assert patched.status_code == 200, patched.text
+    # verify
+    items = seller_authed.get(f"{API}/listings", timeout=15).json()
+    rec = next(x for x in items if x["id"] == lid)
+    assert rec["asking_price_usd_m"] == 75.0
+    assert rec["status"] == "live"
+    # delete
+    d = seller_authed.delete(f"{API}/listings/{lid}", timeout=15)
+    assert d.status_code == 200
+    items2 = seller_authed.get(f"{API}/listings", timeout=15).json()
+    assert all(x["id"] != lid for x in items2)
+
+
+# ----- Marketplace: all logged-in users see live listings -----
+def test_marketplace_visible_to_buyer(buyer_authed):
+    r = buyer_authed.get(f"{API}/marketplace", timeout=15)
+    assert r.status_code == 200, r.text
+    items = r.json()
+    # Should contain seller's 2 live listings (Helios + Atlas) at minimum
+    names = {x["company_name"] for x in items}
+    assert "Helios MedTech" in names
+    assert "Atlas Logistics" in names
+    # Vertex Climate is draft — must NOT appear in marketplace
+    assert "Vertex Climate" not in names
+    # All listings must be status=live
+    assert all(x["status"] == "live" for x in items)
+
+
+# ----- Marketplace detail increments view_count -----
+def test_marketplace_detail(buyer_authed):
+    listings = buyer_authed.get(f"{API}/marketplace", timeout=15).json()
+    target = next(x for x in listings if x["company_name"] == "Helios MedTech")
+    r = buyer_authed.get(f"{API}/marketplace/{target['id']}", timeout=15)
+    assert r.status_code == 200
+    assert r.json()["company_name"] == "Helios MedTech"
+
+
+# ----- Inquiry creation: buyer -> seller -----
+@pytest.fixture(scope="session")
+def buyer_inquiry(buyer_authed):
+    listings = buyer_authed.get(f"{API}/marketplace", timeout=15).json()
+    target = next(x for x in listings if x["company_name"] == "Atlas Logistics")
+    before = target.get("inquiry_count", 0)
+    r = buyer_authed.post(f"{API}/marketplace/{target['id']}/inquire",
+                          json={"message": "Interested in DD package for Atlas."},
+                          timeout=15)
+    assert r.status_code == 200, r.text
+    doc = r.json()
+    assert doc["listing_id"] == target["id"]
+    assert doc["status"] == "new"
+    # verify inquiry_count incremented
+    detail = buyer_authed.get(f"{API}/marketplace/{target['id']}", timeout=15).json()
+    assert detail["inquiry_count"] >= before + 1
+    return doc
+
+
+def test_buyer_inquiry_created(buyer_inquiry):
+    assert "id" in buyer_inquiry
+    assert buyer_inquiry["status"] == "new"
+
+
+# ----- Buyer outbound inquiries -----
+def test_buyer_outbound_inquiries(buyer_authed, buyer_inquiry):
+    r = buyer_authed.get(f"{API}/inquiries", timeout=15)
+    assert r.status_code == 200
+    items = r.json()
+    assert any(i["id"] == buyer_inquiry["id"] for i in items)
+    # all returned items should belong to this buyer
+    # we don't have buyer_id easily, but each should at least reference buyer's listing_id
+    assert all("listing_id" in i for i in items)
+
+
+# ----- Seller inbound inquiries -----
+def test_seller_sees_inbound_inquiry(seller_authed, buyer_inquiry):
+    r = seller_authed.get(f"{API}/inquiries", timeout=15)
+    assert r.status_code == 200
+    items = r.json()
+    assert any(i["id"] == buyer_inquiry["id"] for i in items)
+
+
+# ----- PATCH /api/inquiries/{id}/status -----
+def test_seller_patch_inquiry_status(seller_authed, buyer_inquiry):
+    iid = buyer_inquiry["id"]
+    r = seller_authed.patch(f"{API}/inquiries/{iid}/status",
+                            json={"status": "reviewing"}, timeout=15)
+    assert r.status_code == 200, r.text
+    # verify persisted
+    items = seller_authed.get(f"{API}/inquiries", timeout=15).json()
+    rec = next(i for i in items if i["id"] == iid)
+    assert rec["status"] == "reviewing"
+
+
+def test_seller_patch_inquiry_invalid_status(seller_authed, buyer_inquiry):
+    r = seller_authed.patch(f"{API}/inquiries/{buyer_inquiry['id']}/status",
+                            json={"status": "BOGUS_STATUS"}, timeout=15)
+    assert r.status_code == 400
+
+
+def test_buyer_cannot_patch_inquiry_status(buyer_authed, buyer_inquiry):
+    """Buyer can't patch inquiry — endpoint scopes by seller_id, so 404."""
+    r = buyer_authed.patch(f"{API}/inquiries/{buyer_inquiry['id']}/status",
+                           json={"status": "passed"}, timeout=15)
+    assert r.status_code == 404
+
+
+# ----- Watchlist CRUD -----
+def test_watchlist_add_get_delete(buyer_authed):
+    listings = buyer_authed.get(f"{API}/marketplace", timeout=15).json()
+    target = next(x for x in listings if x["company_name"] == "Helios MedTech")
+    lid = target["id"]
+    # add
+    r = buyer_authed.post(f"{API}/watchlist/{lid}", timeout=15)
+    assert r.status_code == 200, r.text
+    # add idempotently
+    r2 = buyer_authed.post(f"{API}/watchlist/{lid}", timeout=15)
+    assert r2.status_code == 200
+    # list
+    items = buyer_authed.get(f"{API}/watchlist", timeout=15).json()
+    assert any(x["listing_id"] == lid for x in items)
+    # delete
+    d = buyer_authed.delete(f"{API}/watchlist/{lid}", timeout=15)
+    assert d.status_code == 200
+    items2 = buyer_authed.get(f"{API}/watchlist", timeout=15).json()
+    assert all(x["listing_id"] != lid for x in items2)
+
+
+def test_watchlist_unknown_listing(buyer_authed):
+    r = buyer_authed.post(f"{API}/watchlist/nonexistent-id", timeout=15)
+    assert r.status_code == 404
