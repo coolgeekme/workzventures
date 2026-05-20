@@ -126,7 +126,7 @@ export default function Marketplace() {
             <div className="text-xs text-[var(--wz-text-secondary)] mt-1">to {selected.seller_name} · {selected.seller_org}</div>
             <textarea
               rows={5}
-              placeholder="Hi Mira — we're a $4B EMEA growth fund actively looking at HealthTech consolidation plays. Helios fits our thesis precisely. Could we open a NDA-ready data room conversation?"
+              placeholder="Hi Mira — we're a $4B EMEA growth fund actively looking at HealthTech consolidation plays. Helios fits our thesis precisely. Could we open the Vault for a NDA-gated conversation?"
               className="wz-input mt-5 font-sans"
               value={message}
               onChange={(e) => setMessage(e.target.value)}

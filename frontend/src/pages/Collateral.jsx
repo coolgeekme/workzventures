@@ -81,7 +81,7 @@ export default function Collateral() {
     <div data-testid="collateral-page" className="px-8 py-8">
       <div className="overline mb-3">Marketing collateral</div>
       <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium">
-        AI-drafted assets, ready for the deal room.
+        AI-drafted assets, ready for the Vault.
       </h1>
 
       {isSellerLike && listings.length > 0 && (

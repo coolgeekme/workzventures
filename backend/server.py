@@ -1560,7 +1560,7 @@ async def push_inquiry_to_zoho(inquiry_id: str, user=Depends(get_current_user)):
 
 
 # -----------------------------------------------------------------------------
-# DEAL ROOMS (NDA-gated workspace per inquiry · DRL · AI Findings)
+# THE VAULT (NDA-gated workspace per inquiry · DRL · AI Findings)
 # -----------------------------------------------------------------------------
 DRL_TEMPLATES = {
     "saas": {
@@ -1681,7 +1681,7 @@ async def participant_check(room: dict, user: dict) -> str:
         return "seller"
     if user.get("role") == "admin":
         return "admin"
-    raise HTTPException(status_code=403, detail="Not a participant of this deal room")
+    raise HTTPException(status_code=403, detail="Not a participant of this Vault")
 
 
 @api_router.get("/drl-templates")
@@ -1691,14 +1691,14 @@ async def list_drl_templates(user=Depends(get_current_user)):
 
 @api_router.post("/inquiries/{inquiry_id}/open-room")
 async def open_deal_room(inquiry_id: str, user=Depends(get_current_user)):
-    """Seller opens a deal room against an engaged inquiry."""
+    """Seller opens a Vault against an engaged inquiry."""
     if user.get("role") not in ("seller", "admin"):
         raise HTTPException(status_code=403, detail="Sellers/admin only")
     inquiry = await db.inquiries.find_one({"id": inquiry_id, "seller_id": user["id"]}, {"_id": 0})
     if not inquiry:
         raise HTTPException(status_code=404, detail="Inquiry not found")
     if inquiry.get("status") != "engaged":
-        raise HTTPException(status_code=400, detail="Inquiry must be 'engaged' before opening a deal room")
+        raise HTTPException(status_code=400, detail="Inquiry must be 'engaged' before opening the Vault")
 
     existing = await db.deal_rooms.find_one({"inquiry_id": inquiry_id}, {"_id": 0})
     if existing:
@@ -1747,7 +1747,7 @@ async def list_deal_rooms(user=Depends(get_current_user)):
 async def get_deal_room(rid: str, user=Depends(get_current_user)):
     room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
     if not room:
-        raise HTTPException(status_code=404, detail="Deal room not found")
+        raise HTTPException(status_code=404, detail="Vault not found")
     await participant_check(room, user)
     room["files"] = await db.deal_room_files.find({"room_id": rid}, {"_id": 0, "content": 0, "pages": 0}).sort("uploaded_at", -1).to_list(500)
     room["requests"] = await db.deal_room_requests.find({"room_id": rid}, {"_id": 0}).sort("created_at", 1).to_list(200)
@@ -1759,7 +1759,7 @@ async def get_deal_room(rid: str, user=Depends(get_current_user)):
 async def accept_nda(rid: str, body: NDAAccept, user=Depends(get_current_user)):
     room = await db.deal_rooms.find_one({"id": rid})
     if not room:
-        raise HTTPException(status_code=404, detail="Deal room not found")
+        raise HTTPException(status_code=404, detail="Vault not found")
     if user["id"] != room["buyer_id"]:
         raise HTTPException(status_code=403, detail="Only the buyer can accept the NDA")
     signed_name = (body.signed_name or "").strip()
@@ -1782,7 +1782,7 @@ async def accept_nda(rid: str, body: NDAAccept, user=Depends(get_current_user)):
 async def apply_drl_template(rid: str, body: DRLApply, user=Depends(get_current_user)):
     room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
     if not room:
-        raise HTTPException(status_code=404, detail="Deal room not found")
+        raise HTTPException(status_code=404, detail="Vault not found")
     role = await participant_check(room, user)
     if role not in ("buyer", "admin"):
         raise HTTPException(status_code=403, detail="Only the buyer can apply a DRL template")
@@ -1816,7 +1816,7 @@ async def apply_drl_template(rid: str, body: DRLApply, user=Depends(get_current_
 async def upload_file(rid: str, body: FileUpload, user=Depends(get_current_user)):
     room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
     if not room:
-        raise HTTPException(status_code=404, detail="Deal room not found")
+        raise HTTPException(status_code=404, detail="Vault not found")
     role = await participant_check(room, user)
     if room.get("status") == "pending_nda":
         raise HTTPException(status_code=400, detail="Buyer must accept NDA before files can be exchanged")
@@ -1952,7 +1952,7 @@ async def upload_file_binary(
         folder = "other"
     room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
     if not room:
-        raise HTTPException(status_code=404, detail="Deal room not found")
+        raise HTTPException(status_code=404, detail="Vault not found")
     role = await participant_check(room, user)
     if room.get("status") == "pending_nda":
         raise HTTPException(status_code=400, detail="Buyer must accept NDA before files can be exchanged")
@@ -2020,7 +2020,7 @@ async def upload_file_binary(
 async def download_file(rid: str, file_id: str, user=Depends(get_current_user)):
     room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
     if not room:
-        raise HTTPException(status_code=404, detail="Deal room not found")
+        raise HTTPException(status_code=404, detail="Vault not found")
     await participant_check(room, user)
     f = await db.deal_room_files.find_one({"id": file_id, "room_id": rid}, {"_id": 0})
     if not f:
@@ -2052,7 +2052,7 @@ async def generate_findings(rid: str, user=Depends(get_current_user)):
     """AI reads every uploaded file in the room and produces structured findings with citations."""
     room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
     if not room:
-        raise HTTPException(status_code=404, detail="Deal room not found")
+        raise HTTPException(status_code=404, detail="Vault not found")
     role = await participant_check(room, user)
     if role not in ("buyer", "admin"):
         raise HTTPException(status_code=403, detail="Only the buyer can generate findings")

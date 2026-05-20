@@ -222,7 +222,7 @@ export default function DealRoomDetail() {
                 className="wz-btn wz-btn-gold mt-4"
                 data-testid="accept-nda"
               >
-                {busy ? "Signing…" : "Sign & unlock data room"}
+                {busy ? "Signing…" : "Sign & unlock the Vault"}
               </button>
             </div>
           </div>
@@ -600,7 +600,7 @@ export default function DealRoomDetail() {
                 "Are there any unusual termination clauses?",
                 "Summarize the financial highlights",
                 "Flag any IP or compliance issues",
-                "What's missing from the data room?",
+                "What's missing from the Vault?",
               ].map((hint) => (
                 <button
                   key={hint}
