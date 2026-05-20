@@ -365,7 +365,7 @@ export default function DealRoomDetail() {
                     id="dealroom-file-input"
                     required
                     type="file"
-                    accept=".pdf,.docx,.txt,.md,.csv,.xlsx,.png,.jpg,.jpeg"
+                    accept=".pdf,.docx,.txt,.md,.csv"
                     onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
                     className="wz-input text-xs"
                     data-testid="upload-file-input"
