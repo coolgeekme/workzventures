@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "../lib/auth";
+import Logo from "../components/Logo";
 
 const BG = "https://static.prod-images.emergentagent.com/jobs/99d61e05-18d6-4593-8525-63fadbb097b3/images/051604875a1f24b758170839747cdade0243dbdcd5308a8e08000fd5dc35d2c1.png";
 
@@ -34,9 +35,12 @@ export default function Login() {
         <img src={BG} alt="Workz" className="absolute inset-0 w-full h-full object-cover opacity-70" />
         <div className="absolute inset-0 bg-gradient-to-br from-[var(--wz-bg)]/40 via-transparent to-[var(--wz-bg)]" />
         <div className="absolute top-10 left-10 right-10">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 bg-[var(--wz-gold)] flex items-center justify-center text-black font-bold font-mono-wz text-sm">W</div>
-            <div className="font-display tracking-tighter">Workz Ventures</div>
+          <div className="flex items-center gap-3">
+            <Logo size="lg" testid="login-logo" />
+            <div>
+              <div className="font-display tracking-tighter text-xl leading-none">Workz Ventures</div>
+              <div className="overline mt-1.5">institutional buy & sell-side</div>
+            </div>
           </div>
         </div>
         <div className="absolute bottom-10 left-10 right-10">

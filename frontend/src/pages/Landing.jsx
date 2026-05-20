@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { ArrowUpRight, ChartLineUp, Terminal, Sparkle } from "@phosphor-icons/react";
+import Logo from "../components/Logo";
 
 const HERO_IMG = "https://static.prod-images.emergentagent.com/jobs/99d61e05-18d6-4593-8525-63fadbb097b3/images/051604875a1f24b758170839747cdade0243dbdcd5308a8e08000fd5dc35d2c1.png";
 
@@ -7,11 +8,11 @@ export default function Landing() {
   return (
     <div className="min-h-screen grain" data-testid="landing">
       <header className="border-b border-[var(--wz-border)] px-8 py-5 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-[var(--wz-gold)] flex items-center justify-center text-black font-bold font-mono-wz">W</div>
+        <div className="flex items-center gap-4">
+          <Logo size="lg" testid="landing-logo" />
           <div>
-            <div className="font-display font-medium tracking-tighter text-lg leading-none">Workz Ventures</div>
-            <div className="overline mt-1">AI-Augmented Marketing Agency</div>
+            <div className="font-display font-medium tracking-tighter text-xl leading-none">Workz Ventures</div>
+            <div className="overline mt-1.5">AI-Augmented Marketing Agency</div>
           </div>
         </div>
         <div className="flex items-center gap-3">

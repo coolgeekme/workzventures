@@ -6,6 +6,7 @@ import {
   EnvelopeSimple, Plugs, Terminal, ChartLineUp, ListChecks, SignOut,
   Storefront, Tag, Question, Bookmark, ChartBar,
 } from "@phosphor-icons/react";
+import Logo from "./Logo";
 
 const BUYER_NAV = [
   { to: "/app/dashboard", label: "Dashboard", icon: House, group: "Core" },
@@ -76,8 +77,8 @@ export default function Layout({ children }) {
       {/* Sidebar */}
       <aside className="border-r border-[var(--wz-border)] flex flex-col" data-testid="sidebar">
         <div className="px-6 pt-7 pb-5 border-b border-[var(--wz-border)]">
-          <Link to="/app/dashboard" className="flex items-center gap-2" data-testid="brand-link">
-            <div className={`w-7 h-7 ${isSeller ? "bg-[var(--wz-amber)]" : "bg-[var(--wz-gold)]"} flex items-center justify-center text-black font-bold font-mono-wz text-sm`}>W</div>
+          <Link to="/app/dashboard" className="flex items-center gap-3" data-testid="brand-link">
+            <Logo size="md" testid="sidebar-logo" />
             <div>
               <div className="font-display font-medium tracking-tighter text-lg leading-none">Workz</div>
               <div className="overline mt-1">{isSeller ? "Sell-side console" : user?.role === "admin" ? "Admin · platform" : "Buy-side console"}</div>

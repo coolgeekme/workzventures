@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "../lib/auth";
+import Logo from "../components/Logo";
 
 export default function Register() {
   const { register } = useAuth();
@@ -30,7 +31,10 @@ export default function Register() {
   return (
     <div className="min-h-screen flex items-center justify-center px-6 py-12 grain" data-testid="register-page">
       <form onSubmit={submit} className="w-full max-w-md wz-card p-8" data-testid="register-form">
-        <div className="overline mb-3">Request access</div>
+        <div className="flex items-center gap-3 mb-6">
+          <Logo size="md" testid="register-logo" />
+          <div className="overline">Request access</div>
+        </div>
         <h1 className="font-display text-3xl tracking-tighter font-medium mb-2">
           Open a Workz account.
         </h1>
