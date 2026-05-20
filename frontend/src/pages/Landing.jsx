@@ -27,13 +27,10 @@ export default function Landing() {
           <h1 className="font-display text-4xl sm:text-5xl lg:text-6xl tracking-tighter font-medium leading-[1.02]">
             Where institutional<br />
             <span className="text-[var(--wz-gold)]">buyers</span> meet<br />
-            autonomous <span className="italic">AI agents.</span>
+            <span className="italic">AI Agents.</span>
           </h1>
           <p className="mt-8 text-[var(--wz-text-secondary)] max-w-xl leading-relaxed">
-            An AI-augmented marketing agency platform that pairs an institutional-grade Buyer Research Hub
-            with WebMCP-discoverable agent actions, managed OAuth integrations, and JWT-secured access.
-            Buyers get curated research and personalized newsletters; agents handle prospecting, outreach,
-            and collateral end-to-end.
+            Workz pairs an institutional-grade Buyer Research Hub with AI Agents that handle prospecting, outreach, and marketing collateral end-to-end. Buyers get curated research and personalized newsletters tailored to their interests.
           </p>
 
           <div className="mt-10 flex flex-wrap gap-3">
@@ -93,9 +90,9 @@ export default function Landing() {
 
         <div className="mt-12 wz-grid grid-cols-1 md:grid-cols-3">
           {[
-            { i: Sparkle, t: "Buyer Research Hub", d: "Our AI synthesizes company profiles, leadership, and market signals on-demand for any target." },
-            { i: ChartLineUp, t: "Personalized Newsletters", d: "AI drafts deal spotlights, market analyses, and portfolio updates that align with each buyer's interest profile." },
-            { i: Terminal, t: "WebMCP Action Surface", d: "Every platform workflow is exposed via data-mcp-action attributes and navigator.mcpActions.register() for AI browsing agents." },
+            { i: Sparkle, t: "Buyer Research Hub", d: "Get an instant institutional brief on any company — profile, leadership, market signals, and sources you can trust." },
+            { i: ChartLineUp, t: "Personalized Newsletters", d: "Curated deal spotlights, market analyses, and portfolio updates delivered to your inbox, tailored to your interests." },
+            { i: Terminal, t: "AI Agents that work for you", d: "AI Agents prospect targets, draft outreach, and prepare marketing collateral so your team can focus on closing deals." },
           ].map((f) => {
             const Icon = f.i;
             return (
@@ -111,7 +108,7 @@ export default function Landing() {
 
       <footer className="border-t border-[var(--wz-border)] px-8 py-8 flex justify-between text-xs text-[var(--wz-text-tertiary)]">
         <span className="font-mono-wz">WORKZ // 2026</span>
-        <span>JWT · Integrations · WebMCP · AI agents</span>
+        <span>Designed for today. Built for tomorrow. Focused on forever.</span>
       </footer>
     </div>
   );

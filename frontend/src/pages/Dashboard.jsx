@@ -89,7 +89,7 @@ export default function Dashboard() {
         <div className="wz-card" data-testid="agent-feed">
           <div className="border-b border-[var(--wz-border)] px-6 py-4">
             <div className="overline">Agent activity</div>
-            <div className="font-display text-lg tracking-tight mt-1">Recent autonomous tasks</div>
+            <div className="font-display text-lg tracking-tight mt-1">Recent AI Agent tasks</div>
           </div>
           <div className="divide-y divide-[var(--wz-border)]">
             {activity.map((a) => (

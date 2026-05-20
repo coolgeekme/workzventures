@@ -14,7 +14,7 @@ export default function AgentMonitor() {
     <div data-testid="agents-page" className="px-8 py-8">
       <div className="overline mb-3">Agent monitor</div>
       <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium">
-        Autonomous task completion · live diagnostics.
+        AI Agent task completion · live diagnostics.
       </h1>
 
       <div className="wz-grid grid-cols-2 md:grid-cols-4 mt-8">
@@ -43,7 +43,7 @@ export default function AgentMonitor() {
       <div className="wz-card mt-8" data-testid="activity-log">
         <div className="border-b border-[var(--wz-border)] px-6 py-4">
           <div className="overline">Activity log</div>
-          <div className="font-display text-lg tracking-tight mt-1">Most recent autonomous tasks</div>
+          <div className="font-display text-lg tracking-tight mt-1">Most recent AI Agent tasks</div>
         </div>
         <div className="divide-y divide-[var(--wz-border)] font-mono-wz text-xs">
           {activity.map((a) => (

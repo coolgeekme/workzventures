@@ -39,7 +39,7 @@ export default function Register() {
           Open a Workz account.
         </h1>
         <p className="text-sm text-[var(--wz-text-secondary)] mb-7">
-          Institutional buyers and analysts only. JWT-secured, audited.
+          Institutional buyers and sellers only.
         </p>
 
         <div className="grid grid-cols-2 gap-4">
