@@ -1092,18 +1092,22 @@ async def set_prefs(body: NewsletterPreferences, user=Depends(get_current_user))
 
 @api_router.post("/newsletter/draft")
 async def draft_newsletter(body: NewsletterDraftRequest, user=Depends(get_current_user)):
+    """Used by sellers to draft a broadcast newsletter to opted-in buyers."""
     started = now_utc()
-    interests = ", ".join(user.get("interests", [])) or "general institutional buyers"
+    interests = ", ".join(user.get("interests", [])) or "institutional buyers"
     topic = body.topic or "this week's deal flow and market signals"
     raw = await call_claude(
         NEWSLETTER_SYS,
-        f"Subscriber interests: {interests}\nTopic focus: {topic}\nProduce JSON.",
+        f"Audience: {interests}\nTopic focus: {topic}\nProduce JSON.",
         session_id=f"newsletter-{user['id']}",
     )
     data = safe_json_loads(raw)
     doc = {
         "id": str(uuid.uuid4()),
         "user_id": user["id"],
+        "kind": "broadcast",
+        "sender_name": user.get("name"),
+        "sender_org": user.get("organization"),
         "data": data,
         "status": "draft",
         "approved_by": None,
@@ -1113,8 +1117,50 @@ async def draft_newsletter(body: NewsletterDraftRequest, user=Depends(get_curren
     }
     await db.newsletters.insert_one(doc)
     duration = int((now_utc() - started).total_seconds() * 1000)
-    await log_agent_activity("newsletter-agent", "draft", "completed", user_id=user["id"], duration_ms=duration)
+    await log_agent_activity("newsletter-agent", "draft:broadcast", "completed", user_id=user["id"], duration_ms=duration)
     await log_audit(user["id"], "newsletter.draft", doc["id"])
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.post("/newsletter/personal")
+async def personal_newsletter(body: NewsletterDraftRequest, user=Depends(get_current_user)):
+    """Buyer self-service: generate AND deliver a personalized digest in one call (recipient=self)."""
+    started = now_utc()
+    interests = ", ".join(user.get("interests", [])) or "general institutional buying themes"
+    topic = body.topic or "today's deal flow, market signals, and portfolio updates"
+    raw = await call_claude(
+        NEWSLETTER_SYS,
+        (
+            f"This is a PERSONAL digest for ONE institutional buyer named {user.get('name')} "
+            f"at {user.get('organization') or 'an institutional fund'}. "
+            f"Their stated interests: {interests}. "
+            f"Topic focus: {topic}. "
+            "Tailor every section to THIS reader. Speak as Workz Ventures. Produce JSON."
+        ),
+        session_id=f"newsletter-personal-{user['id']}",
+    )
+    data = safe_json_loads(raw)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "kind": "personal",
+        "sender_name": "Workz Ventures",
+        "sender_org": "Workz Ventures",
+        "recipient_email": user["email"],
+        "recipient_name": user.get("name"),
+        "data": data,
+        "status": "dispatched",
+        "approved_by": user["id"],
+        "approved_at": now_utc().isoformat(),
+        "dispatched_at": now_utc().isoformat(),
+        "recipients": 1,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.newsletters.insert_one(doc)
+    duration = int((now_utc() - started).total_seconds() * 1000)
+    await log_agent_activity("newsletter-agent", "personal:delivered", "completed", user_id=user["id"], duration_ms=duration)
+    await log_audit(user["id"], "newsletter.personal", doc["id"])
     doc.pop("_id", None)
     return doc
 
@@ -1139,11 +1185,14 @@ async def approve_newsletter(nid: str, user=Depends(get_current_user)):
 
 @api_router.post("/newsletter/{nid}/dispatch")
 async def dispatch_newsletter(nid: str, user=Depends(get_current_user)):
-    """MOCKED email dispatch (Resend integration mocked per user choice)."""
+    """MOCKED email dispatch (Resend integration mocked per user choice).
+    Broadcast → opted-in buyers count. Personal → already delivered (recipients=1)."""
     nl = await db.newsletters.find_one({"id": nid, "user_id": user["id"]}, {"_id": 0})
     if not nl:
         raise HTTPException(status_code=404, detail="Newsletter not found")
-    opted_in = await db.users.count_documents({"newsletter_opt_in": True})
+    if nl.get("kind") == "personal":
+        return {"ok": True, "recipients": 1, "note": "personal digest already delivered"}
+    opted_in = await db.users.count_documents({"newsletter_opt_in": True, "role": "buyer"})
     await db.newsletters.update_one(
         {"id": nid},
         {"$set": {

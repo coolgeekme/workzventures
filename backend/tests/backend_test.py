@@ -357,6 +357,11 @@ def newsletter(authed):
 def test_newsletter_draft(newsletter):
     assert newsletter["status"] == "draft"
     assert isinstance(newsletter["data"], dict)
+    # iter-5: /draft now tags kind='broadcast' and stamps sender_name/org for any role
+    assert newsletter.get("kind") == "broadcast", f"expected kind='broadcast', got {newsletter.get('kind')}"
+    assert newsletter.get("sender_name") == TEST_NAME
+    assert newsletter.get("sender_org") == "Workz Test"
+    assert newsletter.get("recipients") == 0
 
 
 def test_newsletter_approve_and_dispatch(authed, newsletter):
@@ -368,10 +373,151 @@ def test_newsletter_approve_and_dispatch(authed, newsletter):
     d = r2.json()
     assert d["ok"] is True
     assert "recipients" in d
+    # iter-5: dispatched broadcast recipients = count of role='buyer' AND newsletter_opt_in=true
+    # The seeded buyer alex is opted-in by default, so we expect >=1.
+    assert isinstance(d["recipients"], int) and d["recipients"] >= 1, (
+        f"broadcast dispatch should count at least the seeded opted-in buyer, got {d['recipients']}"
+    )
     # confirm status persisted
     r3 = authed.get(f"{API}/newsletter", timeout=15)
     rec = next(n for n in r3.json() if n["id"] == nid)
     assert rec["status"] == "dispatched"
+    # iter-5: GET /api/newsletter must surface 'kind' so frontend can filter
+    assert rec.get("kind") == "broadcast"
+
+
+# ----- Newsletter (iter-5): Personal digest (buyer) -----
+@pytest.fixture(scope="session")
+def personal_newsletter(buyer_authed):
+    """Buyer self-service personal digest — drafted AND dispatched in one round trip."""
+    r = buyer_authed.post(
+        f"{API}/newsletter/personal",
+        json={"topic": "weekly portfolio digest"},
+        timeout=120,
+    )
+    assert r.status_code == 200, f"/newsletter/personal failed: {r.status_code} {r.text}"
+    return r.json()
+
+
+def test_newsletter_personal_attributes(personal_newsletter):
+    """POST /api/newsletter/personal returns kind='personal', status='dispatched',
+    recipients=1, recipient_email=user's email, sender_name='Workz Ventures' — in ONE call."""
+    nl = personal_newsletter
+    assert nl.get("kind") == "personal", f"expected kind='personal', got {nl.get('kind')}"
+    assert nl.get("status") == "dispatched", f"personal must be dispatched immediately, got {nl.get('status')}"
+    assert nl.get("recipients") == 1, f"personal recipients must be 1, got {nl.get('recipients')}"
+    assert nl.get("recipient_email") == BUYER_EMAIL, (
+        f"recipient_email must be the buyer's email, got {nl.get('recipient_email')}"
+    )
+    assert nl.get("sender_name") == "Workz Ventures"
+    assert nl.get("sender_org") == "Workz Ventures"
+    assert nl.get("dispatched_at"), "personal digest must have dispatched_at set"
+    assert isinstance(nl.get("data"), dict) and nl["data"], "personal digest must carry generated content"
+
+
+def test_newsletter_personal_dispatch_short_circuits(buyer_authed, personal_newsletter):
+    """POST /api/newsletter/{id}/dispatch on a personal newsletter must short-circuit:
+    {ok:true, recipients:1, note:'personal digest already delivered'} — no re-dispatch."""
+    nid = personal_newsletter["id"]
+    r = buyer_authed.post(f"{API}/newsletter/{nid}/dispatch", timeout=15)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d.get("ok") is True
+    assert d.get("recipients") == 1
+    assert d.get("note") == "personal digest already delivered", (
+        f"expected short-circuit note, got {d.get('note')!r}"
+    )
+
+
+def test_newsletter_list_includes_kind_for_personal(buyer_authed, personal_newsletter):
+    """GET /api/newsletter must surface the 'kind' field for both personal and broadcast docs."""
+    r = buyer_authed.get(f"{API}/newsletter", timeout=15)
+    assert r.status_code == 200, r.text
+    items = r.json()
+    assert isinstance(items, list) and items, "buyer should see at least their personal newsletter"
+    matched = next((n for n in items if n["id"] == personal_newsletter["id"]), None)
+    assert matched is not None, "personal newsletter not found in user-scoped list"
+    assert matched.get("kind") == "personal"
+    assert matched.get("status") == "dispatched"
+    assert matched.get("recipients") == 1
+    # NB: legacy newsletter docs created prior to iter-5 (before the 'kind' field existed)
+    # may still be present in alex's inbox; we only assert the contract on newly-created
+    # docs. See test_report for the legacy-backfill recommendation.
+
+
+# ----- Newsletter (iter-5): Seller broadcast + buyer-only recipient filter -----
+@pytest.fixture(scope="session")
+def seller_broadcast(seller_authed):
+    """Seller drafts a broadcast newsletter (kind='broadcast', status='draft', recipients=0).
+    Stamped with seller's name/org."""
+    r = seller_authed.post(
+        f"{API}/newsletter/draft",
+        json={"topic": "Helios MedTech process update for institutional buyers"},
+        timeout=120,
+    )
+    assert r.status_code == 200, f"seller /newsletter/draft failed: {r.status_code} {r.text}"
+    return r.json()
+
+
+def test_seller_broadcast_attributes(seller_broadcast):
+    """Seller draft is kind='broadcast', status='draft', recipients=0,
+    sender_name/sender_org reflect the SELLER's identity (not Workz Ventures)."""
+    nl = seller_broadcast
+    assert nl.get("kind") == "broadcast"
+    assert nl.get("status") == "draft"
+    assert nl.get("recipients") == 0
+    # Seller is mira @ Northstar Holdings per /app/memory/test_credentials.md
+    assert nl.get("sender_name"), "seller broadcast must stamp sender_name"
+    assert nl.get("sender_org") == "Northstar Holdings", (
+        f"expected sender_org='Northstar Holdings', got {nl.get('sender_org')!r}"
+    )
+    assert "Workz Ventures" not in (nl.get("sender_name") or ""), (
+        "broadcast sender_name must be the seller, not Workz Ventures"
+    )
+
+
+def test_broadcast_recipients_filter_buyer_role_only(seller_authed, seller_broadcast):
+    """Dispatching a broadcast must count ONLY users with role='buyer' AND newsletter_opt_in=true.
+    A seller who opts-in must NOT increment the recipients count."""
+    nid = seller_broadcast["id"]
+
+    # Baseline: ensure mira (seller) is OPTED OUT, then dispatch
+    opt_out = seller_authed.post(
+        f"{API}/newsletter/preferences",
+        json={"opt_in": False, "interests": [], "cadence": "weekly"},
+        timeout=15,
+    )
+    assert opt_out.status_code == 200, opt_out.text
+    r1 = seller_authed.post(f"{API}/newsletter/{nid}/dispatch", timeout=15)
+    assert r1.status_code == 200, r1.text
+    count_without_seller = r1.json().get("recipients")
+    assert isinstance(count_without_seller, int) and count_without_seller >= 1, (
+        f"expected >=1 opted-in buyer in the seed (alex), got {count_without_seller}"
+    )
+
+    # Now opt mira (seller) IN and re-dispatch
+    opt_in = seller_authed.post(
+        f"{API}/newsletter/preferences",
+        json={"opt_in": True, "interests": ["SaaS"], "cadence": "weekly"},
+        timeout=15,
+    )
+    assert opt_in.status_code == 200, opt_in.text
+    r2 = seller_authed.post(f"{API}/newsletter/{nid}/dispatch", timeout=15)
+    assert r2.status_code == 200, r2.text
+    count_with_seller = r2.json().get("recipients")
+
+    # Cleanup: restore mira to opted-out (matches credentials doc default)
+    seller_authed.post(
+        f"{API}/newsletter/preferences",
+        json={"opt_in": False, "interests": [], "cadence": "weekly"},
+        timeout=15,
+    )
+
+    assert count_with_seller == count_without_seller, (
+        f"BROADCAST FILTER BUG: seller opt-in changed recipient count "
+        f"(without_seller={count_without_seller}, with_seller={count_with_seller}). "
+        "Dispatch must filter by role='buyer' AND newsletter_opt_in=true."
+    )
 
 
 # ----- MCP -----

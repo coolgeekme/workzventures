@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
-import { NotePencil } from "@phosphor-icons/react";
+import { useAuth } from "../lib/auth";
+import { NotePencil, Tag } from "@phosphor-icons/react";
 
-const COVER = "https://static.prod-images.emergentagent.com/jobs/99d61e05-18d6-4593-8525-63fadbb097b3/images/5cd58ebd0d3fa73fe174fd8942a03605c23c536b3bff18e72a17d700bd86c4b4.png";
+const COVER = "https://customer-assets.emergentagent.com/job_buyer-intel-lab/artifacts/mtl2u4cl_eb9c42c75e492db9ec952105c8ad0f0d.png";
 
 const TYPES = [
   { v: "one_pager", l: "Deal one-pager" },
@@ -12,16 +13,51 @@ const TYPES = [
   { v: "deal_memo", l: "Deal memo" },
 ];
 
+const empty = {
+  asset_type: "one_pager", deal_name: "", target_audience: "", key_points: "", tone: "professional-institutional",
+};
+
 export default function Collateral() {
-  const [form, setForm] = useState({
-    asset_type: "one_pager", deal_name: "", target_audience: "", key_points: "", tone: "professional-institutional",
-  });
+  const { user } = useAuth();
+  const isSellerLike = user?.role === "seller" || user?.role === "admin";
+
+  const [form, setForm] = useState(empty);
   const [loading, setLoading] = useState(false);
   const [current, setCurrent] = useState(null);
   const [list, setList] = useState([]);
+  const [listings, setListings] = useState([]);
+  const [selectedListingId, setSelectedListingId] = useState("");
 
   const load = () => api.get("/collateral").then((r) => setList(r.data));
-  useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    load();
+    if (isSellerLike) {
+      api.get("/listings").then((r) => setListings(r.data)).catch(() => {});
+    }
+  }, [isSellerLike]);
+
+  const prefillFromListing = (listingId) => {
+    setSelectedListingId(listingId);
+    if (!listingId) return;
+    const l = listings.find((x) => x.id === listingId);
+    if (!l) return;
+    const highlightsLine = (l.highlights || []).map((h) => `• ${h}`).join("\n");
+    const financialLine = [
+      l.revenue_usd_m ? `Revenue $${l.revenue_usd_m}M` : null,
+      l.ebitda_usd_m ? `EBITDA $${l.ebitda_usd_m}M` : null,
+      l.asking_price_usd_m ? `Asking $${l.asking_price_usd_m}M` : null,
+      l.employees ? `${l.employees} employees` : null,
+    ].filter(Boolean).join(" · ");
+    setForm({
+      asset_type: form.asset_type,
+      deal_name: l.company_name,
+      target_audience: `Strategic buyers in ${l.sector} (${l.geography})`,
+      key_points: [l.summary, financialLine, highlightsLine].filter(Boolean).join("\n\n"),
+      tone: form.tone,
+    });
+    toast.success(`Prefilled from ${l.company_name}`);
+  };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -48,7 +84,39 @@ export default function Collateral() {
         AI-drafted assets, ready for the deal room.
       </h1>
 
-      <form onSubmit={submit} data-mcp-action="collateral.generate" className="wz-card p-6 mt-8 grid grid-cols-1 md:grid-cols-2 gap-4" data-testid="collateral-form">
+      {isSellerLike && listings.length > 0 && (
+        <div className="wz-card p-5 mt-8 flex flex-wrap items-center gap-4" data-testid="from-listing-bar">
+          <div className="flex items-center gap-2">
+            <Tag size={16} className="text-[var(--wz-amber)]" />
+            <div className="overline">Generate from a listing</div>
+          </div>
+          <select
+            data-testid="listing-picker"
+            className="wz-input max-w-md"
+            value={selectedListingId}
+            onChange={(e) => prefillFromListing(e.target.value)}
+          >
+            <option value="">— pick a listing to prefill —</option>
+            {listings.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.company_name} · {l.sector} · ${l.asking_price_usd_m}M · {l.status}
+              </option>
+            ))}
+          </select>
+          {selectedListingId && (
+            <button
+              type="button"
+              onClick={() => { setForm(empty); setSelectedListingId(""); toast.success("Cleared"); }}
+              data-testid="clear-prefill"
+              className="text-xs font-mono-wz uppercase tracking-widest border border-[var(--wz-border)] px-3 py-1 hover:border-[var(--wz-text-tertiary)] transition-colors"
+            >
+              Clear & enter manually
+            </button>
+          )}
+        </div>
+      )}
+
+      <form onSubmit={submit} data-mcp-action="collateral.generate" className="wz-card p-6 mt-6 grid grid-cols-1 md:grid-cols-2 gap-4" data-testid="collateral-form">
         <label className="block">
           <div className="overline mb-2">Asset type</div>
           <select data-testid="col-type" className="wz-input" value={form.asset_type} onChange={(e) => setForm({ ...form, asset_type: e.target.value })}>
@@ -65,7 +133,7 @@ export default function Collateral() {
         </label>
         <label className="block md:col-span-2">
           <div className="overline mb-2">Key points</div>
-          <textarea data-testid="col-points" className="wz-input" rows={3} required value={form.key_points} onChange={(e) => setForm({ ...form, key_points: e.target.value })} placeholder="Revenue $312M, EBITDA $84M, 38% YoY, dominant in DACH…" />
+          <textarea data-testid="col-points" className="wz-input font-sans" rows={5} required value={form.key_points} onChange={(e) => setForm({ ...form, key_points: e.target.value })} placeholder="Revenue $312M, EBITDA $84M, 38% YoY, dominant in DACH…" />
         </label>
         <div className="md:col-span-2 flex justify-end">
           <button data-testid="col-submit" type="submit" disabled={loading} className="wz-btn wz-btn-gold flex items-center gap-2">
