@@ -4,7 +4,7 @@ import { useAuth } from "../lib/auth";
 import {
   House, MagnifyingGlass, NotePencil, PaperPlaneTilt, Kanban,
   EnvelopeSimple, Plugs, Terminal, ChartLineUp, ListChecks, SignOut,
-  Storefront, Tag, Question, ChartBar, Files,
+  Storefront, Tag, Question, ChartBar, Files, ShieldCheck,
 } from "@phosphor-icons/react";
 import Logo from "./Logo";
 import ThemeToggle from "./ThemeToggle";
@@ -19,6 +19,7 @@ const BUYER_NAV = [
   { to: "/app/rooms", label: "The Vault", icon: Files, group: "Diligence" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Engagement" },
   { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
+  { to: "/app/security", label: "Security", icon: ShieldCheck, group: "Platform" },
   { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp, group: "Platform" },
 ];
 
@@ -32,6 +33,7 @@ const SELLER_NAV = [
   { to: "/app/leads", label: "Lead Nurturing", icon: Kanban, group: "Pipeline" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Pipeline" },
   { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
+  { to: "/app/security", label: "Security", icon: ShieldCheck, group: "Platform" },
   { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp, group: "Platform" },
 ];
 
@@ -47,6 +49,7 @@ const ADMIN_NAV = [
   { to: "/app/leads", label: "Leads", icon: Kanban, group: "Pipeline" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Pipeline" },
   { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
+  { to: "/app/security", label: "Security", icon: ShieldCheck, group: "Platform (Admin)" },
   { to: "/app/mcp", label: "MCP Console", icon: Terminal, group: "Platform (Admin)" },
   { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp, group: "Platform (Admin)" },
   { to: "/app/audit", label: "Audit Logs", icon: ListChecks, group: "Platform (Admin)" },

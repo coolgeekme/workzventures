@@ -27,6 +27,7 @@ import MyListings from "./pages/MyListings";
 import Inquiries from "./pages/Inquiries";
 import DealRooms from "./pages/DealRooms";
 import DealRoomDetail from "./pages/DealRoomDetail";
+import Security from "./pages/Security";
 
 function Protected({ children }) {
   const { user } = useAuth();
@@ -65,6 +66,7 @@ function AppRoutes() {
       <Route path="/app/mcp" element={<AdminOnly><MCPConsole /></AdminOnly>} />
       <Route path="/app/agents" element={<Protected><AgentMonitor /></Protected>} />
       <Route path="/app/composio" element={<Protected><Composio /></Protected>} />
+      <Route path="/app/security" element={<Protected><Security /></Protected>} />
       <Route path="/app/audit" element={<AdminOnly><Audit /></AdminOnly>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

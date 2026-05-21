@@ -37,6 +37,12 @@ except Exception:  # pragma: no cover
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
+from security_service import (
+    sha256_bytes, sha256_hex, canonical_event_hash, compute_content_hash, GENESIS_HASH,
+    stamp_digest, parse_ots, verify_ots, upgrade_ots, find_btc_attestation,
+    encrypt_bytes, decrypt_envelope, encryption_configured,
+)
+
 # -----------------------------------------------------------------------------
 # Bootstrap
 # -----------------------------------------------------------------------------
@@ -254,15 +260,134 @@ async def require_role(user: dict, allowed: List[str]):
 
 
 async def log_audit(actor_id: str, action: str, target: str = "", meta: Optional[dict] = None):
+    """Append an audit entry to a tamper-evident hash chain. Each entry stores
+    (seq, prev_hash, content_hash) so a verifier can re-walk the chain and detect any tampering.
+    """
+    eid = str(uuid.uuid4())
+    ts = now_utc().isoformat()
+    # Atomically grab next seq + prev_hash from the chain head
+    head = await db.audit_chain_head.find_one_and_update(
+        {"_id": "head"},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=True,
+    )
+    seq = head.get("seq", 1) if head else 1
+    prev_hash = head.get("last_hash", GENESIS_HASH) if head else GENESIS_HASH
     doc = {
-        "id": str(uuid.uuid4()),
+        "id": eid,
         "actor_id": actor_id,
         "action": action,
         "target": target,
         "meta": meta or {},
-        "timestamp": now_utc().isoformat(),
+        "timestamp": ts,
+        "seq": seq,
+        "prev_hash": prev_hash,
     }
+    doc["content_hash"] = compute_content_hash(doc)
     await db.audit_logs.insert_one(doc)
+    await db.audit_chain_head.update_one(
+        {"_id": "head"},
+        {"$set": {"last_hash": doc["content_hash"], "last_seq": seq, "last_ts": ts}},
+        upsert=True,
+    )
+    # Best-effort: enqueue an OTS anchor for every Nth entry (chain checkpoint)
+    if seq % 25 == 0:
+        try:
+            asyncio.create_task(_anchor_audit_checkpoint(seq, doc["content_hash"]))
+        except Exception:
+            pass
+
+
+async def _anchor_audit_checkpoint(seq: int, head_hash_hex: str):
+    """Stamp the current chain head with OpenTimestamps."""
+    try:
+        digest = bytes.fromhex(head_hash_hex)
+        ots_bytes = await stamp_digest(digest)
+        await db.ots_proofs.insert_one({
+            "id": str(uuid.uuid4()),
+            "kind": "audit_chain_checkpoint",
+            "target_id": f"seq:{seq}",
+            "owner_user_id": "system",
+            "digest_hex": head_hash_hex,
+            "ots_bytes": ots_bytes,
+            "btc_block_height": None,
+            "status": "pending",
+            "created_at": now_utc().isoformat(),
+            "label": f"Audit chain checkpoint @ seq {seq}",
+        })
+        logger.info(f"OTS anchor stored for audit chain seq {seq}")
+    except Exception as e:
+        logger.warning(f"OTS anchor failed for seq {seq}: {e}")
+
+
+async def notarize_event(
+    kind: str,
+    target_id: str,
+    payload: dict,
+    owner_user_id: str,
+    label: str = "",
+) -> Optional[str]:
+    """
+    Compute SHA-256 of a canonical JSON payload, submit to OpenTimestamps calendars,
+    persist the .ots proof. Returns the proof_id (or None on failure — non-blocking).
+    """
+    try:
+        digest = canonical_event_hash(payload)
+        ots_bytes = await stamp_digest(digest)
+        proof_id = str(uuid.uuid4())
+        await db.ots_proofs.insert_one({
+            "id": proof_id,
+            "kind": kind,
+            "target_id": target_id,
+            "owner_user_id": owner_user_id,
+            "digest_hex": digest.hex(),
+            "payload_preview": {k: v for k, v in payload.items() if not isinstance(v, (bytes, bytearray))},
+            "ots_bytes": ots_bytes,
+            "btc_block_height": None,
+            "status": "pending",
+            "created_at": now_utc().isoformat(),
+            "label": label or kind,
+        })
+        logger.info(f"OTS notarized {kind}/{target_id} → {digest.hex()[:16]}")
+        return proof_id
+    except Exception as e:
+        logger.warning(f"OTS notarize {kind}/{target_id} failed: {e}")
+        return None
+
+
+async def notarize_bytes(
+    kind: str,
+    target_id: str,
+    data: bytes,
+    owner_user_id: str,
+    label: str = "",
+    extra: Optional[dict] = None,
+) -> Optional[str]:
+    """Notarize raw bytes (e.g., file binary) via SHA-256 → OTS."""
+    try:
+        digest = sha256_bytes(data)
+        ots_bytes = await stamp_digest(digest)
+        proof_id = str(uuid.uuid4())
+        await db.ots_proofs.insert_one({
+            "id": proof_id,
+            "kind": kind,
+            "target_id": target_id,
+            "owner_user_id": owner_user_id,
+            "digest_hex": digest.hex(),
+            "size_bytes": len(data),
+            "ots_bytes": ots_bytes,
+            "btc_block_height": None,
+            "status": "pending",
+            "created_at": now_utc().isoformat(),
+            "label": label or kind,
+            "extra": extra or {},
+        })
+        logger.info(f"OTS notarized bytes {kind}/{target_id} → {digest.hex()[:16]}")
+        return proof_id
+    except Exception as e:
+        logger.warning(f"OTS notarize bytes {kind}/{target_id} failed: {e}")
+        return None
 
 
 async def log_agent_activity(
@@ -481,8 +606,51 @@ MCP_ACTIONS = [
 # -----------------------------------------------------------------------------
 # AUTH ROUTES
 # -----------------------------------------------------------------------------
+PASSWORD_MIN_LEN = 8
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCKOUT_MIN = 15
+
+
+def _password_complexity_ok(pw: str) -> Optional[str]:
+    if not pw or len(pw) < PASSWORD_MIN_LEN:
+        return f"Password must be at least {PASSWORD_MIN_LEN} characters"
+    if not any(c.isalpha() for c in pw):
+        return "Password must contain at least one letter"
+    if not any(c.isdigit() for c in pw):
+        return "Password must contain at least one digit"
+    return None
+
+
+async def _check_login_lockout(email: str) -> None:
+    """Raise 429 if email is currently locked out due to recent failed attempts."""
+    cutoff = (now_utc() - timedelta(minutes=LOGIN_LOCKOUT_MIN)).isoformat()
+    fails = await db.login_attempts.count_documents({
+        "email": email.lower(),
+        "ok": False,
+        "ts": {"$gte": cutoff},
+    })
+    if fails >= LOGIN_MAX_FAILURES:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed attempts. Try again in {LOGIN_LOCKOUT_MIN} minutes.",
+        )
+
+
+async def _record_login_attempt(email: str, ok: bool, ip: Optional[str] = None):
+    await db.login_attempts.insert_one({
+        "id": str(uuid.uuid4()),
+        "email": email.lower(),
+        "ok": ok,
+        "ip": ip,
+        "ts": now_utc().isoformat(),
+    })
+
+
 @api_router.post("/auth/register", response_model=TokenResponse)
 async def register(body: RegisterRequest):
+    err = _password_complexity_ok(body.password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     existing = await db.users.find_one({"email": body.email.lower()}, {"_id": 0})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -505,10 +673,15 @@ async def register(body: RegisterRequest):
 
 
 @api_router.post("/auth/login", response_model=TokenResponse)
-async def login(body: LoginRequest):
-    user = await db.users.find_one({"email": body.email.lower()})
+async def login(body: LoginRequest, request: Request):
+    email_norm = body.email.lower()
+    ip = request.client.host if request.client else None
+    await _check_login_lockout(email_norm)
+    user = await db.users.find_one({"email": email_norm})
     if not user or not verify_password(body.password, user["password_hash"]):
+        await _record_login_attempt(email_norm, ok=False, ip=ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    await _record_login_attempt(email_norm, ok=True, ip=ip)
     token = create_token(user["id"], user["role"])
     await log_audit(user["id"], "auth.login", body.email)
     return TokenResponse(token=token, user=UserPublic(**serialize_user(user)))
@@ -719,6 +892,15 @@ async def update_inquiry(iid: str, body: dict, user=Depends(get_current_user)):
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Inquiry not found")
     await log_audit(user["id"], "inquiry.status", iid, {"status": new_status})
+    # Bitcoin-anchored proof of status change
+    if new_status in ("engaged", "passed"):
+        asyncio.create_task(notarize_event(
+            kind="inquiry.status",
+            target_id=iid,
+            payload={"inquiry_id": iid, "status": new_status, "seller_id": user["id"], "ts": now_utc().isoformat()},
+            owner_user_id=user["id"],
+            label=f"Inquiry → {new_status}",
+        ))
     return {"ok": True}
 
 
@@ -1775,6 +1957,21 @@ async def accept_nda(rid: str, body: NDAAccept, user=Depends(get_current_user)):
         }},
     )
     await log_audit(user["id"], "dealroom.nda.accept", rid, {"signed_name": signed_name})
+    # Bitcoin-anchored proof of NDA signature
+    asyncio.create_task(notarize_event(
+        kind="nda.signature",
+        target_id=rid,
+        payload={
+            "vault_id": rid,
+            "buyer_id": user["id"],
+            "seller_id": room.get("seller_id"),
+            "listing_name": room.get("listing_name"),
+            "signed_name": signed_name,
+            "signed_at": now_utc().isoformat(),
+        },
+        owner_user_id=user["id"],
+        label=f"NDA signed by {signed_name}",
+    ))
     return {"ok": True, "signed_name": signed_name}
 
 
@@ -1967,19 +2164,38 @@ async def upload_file_binary(
     file_id = str(uuid.uuid4())
     filename = file.filename or f"upload-{file_id}"
 
-    # Stream into GridFS
+    # SHA-256 the plaintext for OTS notarization (the digest IS the plaintext fingerprint)
+    plaintext_sha256_hex = sha256_hex(data)
+
+    # AES-256-GCM at-rest encryption
+    storage_bytes = data
+    encrypted = False
+    encryption_alg = None
+    if encryption_configured():
+        try:
+            aad = f"{rid}:{file_id}".encode("utf-8")
+            enc = encrypt_bytes(data, associated_data=aad)
+            storage_bytes = enc["envelope"]
+            encrypted = True
+            encryption_alg = enc["alg"]
+        except Exception as e:
+            logger.warning(f"At-rest encryption failed, storing plaintext: {e}")
+
+    # Stream into GridFS (encrypted if available)
     gridfs_id = await gridfs_bucket.upload_from_stream(
         filename,
-        io.BytesIO(data),
+        io.BytesIO(storage_bytes),
         metadata={
             "room_id": rid,
             "file_id": file_id,
             "uploaded_by": user["id"],
             "content_type": file.content_type or "application/octet-stream",
+            "encrypted": encrypted,
+            "encryption_alg": encryption_alg,
         },
     )
 
-    # Extract per-page text
+    # Extract per-page text from PLAINTEXT before discarding
     pages = extract_pages_from_bytes(filename, data)
     flat = pages_to_flat_text(pages)
 
@@ -1991,11 +2207,14 @@ async def upload_file_binary(
         "content_type": file.content_type or "application/octet-stream",
         "size_bytes": len(data),
         "page_count": len(pages),
-        "pages": pages,           # per-page text for citation
-        "content": flat,          # flattened text for legacy compatibility
+        "pages": pages,
+        "content": flat,
         "char_count": len(flat),
         "gridfs_id": str(gridfs_id),
         "storage": "gridfs",
+        "encrypted": encrypted,
+        "encryption_alg": encryption_alg,
+        "sha256_hex": plaintext_sha256_hex,
         "note": note,
         "uploaded_by": user["id"],
         "uploaded_by_role": role,
@@ -2003,7 +2222,20 @@ async def upload_file_binary(
         "matched_request_id": None,
     }
     await db.deal_room_files.insert_one(doc)
-    await log_audit(user["id"], "dealroom.file.upload", rid, {"filename": filename, "folder": folder, "bytes": len(data)})
+    await log_audit(user["id"], "dealroom.file.upload", rid, {
+        "filename": filename, "folder": folder, "bytes": len(data),
+        "sha256": plaintext_sha256_hex, "encrypted": encrypted,
+    })
+
+    # Bitcoin-anchored proof of upload (hash of plaintext)
+    asyncio.create_task(notarize_bytes(
+        kind="vault.file",
+        target_id=file_id,
+        data=data,
+        owner_user_id=user["id"],
+        label=f"Vault file: {filename}",
+        extra={"vault_id": rid, "filename": filename, "size_bytes": len(data)},
+    ))
 
     matched_request_id = None
     if role in ("seller", "admin"):
@@ -2031,6 +2263,22 @@ async def download_file(rid: str, file_id: str, user=Depends(get_current_user)):
         grid_out = await gridfs_bucket.open_download_stream(ObjectId(f["gridfs_id"]))
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"Binary not found: {e}")
+
+    # If file was encrypted at rest, decrypt the full envelope before streaming back
+    if f.get("encrypted"):
+        try:
+            envelope = await grid_out.read()
+            aad = f"{rid}:{file_id}".encode("utf-8")
+            plaintext = decrypt_envelope(envelope, associated_data=aad)
+        except Exception as e:
+            logger.exception("Vault file decryption failed")
+            raise HTTPException(status_code=500, detail=f"Decryption failed: {e}")
+        await log_audit(user["id"], "dealroom.file.download", rid, {"filename": f["filename"], "decrypted": True})
+        return StreamingResponse(
+            io.BytesIO(plaintext),
+            media_type=f.get("content_type") or "application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{f["filename"]}"'},
+        )
 
     async def streamer():
         while True:
@@ -2136,6 +2384,23 @@ Cap to 10 findings. Each excerpt MUST be a verbatim short quote (≤200 chars) d
         duration_ms=duration,
     )
     await log_audit(user["id"], "dealroom.findings.generate", rid, {"count": len(inserted)})
+    # Bitcoin-anchored proof of findings (digest of the sorted findings JSON)
+    asyncio.create_task(notarize_event(
+        kind="vault.findings",
+        target_id=rid,
+        payload={
+            "vault_id": rid,
+            "buyer_id": user["id"],
+            "generated_at": now_utc().isoformat(),
+            "findings": [
+                {"id": d["id"], "severity": d["severity"], "workstream": d["workstream"],
+                 "title": d["title"], "citation": d.get("citation")}
+                for d in inserted
+            ],
+        },
+        owner_user_id=user["id"],
+        label=f"AI findings · {len(inserted)} items",
+    ))
     return {"ok": True, "findings": inserted, "files_analyzed": len(files)}
 
 
@@ -2262,12 +2527,207 @@ async def ask_copilot(rid: str, body: CopilotAsk, user=Depends(get_current_user)
 
 
 # -----------------------------------------------------------------------------
-# AUDIT
+# AUDIT + SECURITY
 # -----------------------------------------------------------------------------
 @api_router.get("/audit/logs")
 async def audit_logs(user=Depends(get_current_user)):
     items = await db.audit_logs.find({}, {"_id": 0}).sort("timestamp", -1).to_list(200)
     return items
+
+
+@api_router.get("/security/audit/verify")
+async def verify_audit_chain(user=Depends(get_current_user)):
+    """
+    Re-walk the audit chain from genesis, recomputing each entry's content hash and
+    asserting prev_hash continuity. Returns the first break point (if any) so the
+    user / regulator can prove the log has not been tampered with.
+    """
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    expected_prev = GENESIS_HASH
+    total = 0
+    broken = None
+    cursor = db.audit_logs.find({}, {"_id": 0}).sort("seq", 1)
+    async for entry in cursor:
+        total += 1
+        if "seq" not in entry or "prev_hash" not in entry or "content_hash" not in entry:
+            # Legacy pre-chain entry — accept but mark as "unverifiable"
+            continue
+        if entry["prev_hash"] != expected_prev:
+            broken = {"seq": entry["seq"], "id": entry["id"], "reason": "prev_hash mismatch"}
+            break
+        recomputed = compute_content_hash(entry)
+        if recomputed != entry["content_hash"]:
+            broken = {"seq": entry["seq"], "id": entry["id"], "reason": "content_hash mismatch"}
+            break
+        expected_prev = entry["content_hash"]
+    head = await db.audit_chain_head.find_one({"_id": "head"}, {"_id": 0}) or {}
+    return {
+        "total_entries": total,
+        "chain_valid": broken is None,
+        "broken_at": broken,
+        "chain_head": head,
+        "verified_at": now_utc().isoformat(),
+    }
+
+
+@api_router.get("/security/proofs")
+async def list_proofs(
+    kind: Optional[str] = None,
+    target_id: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    """List OpenTimestamps proofs visible to the calling user.
+    - admin → all
+    - buyer/seller → proofs they own (own_user_id == self) + proofs they participate in
+      (vault.file / nda.signature / vault.findings where target_id is a deal_room they're in)
+    """
+    q: Dict[str, Any] = {}
+    if kind:
+        q["kind"] = kind
+    if target_id:
+        q["target_id"] = target_id
+
+    if user.get("role") == "admin":
+        proofs = await db.ots_proofs.find(q, {"_id": 0, "ots_bytes": 0}).sort("created_at", -1).to_list(500)
+    else:
+        # Visible scope: events the user authored OR events on a deal_room they participate in
+        my_rooms = await db.deal_rooms.find(
+            {"$or": [{"buyer_id": user["id"]}, {"seller_id": user["id"]}]},
+            {"_id": 0, "id": 1},
+        ).to_list(500)
+        my_room_ids = [r["id"] for r in my_rooms]
+        my_inquiries = await db.inquiries.find(
+            {"$or": [{"buyer_id": user["id"]}, {"seller_id": user["id"]}]},
+            {"_id": 0, "id": 1},
+        ).to_list(500)
+        my_inquiry_ids = [i["id"] for i in my_inquiries]
+        # Find vault files owned by their rooms — pull file ids
+        my_files = await db.deal_room_files.find(
+            {"room_id": {"$in": my_room_ids}},
+            {"_id": 0, "id": 1},
+        ).to_list(2000) if my_room_ids else []
+        my_file_ids = [f["id"] for f in my_files]
+        scope_q = {
+            "$or": [
+                {"owner_user_id": user["id"]},
+                {"kind": "nda.signature", "target_id": {"$in": my_room_ids}},
+                {"kind": "vault.findings", "target_id": {"$in": my_room_ids}},
+                {"kind": "vault.file", "target_id": {"$in": my_file_ids}},
+                {"kind": "inquiry.status", "target_id": {"$in": my_inquiry_ids}},
+            ]
+        }
+        if q:
+            scope_q = {"$and": [scope_q, q]}
+        proofs = await db.ots_proofs.find(scope_q, {"_id": 0, "ots_bytes": 0}).sort("created_at", -1).to_list(500)
+    return proofs
+
+
+@api_router.get("/security/proofs/{proof_id}")
+async def get_proof(proof_id: str, user=Depends(get_current_user)):
+    p = await db.ots_proofs.find_one({"id": proof_id}, {"_id": 0, "ots_bytes": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Proof not found")
+    return p
+
+
+@api_router.get("/security/proofs/{proof_id}/download")
+async def download_proof(proof_id: str, user=Depends(get_current_user)):
+    p = await db.ots_proofs.find_one({"id": proof_id})
+    if not p:
+        raise HTTPException(status_code=404, detail="Proof not found")
+    ots = p.get("ots_bytes")
+    if not ots:
+        raise HTTPException(status_code=404, detail="Proof bytes missing")
+    digest_short = (p.get("digest_hex") or "proof")[:8]
+    return StreamingResponse(
+        io.BytesIO(ots),
+        media_type="application/vnd.opentimestamps",
+        headers={"Content-Disposition": f'attachment; filename="workz-{p.get("kind","proof")}-{digest_short}.ots"'},
+    )
+
+
+@api_router.post("/security/proofs/{proof_id}/upgrade")
+async def upgrade_proof(proof_id: str, user=Depends(get_current_user)):
+    """Attempt to fetch a Bitcoin-anchored extension of a pending OTS proof from
+    its calendar(s). Once a Bitcoin attestation is present, status flips to 'confirmed'."""
+    p = await db.ots_proofs.find_one({"id": proof_id})
+    if not p:
+        raise HTTPException(status_code=404, detail="Proof not found")
+    if not p.get("ots_bytes"):
+        raise HTTPException(status_code=400, detail="No proof bytes")
+    try:
+        result = await upgrade_ots(p["ots_bytes"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"OTS upgrade failed: {e}")
+    update = {"ots_bytes": result["ots_bytes"]}
+    if result.get("btc_block_height"):
+        update["btc_block_height"] = result["btc_block_height"]
+        update["status"] = "confirmed"
+        update["confirmed_at"] = now_utc().isoformat()
+    await db.ots_proofs.update_one({"id": proof_id}, {"$set": update})
+    return {
+        "ok": True,
+        "upgraded": result.get("upgraded", False),
+        "btc_block_height": result.get("btc_block_height"),
+        "status": update.get("status", p.get("status")),
+    }
+
+
+@api_router.post("/security/verify")
+async def verify_uploaded_proof(
+    ots_file: UploadFile = File(...),
+    digest_hex: str = Form(...),
+    user=Depends(get_current_user),
+):
+    """Independent verifier: upload any .ots file + the digest you want to verify and
+    we'll parse the proof, confirm it stamps the given digest, and report any
+    Bitcoin attestation. Anyone can also verify with the open-source `ots verify` CLI."""
+    try:
+        digest = bytes.fromhex(digest_hex.strip())
+    except Exception:
+        raise HTTPException(status_code=400, detail="digest_hex must be hex-encoded")
+    if len(digest) != 32:
+        raise HTTPException(status_code=400, detail="digest must be 32 bytes (SHA-256)")
+    ots_bytes = await ots_file.read()
+    try:
+        result = verify_ots(ots_bytes, digest)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not parse .ots: {e}")
+    return result
+
+
+@api_router.get("/security/posture")
+async def security_posture(user=Depends(get_current_user)):
+    """Public summary of security posture: features enabled, counts, calendar reachability."""
+    pending = await db.ots_proofs.count_documents({"status": "pending"})
+    confirmed = await db.ots_proofs.count_documents({"status": "confirmed"})
+    head = await db.audit_chain_head.find_one({"_id": "head"}, {"_id": 0}) or {}
+    return {
+        "features": {
+            "opentimestamps": True,
+            "at_rest_encryption": encryption_configured(),
+            "encryption_alg": "AES-256-GCM" if encryption_configured() else None,
+            "audit_chain": True,
+            "brute_force_lockout": True,
+            "security_headers": True,
+            "password_complexity": True,
+        },
+        "ots": {
+            "calendars": [
+                "alice.btc.calendar.opentimestamps.org",
+                "bob.btc.calendar.opentimestamps.org",
+                "finney.calendar.eternitywall.com",
+            ],
+            "pending_proofs": pending,
+            "confirmed_proofs": confirmed,
+        },
+        "audit_chain": {
+            "last_seq": head.get("last_seq", 0),
+            "last_hash": head.get("last_hash"),
+            "last_ts": head.get("last_ts"),
+        },
+    }
 
 
 # -----------------------------------------------------------------------------
@@ -2391,6 +2851,19 @@ async def health():
 
 # Register router + middleware
 app.include_router(api_router)
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,

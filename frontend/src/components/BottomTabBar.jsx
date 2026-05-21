@@ -4,7 +4,7 @@ import { useAuth } from "../lib/auth";
 import {
   House, MagnifyingGlass, Storefront, Files, Question, Tag,
   DotsThreeOutline, X, SignOut, ChartBar,
-  NotePencil, PaperPlaneTilt, Kanban, EnvelopeSimple, Plugs, Terminal, ChartLineUp, ListChecks,
+  NotePencil, PaperPlaneTilt, Kanban, EnvelopeSimple, Plugs, Terminal, ChartLineUp, ListChecks, ShieldCheck,
 } from "@phosphor-icons/react";
 
 // 4 pinned tabs per role; 5th tab is always "More"
@@ -30,6 +30,7 @@ const ADMIN_TABS = [
 const MORE_BUYER = [
   { to: "/app/inquiries", label: "My Inquiries", icon: Question },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple },
+  { to: "/app/security", label: "Security", icon: ShieldCheck },
   { to: "/app/composio", label: "Integrations", icon: Plugs },
   { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp },
 ];
@@ -38,6 +39,7 @@ const MORE_SELLER = [
   { to: "/app/outreach", label: "Outreach", icon: PaperPlaneTilt },
   { to: "/app/leads", label: "Lead Nurturing", icon: Kanban },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple },
+  { to: "/app/security", label: "Security", icon: ShieldCheck },
   { to: "/app/composio", label: "Integrations", icon: Plugs },
   { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp },
 ];
@@ -49,6 +51,7 @@ const MORE_ADMIN = [
   { to: "/app/outreach", label: "Outreach", icon: PaperPlaneTilt },
   { to: "/app/leads", label: "Leads", icon: Kanban },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple },
+  { to: "/app/security", label: "Security", icon: ShieldCheck },
   { to: "/app/composio", label: "Integrations", icon: Plugs },
   { to: "/app/mcp", label: "MCP Console", icon: Terminal },
   { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp },
