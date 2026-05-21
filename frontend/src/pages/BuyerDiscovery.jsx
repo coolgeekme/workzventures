@@ -157,9 +157,9 @@ export default function BuyerDiscovery() {
       </h1>
       <p className="text-sm text-[var(--wz-text-secondary)] mt-2 max-w-2xl">
         We mine SEC EDGAR 8-K filings for U.S. companies actively making acquisitions in your
-        sector, then rank each candidate with Claude 4.5 against your listing. High-fit buyers
-        appear as alerts and can be pushed to Lead Nurturing or auto-drafted into an outreach
-        campaign.
+        sector, then rank each candidate with our AI analyst against your listing. High-fit
+        buyers appear as alerts and can be pushed to Lead Nurturing or auto-drafted into an
+        outreach campaign.
       </p>
 
       {/* Listing selector strip */}
