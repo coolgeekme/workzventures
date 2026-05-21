@@ -56,7 +56,7 @@ export default function BuyerAlerts() {
   const unseenCount = alerts.filter((a) => !a.seen).length;
 
   return (
-    <div data-testid="buyer-alerts-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+    <div data-testid="buyer-alerts-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8 max-w-[1600px] mx-auto w-full">
       <div className="overline mb-3" style={{ color: "var(--wz-amber)" }}>Buyer alerts inbox</div>
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium flex items-center gap-3">
@@ -108,7 +108,7 @@ export default function BuyerAlerts() {
             data-testid={`alert-${a.id}`}
             className={`wz-card p-5 flex items-start justify-between gap-4 flex-wrap ${a.seen ? "opacity-70" : ""}`}
           >
-            <div className="flex-1 min-w-[260px]">
+            <div className="flex-1 basis-[260px] min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 {!a.seen && <span className="w-2 h-2 rounded-full bg-[var(--wz-amber)]" />}
                 <h3 className="font-display text-lg tracking-tight">{a.buyer_name}</h3>
@@ -130,7 +130,7 @@ export default function BuyerAlerts() {
                 detected {new Date(a.created_at).toLocaleString()}
               </div>
             </div>
-            <div className="flex flex-col gap-2 min-w-[160px]">
+            <div className="flex flex-col gap-2 w-full sm:w-auto sm:min-w-[180px] sm:max-w-[200px]">
               <Link
                 to={`/app/buyers?listing=${a.listing_id}`}
                 onClick={() => !a.seen && markSeen(a.id)}

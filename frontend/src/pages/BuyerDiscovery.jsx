@@ -177,7 +177,7 @@ export default function BuyerDiscovery() {
   };
 
   return (
-    <div data-testid="buyer-discovery-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+    <div data-testid="buyer-discovery-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8 max-w-[1600px] mx-auto w-full">
       <div className="overline mb-3" style={{ color: "var(--wz-amber)" }}>
         Buyer Discovery · Phase 1
       </div>
@@ -291,7 +291,7 @@ export default function BuyerDiscovery() {
                 className={`wz-card p-5 ${m.status === "dismissed" ? "opacity-50" : ""}`}
               >
                 <div className="flex items-start justify-between gap-4 flex-wrap">
-                  <div className="flex-1 min-w-[280px]">
+                  <div className="flex-1 basis-[260px] min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="font-display text-lg tracking-tight">{m.buyer_name}</h3>
                       <span className={`pill ${SCORE_PILL(m.score)}`}>{m.score}/100</span>
@@ -326,7 +326,7 @@ export default function BuyerDiscovery() {
                     </div>
                   </div>
 
-                  <div className="flex flex-col gap-2 min-w-[160px]">
+                  <div className="flex flex-col gap-2 w-full sm:w-auto sm:min-w-[180px] sm:max-w-[200px]">
                     <button
                       onClick={() => {
                         if (openContactsFor === m.id) { setOpenContactsFor(null); return; }
