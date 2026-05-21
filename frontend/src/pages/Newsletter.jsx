@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { EnvelopeSimple, CheckCircle, PaperPlaneTilt, Megaphone, Trash } from "@phosphor-icons/react";
+import { EnvelopeSimple, CheckCircle, PaperPlaneTilt, Megaphone, Trash, UsersThree, PencilSimple, X } from "@phosphor-icons/react";
 
 const COVER = "https://customer-assets.emergentagent.com/job_buyer-intel-lab/artifacts/mtl2u4cl_eb9c42c75e492db9ec952105c8ad0f0d.png";
 const INTERESTS = ["SaaS", "HealthTech", "Industrial", "FinServ", "ClimateTech", "Consumer", "EMEA", "NA", "APAC"];
@@ -249,9 +249,12 @@ function SellerBroadcast() {
   const [topic, setTopic] = useState("");
   const [loading, setLoading] = useState(false);
   const [optedInCount, setOptedInCount] = useState(null);
+  const [candidates, setCandidates] = useState([]);
+  const [editingRecipientsFor, setEditingRecipientsFor] = useState(null); // newsletter id
 
   const load = () => Promise.all([
     api.get("/newsletter").then((r) => setList(r.data.filter((n) => n.kind !== "personal"))),
+    api.get("/newsletter/recipient-candidates").then((r) => setCandidates(r.data || [])).catch(() => {}),
   ]);
 
   useEffect(() => { load(); }, []);
@@ -279,8 +282,23 @@ function SellerBroadcast() {
   const dispatch = async (id) => {
     const r = await api.post(`/newsletter/${id}/dispatch`);
     setOptedInCount(r.data.recipients);
-    toast.success(`Broadcast to ${r.data.recipients} opted-in buyers (MOCKED)`);
+    toast.success(`Broadcast to ${r.data.recipients} ${r.data.note?.includes("hand-picked") ? "hand-picked" : "opted-in"} buyers (MOCKED)`);
     load();
+  };
+
+  const saveRecipients = async (id, recipient_ids) => {
+    try {
+      await api.patch(`/newsletter/${id}`, { recipient_ids });
+      toast.success(
+        recipient_ids.length === 0
+          ? "Cleared — will broadcast to all opted-in buyers"
+          : `Saved ${recipient_ids.length} recipients`,
+      );
+      setEditingRecipientsFor(null);
+      load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Save failed");
+    }
   };
 
   return (
@@ -384,6 +402,23 @@ function SellerBroadcast() {
                     </div>
                   )}
 
+                  {/* Recipient picker — only on draft/approved broadcasts */}
+                  {(n.status === "draft" || n.status === "approved") && (
+                    <RecipientEditor
+                      newsletter={n}
+                      candidates={candidates}
+                      open={editingRecipientsFor === n.id}
+                      onOpen={() => setEditingRecipientsFor(n.id)}
+                      onCancel={() => setEditingRecipientsFor(null)}
+                      onSave={(ids) => saveRecipients(n.id, ids)}
+                    />
+                  )}
+                  {n.status === "dispatched" && Array.isArray(n.recipient_ids) && n.recipient_ids.length > 0 && (
+                    <div className="mt-4 text-xs text-[var(--wz-text-secondary)] flex items-center gap-2">
+                      <UsersThree size={12} /> Sent to {n.recipient_ids.length} hand-picked recipient{n.recipient_ids.length === 1 ? "" : "s"}.
+                    </div>
+                  )}
+
                   <div className="mt-5 flex gap-3 items-center flex-wrap">
                     {n.status === "draft" && (
                       <button onClick={() => approve(n.id)} data-testid={`approve-${n.id}`} className="wz-btn-ghost wz-btn flex items-center gap-2 text-sm">
@@ -411,6 +446,160 @@ function SellerBroadcast() {
             No broadcasts yet. Draft your first issue above.
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ----------------------------------------------------------------------------
+ * RecipientEditor — inline picker for who gets a broadcast
+ * -------------------------------------------------------------------------- */
+function RecipientEditor({ newsletter, candidates, open, onOpen, onCancel, onSave }) {
+  const initial = newsletter.recipient_ids || [];
+  const [selected, setSelected] = useState(initial);
+  const [query, setQuery] = useState("");
+
+  useEffect(() => { setSelected(newsletter.recipient_ids || []); }, [newsletter.recipient_ids, open]);
+
+  const filtered = candidates.filter((c) => {
+    if (!query) return true;
+    const q = query.toLowerCase();
+    return (
+      (c.name || "").toLowerCase().includes(q) ||
+      (c.email || "").toLowerCase().includes(q) ||
+      (c.organization || "").toLowerCase().includes(q) ||
+      (c.interests || []).join(",").toLowerCase().includes(q)
+    );
+  });
+
+  const toggle = (id) => {
+    setSelected((arr) => (arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id]));
+  };
+
+  if (!open) {
+    const count = initial.length;
+    return (
+      <div className="mt-4 flex items-center gap-3 text-xs text-[var(--wz-text-secondary)] flex-wrap" data-testid={`recipient-summary-${newsletter.id}`}>
+        <UsersThree size={13} />
+        {count === 0 ? (
+          <span>Will send to <b>all opted-in buyers</b> at dispatch.</span>
+        ) : (
+          <span><b>{count}</b> hand-picked recipient{count === 1 ? "" : "s"} selected.</span>
+        )}
+        <button
+          onClick={onOpen}
+          data-testid={`edit-recipients-${newsletter.id}`}
+          className="inline-flex items-center gap-1 underline hover:text-[var(--wz-text)]"
+        >
+          <PencilSimple size={11} /> Edit recipients
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-4 border border-[var(--wz-border)] rounded-sm p-4" data-testid={`recipient-editor-${newsletter.id}`}>
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div className="overline">Pick recipients · {selected.length}/{candidates.length} selected</div>
+        <button
+          onClick={onCancel}
+          aria-label="Close editor"
+          data-testid={`recipient-editor-close-${newsletter.id}`}
+          className="text-[var(--wz-text-tertiary)] hover:text-[var(--wz-text)]"
+        >
+          <X size={14} />
+        </button>
+      </div>
+
+      <div className="flex gap-2 mb-3 flex-wrap">
+        <input
+          placeholder="Filter by name, email, org, interest"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className="wz-input flex-1 text-sm"
+          data-testid={`recipient-filter-${newsletter.id}`}
+        />
+        <button
+          onClick={() => setSelected(filtered.map((c) => c.id))}
+          data-testid={`recipient-select-all-${newsletter.id}`}
+          className="wz-btn-ghost wz-btn text-xs"
+        >
+          Select all{query ? " filtered" : ""}
+        </button>
+        <button
+          onClick={() => setSelected([])}
+          data-testid={`recipient-clear-${newsletter.id}`}
+          className="wz-btn-ghost wz-btn text-xs"
+        >
+          Clear
+        </button>
+      </div>
+
+      <div className="max-h-56 overflow-y-auto border border-[var(--wz-border)] divide-y divide-[var(--wz-border)]">
+        {filtered.length === 0 && (
+          <div className="p-4 text-xs text-[var(--wz-text-tertiary)] text-center">
+            {candidates.length === 0
+              ? "No opted-in buyers yet — they need to enable digests in their Newsletter page."
+              : "No matches for your filter."}
+          </div>
+        )}
+        {filtered.map((c) => {
+          const checked = selected.includes(c.id);
+          return (
+            <label
+              key={c.id}
+              data-testid={`recipient-row-${c.id}`}
+              className={`flex items-start gap-3 p-3 cursor-pointer hover:bg-[var(--wz-surface)] ${
+                checked ? "bg-[var(--wz-surface-hover)]" : ""
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={() => toggle(c.id)}
+                className="mt-0.5"
+                data-testid={`recipient-toggle-${c.id}`}
+              />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium truncate">{c.name}</div>
+                <div className="text-xs text-[var(--wz-text-secondary)] truncate">
+                  {c.email}{c.organization ? ` · ${c.organization}` : ""}
+                </div>
+                {(c.interests || []).length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {(c.interests || []).slice(0, 4).map((i) => (
+                      <span key={i} className="text-[10px] font-mono-wz px-1.5 py-0.5 border border-[var(--wz-border)]">
+                        {i}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </label>
+          );
+        })}
+      </div>
+
+      <div className="mt-3 flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-xs text-[var(--wz-text-tertiary)]">
+          Leave empty to broadcast to all opted-in buyers.
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={onCancel}
+            data-testid={`recipient-cancel-${newsletter.id}`}
+            className="wz-btn-ghost wz-btn text-xs"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onSave(selected)}
+            data-testid={`recipient-save-${newsletter.id}`}
+            className="wz-btn wz-btn-gold text-xs"
+          >
+            Save recipients
+          </button>
+        </div>
       </div>
     </div>
   );

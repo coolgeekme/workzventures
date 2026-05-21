@@ -28,6 +28,8 @@ import Inquiries from "./pages/Inquiries";
 import DealRooms from "./pages/DealRooms";
 import DealRoomDetail from "./pages/DealRoomDetail";
 import Security from "./pages/Security";
+import BuyerDiscovery from "./pages/BuyerDiscovery";
+import BuyerAlerts from "./pages/BuyerAlerts";
 
 function Protected({ children }) {
   const { user } = useAuth();
@@ -67,6 +69,8 @@ function AppRoutes() {
       <Route path="/app/agents" element={<Protected><AgentMonitor /></Protected>} />
       <Route path="/app/composio" element={<Protected><Composio /></Protected>} />
       <Route path="/app/security" element={<Protected><Security /></Protected>} />
+      <Route path="/app/buyers" element={<Protected><BuyerDiscovery /></Protected>} />
+      <Route path="/app/buyer-alerts" element={<Protected><BuyerAlerts /></Protected>} />
       <Route path="/app/audit" element={<AdminOnly><Audit /></AdminOnly>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

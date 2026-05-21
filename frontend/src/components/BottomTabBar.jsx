@@ -5,6 +5,7 @@ import {
   House, MagnifyingGlass, Storefront, Files, Question, Tag,
   DotsThreeOutline, X, SignOut, ChartBar,
   NotePencil, PaperPlaneTilt, Kanban, EnvelopeSimple, Plugs, Terminal, ChartLineUp, ListChecks, ShieldCheck,
+  Crosshair, Bell,
 } from "@phosphor-icons/react";
 
 // 4 pinned tabs per role; 5th tab is always "More"
@@ -35,6 +36,8 @@ const MORE_BUYER = [
   { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp },
 ];
 const MORE_SELLER = [
+  { to: "/app/buyers", label: "Buyer Discovery", icon: Crosshair },
+  { to: "/app/buyer-alerts", label: "Buyer Alerts", icon: Bell },
   { to: "/app/collateral", label: "Collateral", icon: NotePencil },
   { to: "/app/outreach", label: "Outreach", icon: PaperPlaneTilt },
   { to: "/app/leads", label: "Lead Nurturing", icon: Kanban },
@@ -47,6 +50,8 @@ const MORE_ADMIN = [
   { to: "/app/research", label: "Research Hub", icon: MagnifyingGlass },
   { to: "/app/marketplace", label: "Marketplace", icon: Storefront },
   { to: "/app/listings", label: "Listings", icon: Tag },
+  { to: "/app/buyers", label: "Buyer Discovery", icon: Crosshair },
+  { to: "/app/buyer-alerts", label: "Buyer Alerts", icon: Bell },
   { to: "/app/collateral", label: "Collateral", icon: NotePencil },
   { to: "/app/outreach", label: "Outreach", icon: PaperPlaneTilt },
   { to: "/app/leads", label: "Leads", icon: Kanban },

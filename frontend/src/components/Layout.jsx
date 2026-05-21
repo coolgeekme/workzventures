@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
+import { api } from "../lib/api";
 import {
   House, MagnifyingGlass, NotePencil, PaperPlaneTilt, Kanban,
   EnvelopeSimple, Plugs, Terminal, ChartLineUp, ListChecks, SignOut,
-  Storefront, Tag, Question, ChartBar, Files, ShieldCheck,
+  Storefront, Tag, Question, ChartBar, Files, ShieldCheck, Crosshair, Bell,
 } from "@phosphor-icons/react";
 import Logo from "./Logo";
 import ThemeToggle from "./ThemeToggle";
@@ -27,8 +28,10 @@ const SELLER_NAV = [
   { to: "/app/dashboard", label: "Dashboard", icon: House, group: "Core" },
   { to: "/app/listings", label: "My Listings", icon: Tag, group: "Deal Marketing" },
   { to: "/app/collateral", label: "Collateral", icon: NotePencil, group: "Deal Marketing" },
+  { to: "/app/buyers", label: "Buyer Discovery", icon: Crosshair, group: "Deal Marketing" },
   { to: "/app/outreach", label: "Outreach", icon: PaperPlaneTilt, group: "Deal Marketing" },
   { to: "/app/inquiries", label: "Inbound Inquiries", icon: Question, group: "Pipeline" },
+  { to: "/app/buyer-alerts", label: "Buyer Alerts", icon: Bell, group: "Pipeline", badgeKey: "buyer_alerts" },
   { to: "/app/rooms", label: "The Vault", icon: Files, group: "Pipeline" },
   { to: "/app/leads", label: "Lead Nurturing", icon: Kanban, group: "Pipeline" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Pipeline" },
@@ -43,8 +46,10 @@ const ADMIN_NAV = [
   { to: "/app/marketplace", label: "Marketplace", icon: Storefront, group: "Buyer Tools" },
   { to: "/app/listings", label: "Listings", icon: Tag, group: "Seller Tools" },
   { to: "/app/collateral", label: "Collateral", icon: NotePencil, group: "Seller Tools" },
+  { to: "/app/buyers", label: "Buyer Discovery", icon: Crosshair, group: "Seller Tools" },
   { to: "/app/outreach", label: "Outreach", icon: PaperPlaneTilt, group: "Seller Tools" },
   { to: "/app/inquiries", label: "Inquiries", icon: Question, group: "Pipeline" },
+  { to: "/app/buyer-alerts", label: "Buyer Alerts", icon: Bell, group: "Pipeline", badgeKey: "buyer_alerts" },
   { to: "/app/rooms", label: "The Vault", icon: Files, group: "Pipeline" },
   { to: "/app/leads", label: "Leads", icon: Kanban, group: "Pipeline" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Pipeline" },
@@ -66,11 +71,26 @@ export default function Layout({ children }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [time, setTime] = useState(new Date());
+  const [badges, setBadges] = useState({ buyer_alerts: 0 });
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
+
+  useEffect(() => {
+    if (!user || !(user.role === "seller" || user.role === "admin")) return;
+    let cancelled = false;
+    const fetchCounts = async () => {
+      try {
+        const r = await api.get("/buyer-alerts/count");
+        if (!cancelled) setBadges((b) => ({ ...b, buyer_alerts: r.data?.unseen || 0 }));
+      } catch { /* silent */ }
+    };
+    fetchCounts();
+    const id = setInterval(fetchCounts, 60_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [user, location.pathname]);
 
   const NAV = navFor(user?.role);
   const groups = [...new Set(NAV.map((n) => n.group))];
@@ -101,6 +121,7 @@ export default function Layout({ children }) {
               <div className="space-y-px">
                 {NAV.filter((n) => n.group === g).map((n) => {
                   const Icon = n.icon;
+                  const badge = n.badgeKey ? badges[n.badgeKey] : 0;
                   return (
                     <NavLink
                       key={n.to}
@@ -115,7 +136,15 @@ export default function Layout({ children }) {
                       }
                     >
                       <Icon size={16} weight="regular" />
-                      <span>{n.label}</span>
+                      <span className="flex-1">{n.label}</span>
+                      {badge > 0 && (
+                        <span
+                          data-testid={`badge-${n.label.toLowerCase().replace(/\s+/g, "-")}`}
+                          className="text-[10px] font-mono-wz px-1.5 py-0.5 rounded-sm bg-[var(--wz-amber)] text-[#1a1a19]"
+                        >
+                          {badge > 99 ? "99+" : badge}
+                        </span>
+                      )}
                     </NavLink>
                   );
                 })}

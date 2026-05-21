@@ -1463,24 +1463,35 @@ async def approve_newsletter(nid: str, user=Depends(get_current_user)):
 @api_router.post("/newsletter/{nid}/dispatch")
 async def dispatch_newsletter(nid: str, user=Depends(get_current_user)):
     """MOCKED email dispatch (Resend integration mocked per user choice).
-    Broadcast → opted-in buyers count. Personal → already delivered (recipients=1)."""
+    Broadcast → opted-in buyers count, or hand-picked recipient_ids if set.
+    Personal → already delivered (recipients=1)."""
     nl = await db.newsletters.find_one({"id": nid, "user_id": user["id"]}, {"_id": 0})
     if not nl:
         raise HTTPException(status_code=404, detail="Newsletter not found")
     if nl.get("kind") == "personal":
         return {"ok": True, "recipients": 1, "note": "personal digest already delivered"}
-    opted_in = await db.users.count_documents({"newsletter_opt_in": True, "role": "buyer"})
+    picked = nl.get("recipient_ids") or []
+    if picked:
+        # only count IDs that are opted-in buyers (defense-in-depth)
+        recipients = await db.users.count_documents(
+            {"id": {"$in": picked}, "role": "buyer", "newsletter_opt_in": True}
+        )
+        scope_note = f"hand-picked ({len(picked)} selected, {recipients} eligible opted-in)"
+    else:
+        recipients = await db.users.count_documents({"newsletter_opt_in": True, "role": "buyer"})
+        scope_note = "broadcast to all opted-in buyers"
     await db.newsletters.update_one(
         {"id": nid},
         {"$set": {
             "status": "dispatched",
             "dispatched_at": now_utc().isoformat(),
-            "recipients": opted_in,
+            "recipients": recipients,
+            "dispatch_scope": scope_note,
         }},
     )
-    await log_audit(user["id"], "newsletter.dispatch", nid, {"recipients": opted_in})
+    await log_audit(user["id"], "newsletter.dispatch", nid, {"recipients": recipients, "scope": scope_note})
     await log_agent_activity("newsletter-agent", f"dispatch:{nid}", "completed", user_id=user["id"])
-    return {"ok": True, "recipients": opted_in, "note": "MOCKED email dispatch (Resend not wired)"}
+    return {"ok": True, "recipients": recipients, "note": f"MOCKED email dispatch · {scope_note}"}
 
 
 # -----------------------------------------------------------------------------
@@ -2966,6 +2977,18 @@ async def edit_newsletter(nid: str, body: NewsletterEdit, user=Depends(get_curre
     return nl
 
 
+@api_router.get("/newsletter/recipient-candidates")
+async def newsletter_recipient_candidates(user=Depends(get_current_user)):
+    """Return opted-in buyer accounts a seller can hand-pick into a broadcast."""
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Seller/admin only")
+    cands = await db.users.find(
+        {"role": "buyer", "newsletter_opt_in": True},
+        {"_id": 0, "id": 1, "name": 1, "email": 1, "organization": 1, "interests": 1},
+    ).sort("name", 1).to_list(500)
+    return cands
+
+
 @api_router.delete("/newsletter/{nid}")
 async def delete_newsletter(nid: str, user=Depends(get_current_user)):
     nl = await db.newsletters.find_one({"id": nid, "user_id": user["id"]}, {"_id": 0})
@@ -3309,6 +3332,405 @@ async def send_collateral_to_inquiry(cid: str, body: SendToInquiry, user=Depends
 
 
 # -----------------------------------------------------------------------------
+# BUYER DISCOVERY · Phase 1 (SEC EDGAR + Companies House [stubbed] + Claude)
+# -----------------------------------------------------------------------------
+from buyer_discovery import gather_candidates, rank_with_claude  # noqa: E402
+
+BUYER_DISCOVERY_RESCAN_HOURS = int(os.environ.get("BUYER_DISCOVERY_RESCAN_HOURS", "24"))
+BUYER_MATCH_ALERT_THRESHOLD = 70  # only score >= 70 produces a new-buyer alert
+
+
+class BuyerMatchAction(BaseModel):
+    status: Optional[Literal["new", "saved", "dismissed", "contacted"]] = None
+
+
+def _serialize_match(m: Dict[str, Any]) -> Dict[str, Any]:
+    m.pop("_id", None)
+    return m
+
+
+async def _listing_for_seller(lid: str, user: dict) -> Dict[str, Any]:
+    query = {"id": lid}
+    if user.get("role") != "admin":
+        query["seller_id"] = user["id"]
+    listing = await db.listings.find_one(query, {"_id": 0})
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    return listing
+
+
+async def _run_buyer_scan(listing: Dict[str, Any], *, triggered_by: str) -> Dict[str, Any]:
+    """Run discovery for one listing. Inserts new matches + alerts for high-score buyers."""
+    lid = listing["id"]
+    seller_id = listing.get("seller_id")
+    started = now_utc()
+    candidates = await gather_candidates({
+        "id": lid,
+        "company_name": listing.get("company_name"),
+        "sector": listing.get("sector"),
+        "revenue_band": (
+            f"{int(listing.get('revenue_usd_m'))}M USD" if listing.get("revenue_usd_m") else None
+        ),
+        "ebitda_band": (
+            f"{int(listing.get('ebitda_usd_m'))}M USD" if listing.get("ebitda_usd_m") else None
+        ),
+        "geography": listing.get("geography"),
+        "deal_type": "majority sale",
+        "tagline": listing.get("headline"),
+    })
+    ranked = await rank_with_claude(call_claude, listing, candidates) if candidates else []
+    # Filter very-weak matches
+    ranked = [r for r in ranked if int(r.get("score", 0)) >= 35]
+
+    new_alerts = 0
+    inserted = 0
+    for cand in ranked:
+        # Dedupe per (listing_id, buyer_name) — refresh score if existing, otherwise insert
+        key = {"listing_id": lid, "buyer_name": cand.get("buyer_name")}
+        existing = await db.buyer_matches.find_one(key, {"_id": 0})
+        if existing:
+            await db.buyer_matches.update_one(
+                {"id": existing["id"]},
+                {"$set": {
+                    "score": cand.get("score"),
+                    "rationale": cand.get("rationale"),
+                    "fit": cand.get("fit"),
+                    "snippet": cand.get("snippet"),
+                    "filing_url": cand.get("filing_url"),
+                    "filed_at": cand.get("filed_at"),
+                    "last_seen_at": now_utc().isoformat(),
+                }},
+            )
+            continue
+        mid = str(uuid.uuid4())
+        doc = {
+            "id": mid,
+            "listing_id": lid,
+            "seller_id": seller_id,
+            "buyer_name": cand.get("buyer_name"),
+            "buyer_cik": cand.get("buyer_cik"),
+            "country": cand.get("country"),
+            "source": cand.get("source"),
+            "form": cand.get("form"),
+            "filing_url": cand.get("filing_url"),
+            "filed_at": cand.get("filed_at"),
+            "snippet": cand.get("snippet"),
+            "tickers": cand.get("tickers") or [],
+            "score": int(cand.get("score", 0)),
+            "rationale": cand.get("rationale"),
+            "fit": cand.get("fit") or {},
+            "status": "new",
+            "created_at": now_utc().isoformat(),
+            "last_seen_at": now_utc().isoformat(),
+        }
+        await db.buyer_matches.insert_one(doc)
+        inserted += 1
+        if doc["score"] >= BUYER_MATCH_ALERT_THRESHOLD:
+            await db.buyer_alerts.insert_one({
+                "id": str(uuid.uuid4()),
+                "seller_id": seller_id,
+                "listing_id": lid,
+                "listing_company": listing.get("company_name"),
+                "match_id": mid,
+                "buyer_name": doc["buyer_name"],
+                "score": doc["score"],
+                "rationale": doc["rationale"],
+                "source": doc["source"],
+                "country": doc["country"],
+                "seen": False,
+                "created_at": now_utc().isoformat(),
+            })
+            new_alerts += 1
+
+    duration_ms = int((now_utc() - started).total_seconds() * 1000)
+    await db.buyer_scans.update_one(
+        {"listing_id": lid},
+        {"$set": {
+            "listing_id": lid,
+            "seller_id": seller_id,
+            "last_scanned_at": now_utc().isoformat(),
+            "last_triggered_by": triggered_by,
+            "last_candidate_count": len(candidates),
+            "last_ranked_count": len(ranked),
+            "last_inserted": inserted,
+            "last_new_alerts": new_alerts,
+            "last_duration_ms": duration_ms,
+        }},
+        upsert=True,
+    )
+    await log_agent_activity("buyer-discovery-agent", f"scan:{listing.get('company_name')}", "completed",
+                             user_id=seller_id, duration_ms=duration_ms)
+    await log_audit(seller_id or "system", "buyer_discovery.scan", lid,
+                    {"candidates": len(candidates), "ranked": len(ranked),
+                     "inserted": inserted, "alerts": new_alerts, "trigger": triggered_by})
+    return {
+        "listing_id": lid,
+        "candidate_count": len(candidates),
+        "ranked_count": len(ranked),
+        "inserted": inserted,
+        "new_alerts": new_alerts,
+        "duration_ms": duration_ms,
+    }
+
+
+@api_router.post("/buyer-discovery/listings/{lid}/scan")
+async def trigger_buyer_scan(lid: str, user=Depends(get_current_user)):
+    """Sellers (or admins) — run a buyer discovery scan now for one of their listings."""
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    listing = await _listing_for_seller(lid, user)
+    result = await _run_buyer_scan(listing, triggered_by=f"user:{user['id']}")
+    return result
+
+
+@api_router.get("/buyer-discovery/listings/{lid}/matches")
+async def list_buyer_matches(lid: str, user=Depends(get_current_user)):
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    listing = await _listing_for_seller(lid, user)
+    matches = await db.buyer_matches.find(
+        {"listing_id": lid, "deleted_at": {"$exists": False}},
+        {"_id": 0},
+    ).sort("score", -1).to_list(100)
+    last_scan = await db.buyer_scans.find_one({"listing_id": lid}, {"_id": 0})
+    return {"listing": {"id": listing["id"], "company_name": listing.get("company_name"),
+                        "sector": listing.get("sector"), "geography": listing.get("geography")},
+            "last_scan": last_scan,
+            "matches": matches}
+
+
+@api_router.get("/buyer-discovery/overview")
+async def buyer_discovery_overview(user=Depends(get_current_user)):
+    """Seller cockpit — per-listing summary (count, top score, last scan)."""
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    seller_filter = {} if user.get("role") == "admin" else {"seller_id": user["id"]}
+    listings = await db.listings.find(seller_filter, {"_id": 0}).to_list(200)
+    out = []
+    for li in listings:
+        lid = li["id"]
+        pipeline_count = await db.buyer_matches.count_documents({"listing_id": lid, "deleted_at": {"$exists": False}})
+        top = await db.buyer_matches.find_one(
+            {"listing_id": lid, "deleted_at": {"$exists": False}},
+            {"_id": 0},
+            sort=[("score", -1)],
+        )
+        last_scan = await db.buyer_scans.find_one({"listing_id": lid}, {"_id": 0})
+        out.append({
+            "listing_id": lid,
+            "company_name": li.get("company_name"),
+            "sector": li.get("sector"),
+            "geography": li.get("geography"),
+            "status": li.get("status"),
+            "match_count": pipeline_count,
+            "top_score": (top or {}).get("score"),
+            "top_buyer": (top or {}).get("buyer_name"),
+            "last_scanned_at": (last_scan or {}).get("last_scanned_at"),
+        })
+    return out
+
+
+@api_router.patch("/buyer-discovery/matches/{mid}")
+async def update_buyer_match(mid: str, body: BuyerMatchAction, user=Depends(get_current_user)):
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
+    if not match:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if user.get("role") != "admin" and match.get("seller_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Not your match")
+    update: Dict[str, Any] = {}
+    if body.status is not None:
+        update["status"] = body.status
+    if not update:
+        return match
+    await db.buyer_matches.update_one({"id": mid}, {"$set": update})
+    await log_audit(user["id"], "buyer_discovery.match.update", mid, update)
+    match.update(update)
+    return match
+
+
+@api_router.delete("/buyer-discovery/matches/{mid}")
+async def delete_buyer_match(mid: str, user=Depends(get_current_user)):
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
+    if not match:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if user.get("role") != "admin" and match.get("seller_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Not your match")
+    await db.buyer_matches.update_one({"id": mid},
+                                      {"$set": {"deleted_at": now_utc().isoformat(),
+                                                "status": "dismissed"}})
+    await log_audit(user["id"], "buyer_discovery.match.delete", mid)
+    return {"ok": True}
+
+
+@api_router.post("/buyer-discovery/matches/{mid}/add-to-leads")
+async def add_match_to_leads(mid: str, user=Depends(get_current_user)):
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
+    if not match or (user.get("role") != "admin" and match.get("seller_id") != user["id"]):
+        raise HTTPException(status_code=404, detail="Match not found")
+    listing = await db.listings.find_one({"id": match.get("listing_id")}, {"_id": 0}) or {}
+    lead = {
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "name": f"Corp Dev · {match.get('buyer_name')}",
+        "company": match.get("buyer_name"),
+        "title": "Corporate Development",
+        "email": None,
+        "source": "buyer-discovery",
+        "stage": "new",
+        "score": int(match.get("score", 50)),
+        "buyer_match_id": mid,
+        "listing_id": match.get("listing_id"),
+        "listing_company": listing.get("company_name"),
+        "notes": match.get("rationale"),
+        "filing_url": match.get("filing_url"),
+        "country": match.get("country"),
+        "created_at": now_utc().isoformat(),
+    }
+    await db.leads.insert_one(lead)
+    await db.buyer_matches.update_one({"id": mid}, {"$set": {"status": "saved",
+                                                              "lead_id": lead["id"]}})
+    await log_audit(user["id"], "buyer_discovery.match.to_lead", mid, {"lead_id": lead["id"]})
+    lead.pop("_id", None)
+    return lead
+
+
+@api_router.post("/buyer-discovery/matches/{mid}/generate-outreach")
+async def generate_outreach_for_match(mid: str, user=Depends(get_current_user)):
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
+    if not match or (user.get("role") != "admin" and match.get("seller_id") != user["id"]):
+        raise HTTPException(status_code=404, detail="Match not found")
+    listing = await db.listings.find_one({"id": match.get("listing_id")}, {"_id": 0}) or {}
+
+    persona = f"Head of M&A / Corp Dev at {match.get('buyer_name')} ({match.get('country','US')})"
+    brief = (
+        f"Reach out about a confidential opportunity to acquire {listing.get('company_name','our portfolio company')} "
+        f"in the {listing.get('sector','—')} sector ({listing.get('geography','—')}). "
+        f"They recently signaled M&A appetite: {match.get('rationale','')}. "
+        f"Source filing: {match.get('filing_url','')}."
+    )
+    req = OutreachCampaignRequest(
+        name=f"{listing.get('company_name','Listing')} → {match.get('buyer_name')}",
+        target_persona=persona,
+        channel="linkedin",
+        audience_size=1,
+        message_brief=brief,
+    )
+    campaign = await create_campaign(req, user)
+    await db.buyer_matches.update_one({"id": mid}, {"$set": {"status": "contacted",
+                                                              "campaign_id": campaign["id"]}})
+    await log_audit(user["id"], "buyer_discovery.match.outreach", mid, {"campaign_id": campaign["id"]})
+    return campaign
+
+
+@api_router.get("/buyer-alerts")
+async def list_buyer_alerts(unseen_only: bool = False, user=Depends(get_current_user)):
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Buyer alerts are seller/admin only")
+    q: Dict[str, Any] = {"deleted_at": {"$exists": False}}
+    if user.get("role") != "admin":
+        q["seller_id"] = user["id"]
+    if unseen_only:
+        q["seen"] = False
+    items = await db.buyer_alerts.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return items
+
+
+@api_router.get("/buyer-alerts/count")
+async def buyer_alerts_count(user=Depends(get_current_user)):
+    if user.get("role") not in ("seller", "admin"):
+        return {"unseen": 0}
+    q: Dict[str, Any] = {"seen": False, "deleted_at": {"$exists": False}}
+    if user.get("role") != "admin":
+        q["seller_id"] = user["id"]
+    n = await db.buyer_alerts.count_documents(q)
+    return {"unseen": n}
+
+
+@api_router.patch("/buyer-alerts/{aid}/seen")
+async def mark_buyer_alert_seen(aid: str, user=Depends(get_current_user)):
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Buyer alerts are seller/admin only")
+    q = {"id": aid}
+    if user.get("role") != "admin":
+        q["seller_id"] = user["id"]
+    res = await db.buyer_alerts.update_one(q, {"$set": {"seen": True, "seen_at": now_utc().isoformat()}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return {"ok": True}
+
+
+@api_router.post("/buyer-alerts/mark-all-seen")
+async def mark_all_buyer_alerts_seen(user=Depends(get_current_user)):
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Buyer alerts are seller/admin only")
+    q: Dict[str, Any] = {"seen": False}
+    if user.get("role") != "admin":
+        q["seller_id"] = user["id"]
+    res = await db.buyer_alerts.update_many(q, {"$set": {"seen": True, "seen_at": now_utc().isoformat()}})
+    return {"ok": True, "updated": res.modified_count}
+
+
+@api_router.delete("/buyer-alerts/{aid}")
+async def delete_buyer_alert(aid: str, user=Depends(get_current_user)):
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Buyer alerts are seller/admin only")
+    q = {"id": aid}
+    if user.get("role") != "admin":
+        q["seller_id"] = user["id"]
+    res = await db.buyer_alerts.update_one(q, {"$set": {"deleted_at": now_utc().isoformat()}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return {"ok": True}
+
+
+# ---- Background rescan scheduler --------------------------------------------
+_buyer_scheduler_task: Optional[asyncio.Task] = None
+
+
+async def _buyer_discovery_scheduler():
+    """Wake every hour. Find listings (status=live) whose last scan is older than
+    BUYER_DISCOVERY_RESCAN_HOURS, and rescan them with a small concurrency cap."""
+    SLEEP_SECONDS = 60 * 60  # 1 hour
+    INITIAL_DELAY = 90       # let the app warm up before first sweep
+    await asyncio.sleep(INITIAL_DELAY)
+    while True:
+        try:
+            cutoff = now_utc() - timedelta(hours=BUYER_DISCOVERY_RESCAN_HOURS)
+            cutoff_iso = cutoff.isoformat()
+            live_listings = await db.listings.find(
+                {"status": "live"}, {"_id": 0, "id": 1, "company_name": 1, "sector": 1,
+                                     "geography": 1, "revenue_usd_m": 1, "ebitda_usd_m": 1,
+                                     "headline": 1, "seller_id": 1}
+            ).to_list(500)
+            due: List[Dict[str, Any]] = []
+            for li in live_listings:
+                if not li.get("sector"):
+                    continue
+                scan = await db.buyer_scans.find_one({"listing_id": li["id"]}, {"_id": 0})
+                if (not scan) or (scan.get("last_scanned_at") or "") < cutoff_iso:
+                    due.append(li)
+            # Sweep with concurrency cap = 2 to be polite to SEC
+            sem = asyncio.Semaphore(2)
+            async def _bound(li):
+                async with sem:
+                    try:
+                        await _run_buyer_scan(li, triggered_by="scheduler")
+                    except Exception as e:
+                        logger.warning(f"Scheduled buyer scan failed for {li.get('id')}: {e}")
+            if due:
+                logger.info(f"buyer-discovery scheduler: rescanning {len(due)} listings")
+                await asyncio.gather(*[_bound(li) for li in due])
+        except Exception as e:
+            logger.warning(f"buyer-discovery scheduler loop error: {e}")
+        await asyncio.sleep(SLEEP_SECONDS)
 
 
 # -----------------------------------------------------------------------------
@@ -3419,6 +3841,11 @@ async def seed_demo():
             {"id": str(uuid.uuid4()), "name": "Project Nautilus", "sector": "FinServ", "stage": "Closing", "value_usd_m": 1240, "geography": "EMEA", "status": "active", "created_at": now_utc().isoformat()},
             {"id": str(uuid.uuid4()), "name": "Project Vertex", "sector": "ClimateTech", "stage": "DD", "value_usd_m": 178, "geography": "NA", "status": "active", "created_at": now_utc().isoformat()},
         ])
+    # Buyer Discovery background scheduler — periodic rescan of live listings
+    global _buyer_scheduler_task
+    if _buyer_scheduler_task is None or _buyer_scheduler_task.done():
+        _buyer_scheduler_task = asyncio.create_task(_buyer_discovery_scheduler())
+        logger.info("buyer-discovery scheduler started")
     logger.info("Workz Ventures backend ready")
 
 
@@ -3456,4 +3883,11 @@ app.add_middleware(
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    global _buyer_scheduler_task
+    if _buyer_scheduler_task and not _buyer_scheduler_task.done():
+        _buyer_scheduler_task.cancel()
+        try:
+            await _buyer_scheduler_task
+        except (asyncio.CancelledError, Exception):
+            pass
     client.close()

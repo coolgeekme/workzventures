@@ -83,7 +83,7 @@ async def edgar_buyer_signals(sector: str, deal_size_label: Optional[str] = None
                     continue
                 snippet = " ".join((h.get("highlight") or {}).get("body", [])) or src.get("file_description") or ""
                 # Filter — must really look like an acquisition mention
-                if not ACQUISITION_VERBS.search(snippet) and not ACQUISITION_VERBS.search(src.get("file_description", "")):
+                if not ACQUISITION_VERBS.search(snippet) and not ACQUISITION_VERBS.search(src.get("file_description") or ""):
                     pass  # keep — EDGAR full-text matched, so context is there
                 ciks = src.get("ciks") or []
                 seen[buyer] = {
