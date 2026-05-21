@@ -38,6 +38,7 @@ const FIT_BARS = ({ fit }) => {
 export default function BuyerDiscovery() {
   const [params, setParams] = useSearchParams();
   const [overview, setOverview] = useState([]);
+  const [overviewLoaded, setOverviewLoaded] = useState(false);
   const [selected, setSelected] = useState(params.get("listing") || "");
   const [matches, setMatches] = useState([]);
   const [lastScan, setLastScan] = useState(null);
@@ -47,14 +48,19 @@ export default function BuyerDiscovery() {
   const loadOverview = async () => {
     try {
       const r = await api.get("/buyer-discovery/overview");
-      setOverview(r.data || []);
-      if (!selected && r.data?.length) {
-        const first = r.data[0].listing_id;
-        setSelected(first);
-        setParams({ listing: first }, { replace: true });
+      const data = r.data || [];
+      setOverview(data);
+      if (!selected && data.length) {
+        // Prefer the listing with the most matches; fall back to the first
+        const best = [...data].sort((a, b) => (b.match_count || 0) - (a.match_count || 0))[0];
+        const pick = best.listing_id;
+        setSelected(pick);
+        setParams({ listing: pick }, { replace: true });
       }
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed to load listings");
+    } finally {
+      setOverviewLoaded(true);
     }
   };
 
@@ -186,10 +192,13 @@ export default function BuyerDiscovery() {
             </button>
           );
         })}
-        {overview.length === 0 && (
+        {overview.length === 0 && overviewLoaded && (
           <div className="text-sm text-[var(--wz-text-tertiary)] py-3">
             Create a listing first under <Link to="/app/listings" className="underline">My Listings</Link>.
           </div>
+        )}
+        {!overviewLoaded && (
+          <div className="text-sm text-[var(--wz-text-tertiary)] py-3">Loading your listings…</div>
         )}
       </div>
 
