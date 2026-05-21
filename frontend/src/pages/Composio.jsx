@@ -59,7 +59,7 @@ export default function Composio() {
   const isConnected = (appId) => connections.some((c) => c.app === appId);
 
   return (
-    <div data-testid="composio-page" className="px-8 py-8">
+    <div data-testid="composio-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
       <div className="overline mb-3">Integrations</div>
       <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium">
         OAuth connectors for every professional network.

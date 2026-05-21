@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "../lib/auth";
 import Logo from "../components/Logo";
+import ThemeToggle from "../components/ThemeToggle";
 
 export default function Register() {
   const { register } = useAuth();
@@ -29,8 +30,11 @@ export default function Register() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-6 py-12 grain" data-testid="register-page">
-      <form onSubmit={submit} className="w-full max-w-md wz-card p-8" data-testid="register-form">
+    <div className="min-h-screen flex items-center justify-center px-4 sm:px-6 py-8 sm:py-12 grain relative" data-testid="register-page">
+      <div className="absolute top-4 right-4">
+        <ThemeToggle />
+      </div>
+      <form onSubmit={submit} className="w-full max-w-md wz-card p-6 sm:p-8" data-testid="register-form">
         <div className="flex items-center gap-3 mb-6">
           <Logo size="md" testid="register-logo" />
           <div className="overline">Request access</div>
@@ -42,7 +46,7 @@ export default function Register() {
           Institutional buyers and sellers only.
         </p>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <label className="block col-span-2">
             <div className="overline mb-2">Full name</div>
             <input data-testid="reg-name" required className="wz-input" value={form.name} onChange={update("name")} />

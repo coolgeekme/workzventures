@@ -28,7 +28,7 @@ export default function BuyerDashboard() {
   ] : [];
 
   return (
-    <div data-testid="buyer-dashboard" data-mcp-action="dashboard.kpis" className="px-8 py-8">
+    <div data-testid="buyer-dashboard" data-mcp-action="dashboard.kpis" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
       <div className="flex items-end justify-between mb-8 gap-6 flex-wrap">
         <div>
           <div className="overline mb-3">Buy-side console</div>

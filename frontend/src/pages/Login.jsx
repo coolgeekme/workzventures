@@ -3,6 +3,7 @@ import { Link, useNavigate, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "../lib/auth";
 import Logo, { WORKZ_HERO_URL } from "../components/Logo";
+import ThemeToggle from "../components/ThemeToggle";
 
 const BG = WORKZ_HERO_URL;
 
@@ -48,8 +49,18 @@ export default function Login() {
         </div>
       </div>
 
-      <div className="flex items-center justify-center px-6 py-12">
+      <div className="flex items-center justify-center px-4 sm:px-6 py-8 sm:py-12 relative">
+        <div className="absolute top-4 right-4 lg:top-6 lg:right-6">
+          <ThemeToggle />
+        </div>
         <form onSubmit={submit} className="w-full max-w-sm" data-testid="login-form">
+          <div className="flex items-center gap-3 mb-8 lg:hidden">
+            <Logo size="md" />
+            <div>
+              <div className="font-display tracking-tighter text-lg leading-none">Workz Ventures</div>
+              <div className="overline mt-1">institutional buy & sell-side</div>
+            </div>
+          </div>
           <div className="overline mb-3">Sign in</div>
           <h1 className="font-display text-3xl tracking-tighter font-medium mb-8">
             Welcome back.

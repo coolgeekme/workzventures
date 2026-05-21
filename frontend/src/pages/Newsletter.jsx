@@ -66,7 +66,7 @@ function BuyerDigest() {
   };
 
   return (
-    <div data-testid="newsletter-page" className="px-8 py-8">
+    <div data-testid="newsletter-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
       <div className="overline mb-3">Your personal digest</div>
       <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium">
         Workz Ventures, curated for you.
@@ -265,7 +265,7 @@ function SellerBroadcast() {
   };
 
   return (
-    <div data-testid="newsletter-page" className="px-8 py-8">
+    <div data-testid="newsletter-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
       <div className="overline mb-3" style={{ color: "var(--wz-amber)" }}>Broadcast newsletter</div>
       <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium">
         Reach the entire buyer base.

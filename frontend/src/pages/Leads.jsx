@@ -43,7 +43,7 @@ export default function Leads() {
   };
 
   return (
-    <div data-testid="leads-page" data-mcp-action="leads.list" className="px-8 py-8">
+    <div data-testid="leads-page" data-mcp-action="leads.list" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
       <div className="flex items-end justify-between mb-8">
         <div>
           <div className="overline mb-3">Lead nurturing pipeline</div>

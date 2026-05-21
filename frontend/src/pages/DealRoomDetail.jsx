@@ -153,7 +153,7 @@ export default function DealRoomDetail() {
   };
 
   return (
-    <div data-testid="deal-room-detail" className="px-8 py-8">
+    <div data-testid="deal-room-detail" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
       <Link to="/app/rooms" className="flex items-center gap-2 text-xs text-[var(--wz-text-tertiary)] hover:text-white mb-4" data-testid="back-to-rooms">
         <ArrowLeft size={12} /> All vaults
       </Link>
@@ -241,7 +241,7 @@ export default function DealRoomDetail() {
       )}
 
       {/* Tabs */}
-      <div className="border-b border-[var(--wz-border)] flex gap-1" data-testid="tabs">
+      <div className="border-b border-[var(--wz-border)] flex gap-1 overflow-x-auto -mx-4 sm:-mx-6 lg:mx-0 px-4 sm:px-6 lg:px-0 scrollbar-thin" data-testid="tabs">
         {[
           { v: "files", l: "Files", icon: Files, count: room.files.length },
           { v: "drl", l: "DRL", icon: ListChecks, count: room.requests.length },
@@ -440,15 +440,15 @@ export default function DealRoomDetail() {
               </div>
               <div className="divide-y divide-[var(--wz-border)]">
                 {room.requests.map((r) => (
-                  <div key={r.id} className="px-5 py-3 grid grid-cols-[1fr_120px_100px] gap-4 items-center" data-testid={`drl-${r.id}`}>
+                  <div key={r.id} className="px-5 py-3 grid grid-cols-[1fr_auto] sm:grid-cols-[1fr_120px_100px] gap-2 sm:gap-4 items-start sm:items-center" data-testid={`drl-${r.id}`}>
                     <div>
                       <div className="text-sm">{r.title}</div>
                       <div className="overline mt-1">{r.workstream}</div>
                     </div>
-                    <div className="text-xs font-mono-wz text-[var(--wz-text-tertiary)]">
+                    <div className="hidden sm:block text-xs font-mono-wz text-[var(--wz-text-tertiary)]">
                       {r.matched_file_ids.length} file{r.matched_file_ids.length === 1 ? "" : "s"}
                     </div>
-                    <span className={`pill ${r.status === "satisfied" ? "pill-positive" : "pill-amber"}`}>{r.status}</span>
+                    <span className={`pill ${r.status === "satisfied" ? "pill-positive" : "pill-amber"} shrink-0`}>{r.status}</span>
                   </div>
                 ))}
               </div>

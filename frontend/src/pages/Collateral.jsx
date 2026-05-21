@@ -78,7 +78,7 @@ export default function Collateral() {
   const D = current?.data || {};
 
   return (
-    <div data-testid="collateral-page" className="px-8 py-8">
+    <div data-testid="collateral-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
       <div className="overline mb-3">Marketing collateral</div>
       <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium">
         AI-drafted assets, ready for the Vault.

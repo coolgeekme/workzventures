@@ -29,7 +29,7 @@ export default function Dashboard() {
     : [];
 
   return (
-    <div data-testid="dashboard-page" data-mcp-action="dashboard.kpis" className="px-8 py-8">
+    <div data-testid="dashboard-page" data-mcp-action="dashboard.kpis" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
       <div className="flex items-end justify-between mb-8">
         <div>
           <div className="overline mb-3">Control room · live telemetry</div>

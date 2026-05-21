@@ -35,7 +35,7 @@ export default function MCPConsole() {
   };
 
   return (
-    <div data-testid="mcp-page" className="px-8 py-8">
+    <div data-testid="mcp-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
       <div className="overline mb-3">WebMCP console</div>
       <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium flex items-center gap-3">
         <Terminal size={28} className="text-[var(--wz-gold)]" />

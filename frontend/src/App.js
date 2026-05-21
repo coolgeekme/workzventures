@@ -4,6 +4,7 @@ import { Toaster } from "sonner";
 import "@/App.css";
 
 import { AuthProvider, useAuth } from "./lib/auth";
+import { ThemeProvider, useTheme } from "./lib/theme";
 import { installMCP } from "./lib/mcp";
 
 import Landing from "./pages/Landing";
@@ -73,24 +74,33 @@ function AppRoutes() {
 export default function App() {
   return (
     <div className="App">
-      <AuthProvider>
-        <BrowserRouter>
-          <AppRoutes />
-          <Toaster
-            theme="dark"
-            position="top-right"
-            toastOptions={{
-              style: {
-                background: "#121316",
-                border: "1px solid #27282D",
-                color: "#fff",
-                borderRadius: 2,
-                fontFamily: "'IBM Plex Sans', sans-serif",
-              },
-            }}
-          />
-        </BrowserRouter>
-      </AuthProvider>
+      <ThemeProvider>
+        <AuthProvider>
+          <BrowserRouter>
+            <AppRoutes />
+            <ThemedToaster />
+          </BrowserRouter>
+        </AuthProvider>
+      </ThemeProvider>
     </div>
+  );
+}
+
+function ThemedToaster() {
+  const { resolved } = useTheme();
+  return (
+    <Toaster
+      theme={resolved}
+      position="top-right"
+      toastOptions={{
+        style: {
+          background: "var(--wz-surface)",
+          border: "1px solid var(--wz-border)",
+          color: "var(--wz-text)",
+          borderRadius: 2,
+          fontFamily: "'IBM Plex Sans', sans-serif",
+        },
+      }}
+    />
   );
 }

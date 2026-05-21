@@ -1,0 +1,85 @@
+{
+  "summary": "Frontend-only testing for mobile responsiveness + dark/light/auto theme system. Validated theme cycle, localStorage persistence, OS matchMedia auto-resolution, mobile bottom tab bar (buyer + seller), More sheet, sign-out flow, mobile topbar, desktop layout breakpoint, and no horizontal overflow on landing/register. All theme + layout features WORK as specified. One UX overlay issue found: sonner 'Authenticated' toast occupies same top-right region as mobile theme toggle for ~5s after login and intercepts pointer events.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Sonner Toaster (top-right) vs MobileTopbar theme toggle",
+        "issue": "Success toast 'Authenticated' (and any top-right toast) sits on top of [data-testid='theme-toggle-btn-mobile'] for ~4-5s post-login because both anchor to top-right of mobile viewport. The toast's <li data-sonner-toast> 'intercepts pointer events' (verified via Playwright elementFromPoint), so a real user tap on the moon icon right after login goes to the toast instead of cycling the theme. Toggle becomes clickable only after the toast auto-dismisses.",
+        "selector": "[data-testid='theme-toggle-btn-mobile'] vs [data-sonner-toast]",
+        "priority": "MEDIUM",
+        "suggested_fix": "Move Sonner Toaster position to 'top-center' or 'bottom-center' on mobile (or use a media-query-driven position prop on the ThemedToaster), shorten duration, or relocate theme toggle to the left of MobileTopbar on mobile."
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "MobileTopbar", "issues": ["Theme toggle overlaps with Sonner top-right toasts on small viewports; consider moving toaster to top-center on mobile to avoid blocking the only interactive element on the right side of the topbar."]}
+    ]
+  },
+  "test_results": {
+    "theme_system": {
+      "default_dark_on_first_visit": "PASS",
+      "cycle_dark_to_light": "PASS (data-theme=light, pref=light, colorScheme=light)",
+      "cycle_light_to_auto": "PASS (pref=auto, resolved follows OS)",
+      "cycle_auto_to_dark": "PASS",
+      "localStorage_persistence_across_reload": "PASS (pref=light retained, html data-theme=light on mount)",
+      "matchMedia_auto_resolution_OS_light": "PASS (resolved=light when emulate_media color_scheme=light)",
+      "matchMedia_auto_resolution_OS_dark": "PASS (resolved=dark when emulate_media color_scheme=dark)",
+      "light_theme_tokens": "PASS (--wz-bg=#FAFAF7 warm-paper, --wz-text=#1A1A19, --wz-gold=#9E7B45)",
+      "desktop_toggle_works": "PASS",
+      "mobile_toggle_works": "PASS (when not occluded by toast)"
+    },
+    "mobile_layout_390x844": {
+      "sidebar_hidden": "PASS",
+      "mobile_topbar_visible": "PASS",
+      "bottom_tab_bar_visible": "PASS",
+      "buyer_tabs_5_items": "PASS (Home/Research/Market/Vault/More)",
+      "seller_tabs_5_items": "PASS (Home/Listings/Inbox/Vault/More)",
+      "no_horizontal_overflow_landing": "PASS",
+      "no_horizontal_overflow_register": "PASS",
+      "login_splash_hidden_on_mobile": "PASS"
+    },
+    "more_sheet": {
+      "opens_on_more_tab_tap": "PASS",
+      "buyer_more_4_items": "PASS (My Inquiries/Newsletter/Integrations/Agent Monitor)",
+      "seller_more_6_items": "PASS (Collateral/Outreach/Lead Nurturing/Newsletter/Integrations/Agent Monitor)",
+      "close_button_dismisses": "PASS",
+      "sign_out_navigates_to_login": "PASS"
+    },
+    "mobile_navigation": {
+      "tab_bar_routes_to_correct_paths": "PASS (Research /app/research, Market /app/marketplace, Vault /app/rooms, Home /app/dashboard)"
+    },
+    "desktop_layout_1920x1080": {
+      "sidebar_visible": "PASS",
+      "mobile_topbar_hidden": "PASS",
+      "bottom_tab_bar_hidden": "PASS",
+      "desktop_topbar_visible": "PASS",
+      "desktop_theme_toggle_visible": "PASS"
+    }
+  },
+  "not_tested": [
+    "Admin role tabs (Home/Inbox/Vault/Audit/More) and 10-item More sheet — no admin credentials in /app/memory/test_credentials.md",
+    "Deal Room Detail (/app/rooms/:id) tabs horizontal scroll on mobile — requires existing room id and navigation depth",
+    "iOS safe-area inset padding behavior — not testable in headless Chromium without device emulation"
+  ],
+  "test_report_links": [],
+  "action_items": [
+    "Reposition Sonner Toaster on mobile (<lg) to top-center or bottom-center, OR shift theme toggle to left side of MobileTopbar. Currently the top-right 'Authenticated' toast blocks the only interactive control on the mobile topbar for ~5s after login.",
+    "(Optional) Add admin test account to /app/memory/test_credentials.md so admin nav (5 primary + 10 More) can be regression-tested next iteration."
+  ],
+  "critical_code_review_comments": [
+    "theme.jsx ThemeProvider is well-structured: applies data-theme synchronously on mount via useEffect, uses callback form of setState in cycle() to avoid stale closures, correctly cleans up matchMedia listener.",
+    "BottomTabBar.jsx — sign-out handler does setOpen(false) then logout() then navigate('/login'). Order is correct, no race. data-testid kebab-casing is consistent with spec.",
+    "Layout.jsx uses lg:grid-cols-[260px_1fr] cleanly. main has pb-20 lg:pb-0 to clear bottom tab bar — verified visually no content hidden.",
+    "MobileTopbar uses backdrop-blur with color-mix bg — works in both themes; safe-area-inset-top via inline style is correct for iOS.",
+    "ThemedToaster (App.js) likely uses a fixed position='top-right'. Recommend conditional position based on window.matchMedia('(max-width: 1023px)') to avoid the topbar overlay collision."
+  ],
+  "updated_files": [],
+  "success_rate": {"frontend": "97% (43/44 functional checks pass; 1 UX overlay issue)"},
+  "test_credentials": "Buyer alex@workz.example.com / WorkzPass123! ; Seller mira@workz.example.com / WorkzPass123! (both confirmed working). No admin creds available.",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Theme system, mobile layout, bottom tab bar, and More sheet all verified working at 390x844 and 1920x1080. When testing post-login UI on mobile, wait ~5-6 seconds for the success toast to auto-dismiss before clicking elements at top-right of MobileTopbar (theme toggle), or use page.evaluate(() => document.querySelectorAll('[data-sonner-toast]').forEach(t => t.remove())) to clear toasts. The mobile theme toggle was originally reported as failing in our run until we waited for the toast to dismiss — root cause documented above. Admin role is not exercised due to missing creds.",
+  "rca_of_the_issue": "Mobile theme-toggle-btn-mobile sits at top-right of MobileTopbar (x≈334, y≈8 at 390-wide viewport). Sonner Toaster default position is top-right with y-offset overlapping the topbar. Playwright elementFromPoint(toggle center) returned the <li data-sonner-toast> element instead of the button, confirming click interception. Once the toast auto-dismissed (~4-5s post-login), all subsequent theme cycle / persistence / matchMedia tests passed. Suggested mitigation: set Toaster position='top-center' on viewports <1024px or move ThemeToggle to the left of MobileTopbar."
+}

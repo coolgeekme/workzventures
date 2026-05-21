@@ -9,7 +9,7 @@ export default function Audit() {
   }, []);
 
   return (
-    <div data-testid="audit-page" className="px-8 py-8">
+    <div data-testid="audit-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
       <div className="overline mb-3">Audit log</div>
       <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium">
         Full auditability across the platform.

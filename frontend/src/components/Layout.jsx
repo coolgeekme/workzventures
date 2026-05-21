@@ -4,9 +4,12 @@ import { useAuth } from "../lib/auth";
 import {
   House, MagnifyingGlass, NotePencil, PaperPlaneTilt, Kanban,
   EnvelopeSimple, Plugs, Terminal, ChartLineUp, ListChecks, SignOut,
-  Storefront, Tag, Question, Bookmark, ChartBar, Files,
+  Storefront, Tag, Question, ChartBar, Files,
 } from "@phosphor-icons/react";
 import Logo from "./Logo";
+import ThemeToggle from "./ThemeToggle";
+import MobileTopbar from "./MobileTopbar";
+import BottomTabBar from "./BottomTabBar";
 
 const BUYER_NAV = [
   { to: "/app/dashboard", label: "Dashboard", icon: House, group: "Core" },
@@ -72,9 +75,12 @@ export default function Layout({ children }) {
   const rolePillClass = user?.role === "seller" ? "pill-amber" : user?.role === "admin" ? "pill-positive" : "pill-gold";
 
   return (
-    <div className="min-h-screen grid grid-cols-[260px_1fr] grain" data-testid="app-shell">
-      {/* Sidebar */}
-      <aside className="border-r border-[var(--wz-border)] flex flex-col" data-testid="sidebar">
+    <div className="min-h-screen lg:grid lg:grid-cols-[260px_1fr] grain" data-testid="app-shell">
+      {/* Mobile topbar (< lg) */}
+      <MobileTopbar />
+
+      {/* Desktop sidebar (>= lg) */}
+      <aside className="hidden lg:flex border-r border-[var(--wz-border)] flex-col" data-testid="sidebar">
         <div className="px-6 pt-7 pb-5 border-b border-[var(--wz-border)]">
           <Link to="/app/dashboard" className="flex items-center gap-3" data-testid="brand-link">
             <Logo size="md" testid="sidebar-logo" />
@@ -100,8 +106,8 @@ export default function Layout({ children }) {
                       className={({ isActive }) =>
                         `flex items-center gap-3 px-3 py-2 text-sm transition-colors border-l-2 ${
                           isActive
-                            ? `${isSeller ? "border-[var(--wz-amber)]" : "border-[var(--wz-gold)]"} text-white bg-[var(--wz-surface-hover)]`
-                            : "border-transparent text-[var(--wz-text-secondary)] hover:text-white hover:bg-[var(--wz-surface)]"
+                            ? `${isSeller ? "border-[var(--wz-amber)]" : "border-[var(--wz-gold)]"} text-[var(--wz-text)] bg-[var(--wz-surface-hover)]`
+                            : "border-transparent text-[var(--wz-text-secondary)] hover:text-[var(--wz-text)] hover:bg-[var(--wz-surface)]"
                         }`
                       }
                     >
@@ -126,7 +132,7 @@ export default function Layout({ children }) {
           <button
             data-testid="logout-btn"
             onClick={() => { logout(); navigate("/login"); }}
-            className="mt-3 w-full flex items-center justify-between text-xs text-[var(--wz-text-secondary)] hover:text-white border border-[var(--wz-border)] hover:border-[var(--wz-text-tertiary)] px-3 py-2 rounded-sm transition-colors"
+            className="mt-3 w-full flex items-center justify-between text-xs text-[var(--wz-text-secondary)] hover:text-[var(--wz-text)] border border-[var(--wz-border)] hover:border-[var(--wz-text-tertiary)] px-3 py-2 rounded-sm transition-colors"
           >
             <span>Sign out</span>
             <SignOut size={14} />
@@ -135,21 +141,26 @@ export default function Layout({ children }) {
       </aside>
 
       {/* Main */}
-      <main className="flex flex-col min-h-screen">
-        <header className="border-b border-[var(--wz-border)] px-8 py-3 flex items-center justify-between" data-testid="topbar">
+      <main className="flex flex-col min-h-screen pb-20 lg:pb-0">
+        {/* Desktop topbar (>= lg) */}
+        <header className="hidden lg:flex border-b border-[var(--wz-border)] px-8 py-3 items-center justify-between" data-testid="topbar">
           <div className="flex items-center gap-4">
             <div className="dot-blink" />
-            <div className="overline">live · {location.pathname}</div>
+            <div className="overline truncate">live · {location.pathname}</div>
           </div>
-          <div className="flex items-center gap-6 text-xs">
+          <div className="flex items-center gap-4 text-xs">
             <span className="font-mono-wz text-[var(--wz-text-secondary)]">
               UTC {time.toISOString().substring(11, 19)}
             </span>
             <span className={`pill ${rolePillClass}`}>{isSeller ? "Workz · Sell-side" : user?.role === "admin" ? "Workz · Admin" : "Workz · Buy-side"}</span>
+            <ThemeToggle testId="theme-toggle-btn-desktop" />
           </div>
         </header>
-        <div className="flex-1 fade-in">{children}</div>
+        <div className="flex-1 fade-in min-w-0">{children}</div>
       </main>
+
+      {/* Mobile bottom tab bar (< lg) */}
+      <BottomTabBar />
     </div>
   );
 }
