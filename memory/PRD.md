@@ -103,6 +103,21 @@ Build an enterprise platform that combines:
 - New deps: `reportlab==4.5.1`, `qrcode==8.2`.
 - Backend tests (iter-10): **11/11 certificate tests pass · 20/21 security regression** (same 1 pre-existing skip as iter-9) · audit chain valid across 472 entries. Reusable test file at `/app/backend/tests/test_provenance_certificate.py`.
 
+## What's been implemented (2026-05-21 — iter-11 CRUD + Messaging + Collateral Distribution)
+- **Deletes everywhere users generate content** — `DELETE` endpoints for `/research/{id}`, `/inquiries/{id}` (soft), `/deal-rooms/{id}` (soft), `/newsletter/{id}` (hard if draft, soft if dispatched), `/outreach/campaigns/{id}` (hard if draft, soft if launched), `/collateral/{id}` (hard + version snapshots purged). All list endpoints now filter `{deleted_at: {$exists: False}}` to hide soft-deleted items. Audit-log entries on every action; OTS chain preserved for soft-deleted artifacts.
+- **Inquiry messaging (chat thread)** — new `inquiry_messages` collection, `GET /api/inquiries/{iid}/messages` + `POST` for both buyer & seller. Auto-marks unseen messages as read, increments `message_count`, stores `last_message_at`/`last_message_preview` on the inquiry. Participant-only.
+- **Buyer interests + newsletter prefs** — `PATCH /api/me/interests` sets `interests[]`, `newsletter_opt_in`, `newsletter_cadence` (weekly|biweekly|monthly).
+- **Seller editable broadcasts** — `PATCH /api/newsletter/{id}` updates title/content/sectors/recipient_ids before dispatch.
+- **Outreach edit** — `PATCH /api/outreach/campaigns/{id}` updates name/persona/brief/draft/audience_size while in draft state.
+- **Collateral edit + versioning** — `PATCH /api/collateral/{id}` snapshots current state into `collateral_versions` then applies the patch. `GET /api/collateral/{id}/versions` returns history.
+- **Collateral distribution (4 actions)**:
+  - `GET /api/collateral/{id}/pdf` — branded ReportLab one-pager
+  - `POST /api/collateral/{id}/attach-to-listing` — surfaces on marketplace card
+  - `POST /api/collateral/{id}/push-to-vault` — encrypts PDF with AES-256-GCM, stores in GridFS, creates `deal_room_files` row + `vault.file` OTS proof
+  - `POST /api/collateral/{id}/send-to-inquiry` — drops the collateral into the inquiry chat thread as an attachment
+- **Frontend**: Inquiries rewritten with inline chat thread + withdraw/dismiss. Collateral page gets inline edit-in-place + 4 distribution dropdowns. Outreach gets inline edit/save/cancel + Delete. ResearchHub, DealRooms list, Newsletter (buyer digest + seller broadcast) all get trash-icon delete affordances.
+- Backend tests (iter-11): **18/18 new pytest cases pass** · 1 backend bug found by testing agent and fixed (push-to-vault was leaking Mongo `_id` ObjectId → 500). Reusable test file at `/app/backend/tests/test_iter11_crud.py`.
+
 ## Prioritized backlog
 **P1**
 - Convert long-running Claude endpoints (research, newsletter) to async job pattern (POST → 202 + job id, GET to poll) for headroom beyond 60s ingress
