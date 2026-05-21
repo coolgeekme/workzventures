@@ -221,3 +221,300 @@ async def rank_with_claude(call_claude, listing: Dict[str, Any], candidates: Lis
                 "fit": item.get("fit") or {},
             })
     return ranked_out
+
+
+# -----------------------------------------------------------------------------
+# Contact resolution — finds named executives + IR contacts from SEC filings
+# -----------------------------------------------------------------------------
+EDGAR_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+EDGAR_ARCHIVES = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_dashless}/{primary}"
+
+# Filing forms most useful for executive-officer + IR contact extraction (in priority order).
+PRIORITY_FORMS = ("DEF 14A", "10-K", "10-K/A", "DEFM14A", "20-F", "8-K")
+
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
+PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[\s\-.])?\(?\d{3}\)?[\s\-.]\d{3}[\s\-.]\d{4}(?!\d)")
+
+
+def _strip_html(html: str) -> str:
+    """Cheap HTML → text. Keeps paragraph breaks. Good enough for executive-section extraction."""
+    if not html:
+        return ""
+    # Drop scripts/styles
+    txt = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.IGNORECASE)
+    txt = re.sub(r"<style[\s\S]*?</style>", " ", txt, flags=re.IGNORECASE)
+    # Convert block tags to newlines so we keep some structure
+    txt = re.sub(r"</(p|div|tr|li|h[1-6]|table)>", "\n", txt, flags=re.IGNORECASE)
+    txt = re.sub(r"<br\s*/?>", "\n", txt, flags=re.IGNORECASE)
+    txt = re.sub(r"<[^>]+>", " ", txt)
+    # Decode common entities
+    txt = (txt.replace("&nbsp;", " ").replace("&amp;", "&")
+              .replace("&quot;", '"').replace("&#39;", "'")
+              .replace("&lt;", "<").replace("&gt;", ">"))
+    txt = re.sub(r"[ \t]+", " ", txt)
+    txt = re.sub(r"\n\s*\n+", "\n\n", txt)
+    return txt.strip()
+
+
+async def _edgar_get(client: httpx.AsyncClient, url: str) -> Optional[httpx.Response]:
+    try:
+        r = await client.get(url, headers={"User-Agent": UA, "Accept": "*/*"}, timeout=20.0)
+        if r.status_code != 200:
+            logger.info(f"EDGAR GET {url} → {r.status_code}")
+            return None
+        return r
+    except Exception as e:
+        logger.warning(f"EDGAR GET {url} failed: {e}")
+        return None
+
+
+async def fetch_company_filings(cik: str) -> Dict[str, Any]:
+    """Get the most recent filings for a CIK. Returns {company_name, sic, addresses, recent_filings[]}."""
+    try:
+        cik_int = int(cik)
+    except Exception:
+        return {}
+    url = EDGAR_SUBMISSIONS.format(cik=cik_int)
+    async with httpx.AsyncClient() as client:
+        r = await _edgar_get(client, url)
+    if not r:
+        return {}
+    try:
+        data = r.json()
+    except Exception:
+        return {}
+    recent = ((data.get("filings") or {}).get("recent") or {})
+    rows = []
+    forms = recent.get("form") or []
+    accs = recent.get("accessionNumber") or []
+    docs = recent.get("primaryDocument") or []
+    dates = recent.get("filingDate") or []
+    descs = recent.get("primaryDocDescription") or []
+    for i in range(min(len(forms), len(accs), len(docs))):
+        rows.append({
+            "form": forms[i],
+            "accession": accs[i],
+            "primary": docs[i],
+            "filed": dates[i] if i < len(dates) else None,
+            "desc": descs[i] if i < len(descs) else None,
+        })
+    return {
+        "company_name": data.get("name"),
+        "sic": data.get("sicDescription"),
+        "tickers": data.get("tickers") or [],
+        "addresses": data.get("addresses") or {},
+        "phone": data.get("phone"),
+        "former_names": [(f or {}).get("name") for f in (data.get("formerNames") or [])],
+        "investor_website": (data.get("website") or "").strip(),
+        "recent_filings": rows,
+        "cik_int": cik_int,
+    }
+
+
+def _pick_best_filings(rows: List[Dict[str, Any]], *, n_per_form: int = 1) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    seen_forms: Dict[str, int] = {}
+    for row in rows:
+        f = (row.get("form") or "").upper()
+        if f not in PRIORITY_FORMS:
+            continue
+        if seen_forms.get(f, 0) >= n_per_form:
+            continue
+        seen_forms[f] = seen_forms.get(f, 0) + 1
+        out.append(row)
+        if len(out) >= 4:
+            break
+    return out
+
+
+async def fetch_filing_text(cik_int: int, accession: str, primary: str) -> str:
+    if not (cik_int and accession and primary):
+        return ""
+    acc_dashless = accession.replace("-", "")
+    url = EDGAR_ARCHIVES.format(cik_int=cik_int, acc_dashless=acc_dashless, primary=primary)
+    async with httpx.AsyncClient() as client:
+        r = await _edgar_get(client, url)
+    if not r:
+        return ""
+    ct = (r.headers.get("content-type") or "").lower()
+    body = r.text or ""
+    if "html" in ct or "<html" in body[:1000].lower():
+        body = _strip_html(body)
+    return body[:120_000]  # cap to keep Claude prompt sane
+
+
+CONTACT_EXTRACTION_SYS = """You are an M&A research analyst extracting **decision-maker contact intel** from an SEC filing.
+Focus tightly on executives who would actually evaluate or approve an acquisition: 
+- CEO, CFO, COO, Chief Strategy Officer
+- Head of Corporate Development / M&A / Business Development
+- General Counsel (legal sign-off)
+- Investor Relations contact (gateway to corp dev team)
+
+ALSO surface any contact info that literally appears in the filing text:
+- IR phone numbers, IR/general email addresses (DO NOT FABRICATE — only what literally appears)
+- HQ mailing address if present
+
+Return STRICT JSON ONLY:
+{
+  "executives": [
+    {"name": str, "title": str, "relevance": "ceo|cfo|coo|corp_dev|strategy|legal|ir|other", 
+     "rationale": "<=120 chars why they matter for an acquisition", "source_excerpt": "<=240 chars from filing"}
+  ],
+  "ir_contact": {"name": str|null, "email": str|null, "phone": str|null},
+  "general_contacts": {"emails": [str], "phones": [str], "address": str|null}
+}
+
+Rules:
+- ONLY include emails/phones that literally appear in the supplied text. Never invent.
+- Cap to the 8 most-relevant executives. Order by acquisition relevance (corp_dev > strategy > cfo > ceo > legal > ir > other).
+- relevance must be one of the enum values.
+- If you cannot find an explicit "Head of Corporate Development" or similar, leave that bucket empty rather than guessing.
+"""
+
+
+async def extract_contacts_with_claude(call_claude, company_name: str, filing_form: str, filing_text: str) -> Dict[str, Any]:
+    if not filing_text:
+        return {"executives": [], "ir_contact": {}, "general_contacts": {}}
+    prompt = (
+        f"COMPANY: {company_name}\n"
+        f"FILING: {filing_form}\n\n"
+        f"FILING TEXT (truncated):\n{filing_text[:90_000]}\n\n"
+        "Extract executives and contact info per the schema. JSON only."
+    )
+    try:
+        raw = await call_claude(CONTACT_EXTRACTION_SYS, prompt, session_id=f"contact-{company_name[:20]}")
+    except Exception as e:
+        logger.warning(f"Claude contact extraction failed: {e}")
+        return {"executives": [], "ir_contact": {}, "general_contacts": {}}
+    import json as _json
+    try:
+        m = re.search(r"\{[\s\S]*\}", raw)
+        data = _json.loads(m.group(0)) if m else _json.loads(raw)
+    except Exception:
+        logger.warning("Could not parse contact-extraction JSON")
+        return {"executives": [], "ir_contact": {}, "general_contacts": {}}
+
+    # Hard sanitize: only allow emails/phones that literally appear in the source text
+    found_emails = set(m.group(0).lower() for m in EMAIL_RE.finditer(filing_text))
+    found_phones_raw = [m.group(0) for m in PHONE_RE.finditer(filing_text)]
+    found_phones_norm = set(re.sub(r"\D", "", p)[-10:] for p in found_phones_raw if len(re.sub(r"\D", "", p)) >= 10)
+
+    def _phone_ok(p: Optional[str]) -> bool:
+        if not p:
+            return False
+        digits = re.sub(r"\D", "", p)[-10:]
+        return digits in found_phones_norm
+
+    def _email_ok(e: Optional[str]) -> bool:
+        return bool(e) and e.lower() in found_emails
+
+    ir = data.get("ir_contact") or {}
+    ir_clean = {
+        "name": (ir.get("name") or None),
+        "email": ir.get("email") if _email_ok(ir.get("email")) else None,
+        "phone": ir.get("phone") if _phone_ok(ir.get("phone")) else None,
+    }
+    gc = data.get("general_contacts") or {}
+    gc_clean = {
+        "emails": [e for e in (gc.get("emails") or []) if _email_ok(e)][:5],
+        "phones": [p for p in (gc.get("phones") or []) if _phone_ok(p)][:5],
+        "address": gc.get("address") or None,
+    }
+
+    execs = []
+    for x in (data.get("executives") or [])[:8]:
+        nm = (x.get("name") or "").strip()
+        ti = (x.get("title") or "").strip()
+        if not nm or not ti:
+            continue
+        execs.append({
+            "name": nm,
+            "title": ti,
+            "relevance": x.get("relevance") or "other",
+            "rationale": (x.get("rationale") or "")[:200],
+            "source_excerpt": (x.get("source_excerpt") or "")[:280],
+        })
+
+    return {"executives": execs, "ir_contact": ir_clean, "general_contacts": gc_clean}
+
+
+async def find_linkedin_url(search_brave_fn, name: str, company: str) -> Optional[str]:
+    """One Brave query: `"{name}" {company} site:linkedin.com/in`. Returns first credible match."""
+    if not name:
+        return None
+    q = f'"{name}" {company} site:linkedin.com/in'
+    try:
+        hits = await search_brave_fn(q, count=5)
+    except Exception:
+        return None
+    for h in hits or []:
+        url = (h.get("url") or "").lower()
+        if "linkedin.com/in/" in url:
+            return h["url"]
+    return None
+
+
+async def resolve_match_contacts(call_claude, search_brave_fn, *, cik: Optional[str],
+                                 company_name: str) -> Dict[str, Any]:
+    """End-to-end contact resolution for a buyer match. Returns dict ready to persist+display."""
+    started = datetime.now(timezone.utc)
+    submissions = await fetch_company_filings(cik) if cik else {}
+    company_name = submissions.get("company_name") or company_name
+    cik_int = submissions.get("cik_int")
+    addr = (submissions.get("addresses") or {}).get("mailing") or (submissions.get("addresses") or {}).get("business") or {}
+    address_lines = [v for v in [
+        addr.get("street1"), addr.get("street2"),
+        ", ".join([p for p in [addr.get("city"), addr.get("stateOrCountryDescription"), addr.get("zipCode")] if p]),
+    ] if v]
+    hq_address = "\n".join(address_lines) if address_lines else None
+
+    picks = _pick_best_filings(submissions.get("recent_filings") or [])
+    aggregated_text_parts: List[str] = []
+    used_filings: List[Dict[str, Any]] = []
+    for row in picks[:3]:  # cap at 3 filings to bound latency
+        text = await fetch_filing_text(cik_int, row["accession"], row["primary"])
+        if not text:
+            continue
+        # For 10-Ks, slice to Item 10 region if we can find it (drops 90%+ of irrelevant text)
+        m = re.search(r"item\s*10[\.\s]+directors[\s\S]{0,40000}", text, re.IGNORECASE)
+        if m:
+            text = m.group(0)
+        aggregated_text_parts.append(f"\n\n[FILING: {row['form']} · filed {row.get('filed')}]\n{text[:40_000]}")
+        used_filings.append({
+            "form": row["form"],
+            "filed": row.get("filed"),
+            "accession": row["accession"],
+            "url": f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{row['accession'].replace('-', '')}/{row['accession']}-index.htm" if cik_int else None,
+        })
+
+    combined_text = "".join(aggregated_text_parts)[:120_000]
+    extracted = await extract_contacts_with_claude(call_claude, company_name, picks[0]["form"] if picks else "n/a", combined_text)
+
+    # LinkedIn enrichment — concurrency-limited Brave calls (one per executive)
+    execs = extracted.get("executives") or []
+    if execs:
+        sem = asyncio.Semaphore(3)
+        async def _one(ex):
+            async with sem:
+                try:
+                    ex["linkedin_url"] = await find_linkedin_url(search_brave_fn, ex["name"], company_name)
+                except Exception:
+                    ex["linkedin_url"] = None
+                return ex
+        execs = await asyncio.gather(*[_one(e) for e in execs])
+
+    duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+    return {
+        "company_name": company_name,
+        "cik": cik_int,
+        "hq_address": hq_address,
+        "switchboard_phone": submissions.get("phone"),
+        "investor_website": submissions.get("investor_website") or None,
+        "ir_contact": extracted.get("ir_contact") or {},
+        "general_contacts": extracted.get("general_contacts") or {},
+        "executives": execs,
+        "used_filings": used_filings,
+        "duration_ms": duration_ms,
+        "generated_at": started.isoformat(),
+    }
+

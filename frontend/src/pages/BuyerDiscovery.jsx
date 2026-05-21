@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import {
   Crosshair, MagnifyingGlass, ArrowSquareOut, Bell, TrashSimple,
   CheckCircle, X, ListChecks, PaperPlaneTilt, Buildings,
+  IdentificationCard, LinkedinLogo, Envelope, Phone, MapPin, CaretDown, CaretUp, UserPlus,
 } from "@phosphor-icons/react";
 import { api } from "../lib/api";
 
@@ -143,6 +144,35 @@ export default function BuyerDiscovery() {
       toast.success(`Outreach drafted (${r.data.name})`, { id: t });
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed", { id: t });
+    }
+  };
+
+  // ---- Contact resolution ---------------------------------------------------
+  const [openContactsFor, setOpenContactsFor] = useState(null);
+  const [loadingContactsFor, setLoadingContactsFor] = useState(null);
+
+  const findContacts = async (mid, { refresh = false } = {}) => {
+    setLoadingContactsFor(mid);
+    const t = toast.loading("Parsing SEC filings for named executives…");
+    try {
+      const r = await api.post(`/buyer-discovery/matches/${mid}/find-contacts${refresh ? "?refresh=true" : ""}`);
+      setMatches((arr) => arr.map((m) => (m.id === mid ? { ...m, contacts: r.data, contacts_resolved_at: r.data.generated_at } : m)));
+      setOpenContactsFor(mid);
+      const execs = (r.data.executives || []).length;
+      toast.success(`Found ${execs} executive${execs === 1 ? "" : "s"} · ${(r.data.used_filings || []).length} filings parsed`, { id: t });
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Contact resolution failed", { id: t });
+    } finally {
+      setLoadingContactsFor(null);
+    }
+  };
+
+  const addContactToLeads = async (mid, idx, name) => {
+    try {
+      await api.post(`/buyer-discovery/matches/${mid}/contacts/${idx}/add-to-leads`);
+      toast.success(`${name} added to Lead Nurturing`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Failed");
     }
   };
 
@@ -298,11 +328,30 @@ export default function BuyerDiscovery() {
 
                   <div className="flex flex-col gap-2 min-w-[160px]">
                     <button
+                      onClick={() => {
+                        if (openContactsFor === m.id) { setOpenContactsFor(null); return; }
+                        if (m.contacts) { setOpenContactsFor(m.id); }
+                        else { findContacts(m.id); }
+                      }}
+                      disabled={loadingContactsFor === m.id || !m.buyer_cik}
+                      title={!m.buyer_cik ? "Non-US listing — contact resolution requires SEC EDGAR CIK" : "Parse SEC filings + LinkedIn"}
+                      data-testid={`find-contacts-${m.id}`}
+                      className="wz-btn-ghost wz-btn text-xs flex items-center gap-2 justify-center"
+                    >
+                      <IdentificationCard size={12} />
+                      {loadingContactsFor === m.id
+                        ? "Resolving…"
+                        : m.contacts
+                          ? (openContactsFor === m.id ? "Hide contacts" : `View contacts (${(m.contacts.executives || []).length})`)
+                          : "Find contacts"}
+                      {m.contacts && (openContactsFor === m.id ? <CaretUp size={10} /> : <CaretDown size={10} />)}
+                    </button>
+                    <button
                       onClick={() => addToLeads(m.id)}
                       data-testid={`add-lead-${m.id}`}
                       className="wz-btn-ghost wz-btn text-xs flex items-center gap-2 justify-center"
                     >
-                      <ListChecks size={12} /> Add to leads
+                      <ListChecks size={12} /> Add firm to leads
                     </button>
                     <button
                       onClick={() => generateOutreach(m.id)}
@@ -337,11 +386,181 @@ export default function BuyerDiscovery() {
                     </div>
                   </div>
                 </div>
+
+                {/* Resolved contacts panel */}
+                {openContactsFor === m.id && m.contacts && (
+                  <ContactPanel
+                    contacts={m.contacts}
+                    matchId={m.id}
+                    onRefresh={() => findContacts(m.id, { refresh: true })}
+                    onAddContact={(idx, name) => addContactToLeads(m.id, idx, name)}
+                  />
+                )}
               </article>
             ))}
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * ContactPanel — resolved IR + named executives + LinkedIn + filings
+ * ========================================================================== */
+const RELEVANCE_LABEL = {
+  ceo: "CEO", cfo: "CFO", coo: "COO",
+  corp_dev: "Corp Dev", strategy: "Strategy",
+  legal: "Legal", ir: "Investor Relations", other: "Other",
+};
+const RELEVANCE_PILL = {
+  corp_dev: "pill-positive", strategy: "pill-positive",
+  cfo: "pill-gold", ceo: "pill-gold",
+  legal: "pill-amber", ir: "pill-amber", other: "pill",
+};
+
+function ContactPanel({ contacts, matchId, onRefresh, onAddContact }) {
+  const ir = contacts.ir_contact || {};
+  const gc = contacts.general_contacts || {};
+  return (
+    <div
+      data-testid={`contacts-panel-${matchId}`}
+      className="mt-4 border-t border-[var(--wz-border)] pt-4"
+    >
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+        <div className="overline flex items-center gap-2">
+          <IdentificationCard size={12} /> Decision-makers (from SEC filings)
+        </div>
+        <button
+          onClick={onRefresh}
+          data-testid={`refresh-contacts-${matchId}`}
+          className="text-[10px] font-mono-wz text-[var(--wz-text-tertiary)] hover:text-[var(--wz-text)] underline"
+        >
+          re-scan filings
+        </button>
+      </div>
+
+      {/* Firm-level intel */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4 text-xs">
+        {contacts.hq_address && (
+          <div className="border border-[var(--wz-border)] p-3">
+            <div className="overline mb-1 flex items-center gap-1"><MapPin size={11} /> HQ</div>
+            <div className="text-[var(--wz-text-secondary)] whitespace-pre-line leading-snug">{contacts.hq_address}</div>
+          </div>
+        )}
+        {(contacts.switchboard_phone || ir.phone || (gc.phones || []).length > 0) && (
+          <div className="border border-[var(--wz-border)] p-3">
+            <div className="overline mb-1 flex items-center gap-1"><Phone size={11} /> Switchboard / IR</div>
+            <div className="text-[var(--wz-text-secondary)] space-y-0.5">
+              {contacts.switchboard_phone && <div>{contacts.switchboard_phone}</div>}
+              {ir.phone && <div>IR · {ir.phone}</div>}
+              {(gc.phones || []).slice(0, 2).map((p, i) => <div key={i}>{p}</div>)}
+            </div>
+          </div>
+        )}
+        {(ir.email || (gc.emails || []).length > 0) && (
+          <div className="border border-[var(--wz-border)] p-3">
+            <div className="overline mb-1 flex items-center gap-1"><Envelope size={11} /> Email (verbatim from filing)</div>
+            <div className="text-[var(--wz-text-secondary)] space-y-0.5 break-all">
+              {ir.email && (
+                <a href={`mailto:${ir.email}`} className="hover:text-[var(--wz-text)] underline">
+                  {ir.email}
+                </a>
+              )}
+              {(gc.emails || []).filter((e) => e !== ir.email).slice(0, 3).map((e) => (
+                <a key={e} href={`mailto:${e}`} className="block hover:text-[var(--wz-text)] underline">
+                  {e}
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Named executives */}
+      {(contacts.executives || []).length > 0 ? (
+        <div className="space-y-2" data-testid={`executives-${matchId}`}>
+          {contacts.executives.map((ex, idx) => (
+            <div
+              key={idx}
+              data-testid={`executive-${matchId}-${idx}`}
+              className="border border-[var(--wz-border)] p-3 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-start"
+            >
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="font-medium text-sm">{ex.name}</div>
+                  <span className={`pill ${RELEVANCE_PILL[ex.relevance] || "pill"}`}>
+                    {RELEVANCE_LABEL[ex.relevance] || "Other"}
+                  </span>
+                </div>
+                <div className="text-xs text-[var(--wz-text-secondary)] mt-0.5">{ex.title}</div>
+                {ex.rationale && (
+                  <div className="text-xs text-[var(--wz-text-tertiary)] mt-1 italic">{ex.rationale}</div>
+                )}
+                {ex.source_excerpt && (
+                  <details className="mt-1">
+                    <summary className="text-[10px] font-mono-wz text-[var(--wz-text-tertiary)] cursor-pointer hover:text-[var(--wz-text)]">
+                      filing excerpt
+                    </summary>
+                    <div className="mt-1 text-[11px] text-[var(--wz-text-tertiary)] border-l-2 border-[var(--wz-border)] pl-2 italic">
+                      "{ex.source_excerpt}"
+                    </div>
+                  </details>
+                )}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {ex.linkedin_url ? (
+                  <a
+                    href={ex.linkedin_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    data-testid={`linkedin-${matchId}-${idx}`}
+                    className="wz-btn-ghost wz-btn text-xs flex items-center gap-1"
+                  >
+                    <LinkedinLogo size={12} /> LinkedIn
+                  </a>
+                ) : (
+                  <span className="text-[10px] font-mono-wz text-[var(--wz-text-tertiary)]">no LinkedIn match</span>
+                )}
+                <button
+                  onClick={() => onAddContact(idx, ex.name)}
+                  data-testid={`add-contact-lead-${matchId}-${idx}`}
+                  className="wz-btn-ghost wz-btn text-xs flex items-center gap-1"
+                  title="Add as Lead"
+                >
+                  <UserPlus size={12} /> Lead
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="text-xs text-[var(--wz-text-tertiary)] italic">
+          No named executives extracted from this company's filings.
+        </div>
+      )}
+
+      {/* Source filings */}
+      {(contacts.used_filings || []).length > 0 && (
+        <div className="mt-4 flex flex-wrap gap-3 text-[10px] font-mono-wz text-[var(--wz-text-tertiary)]">
+          <span>sourced from:</span>
+          {contacts.used_filings.map((f, i) => (
+            <a
+              key={i}
+              href={f.url || "#"}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 underline hover:text-[var(--wz-text)]"
+              data-testid={`source-filing-${matchId}-${i}`}
+            >
+              {f.form} · {f.filed} <ArrowSquareOut size={9} />
+            </a>
+          ))}
+          <span>
+            · resolved {contacts.generated_at ? new Date(contacts.generated_at).toLocaleString() : ""}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

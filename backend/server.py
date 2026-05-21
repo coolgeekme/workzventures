@@ -3336,7 +3336,7 @@ async def send_collateral_to_inquiry(cid: str, body: SendToInquiry, user=Depends
 # -----------------------------------------------------------------------------
 # BUYER DISCOVERY · Phase 1 (SEC EDGAR + Companies House [stubbed] + Claude)
 # -----------------------------------------------------------------------------
-from buyer_discovery import gather_candidates, rank_with_claude  # noqa: E402
+from buyer_discovery import gather_candidates, rank_with_claude, resolve_match_contacts  # noqa: E402
 
 BUYER_DISCOVERY_RESCAN_HOURS = int(os.environ.get("BUYER_DISCOVERY_RESCAN_HOURS", "24"))
 BUYER_MATCH_ALERT_THRESHOLD = 70  # only score >= 70 produces a new-buyer alert
@@ -3630,6 +3630,93 @@ async def generate_outreach_for_match(mid: str, user=Depends(get_current_user)):
                                                               "campaign_id": campaign["id"]}})
     await log_audit(user["id"], "buyer_discovery.match.outreach", mid, {"campaign_id": campaign["id"]})
     return campaign
+
+
+@api_router.post("/buyer-discovery/matches/{mid}/find-contacts")
+async def find_contacts_for_match(mid: str, refresh: bool = False, user=Depends(get_current_user)):
+    """Find named M&A/Corp Dev/IR contacts at this buyer firm by parsing their recent SEC filings
+    (DEF 14A, 10-K, 8-K) with Claude, then resolve LinkedIn URLs via Brave. Emails/phones are only
+    surfaced if they literally appear in the filing text."""
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
+    if not match or (user.get("role") != "admin" and match.get("seller_id") != user["id"]):
+        raise HTTPException(status_code=404, detail="Match not found")
+
+    cached = match.get("contacts") or None
+    if cached and not refresh:
+        return cached
+
+    if not match.get("buyer_cik"):
+        raise HTTPException(status_code=400, detail="No SEC CIK on this match — contact resolution requires a US public-company candidate")
+
+    started = now_utc()
+    try:
+        result = await resolve_match_contacts(
+            call_claude, search_brave,
+            cik=str(match["buyer_cik"]),
+            company_name=match.get("buyer_name") or "",
+        )
+    except Exception as e:
+        logger.exception("Contact resolution failed")
+        raise HTTPException(status_code=500, detail=f"Contact resolution failed: {e}")
+
+    # Persist on the match for cheap subsequent reads
+    await db.buyer_matches.update_one(
+        {"id": mid},
+        {"$set": {"contacts": result, "contacts_resolved_at": result["generated_at"]}},
+    )
+    duration_ms = int((now_utc() - started).total_seconds() * 1000)
+    await log_agent_activity(
+        "contact-resolution-agent",
+        f"resolve:{match.get('buyer_name')}",
+        "completed", user_id=user["id"], duration_ms=duration_ms,
+    )
+    await log_audit(
+        user["id"], "buyer_discovery.match.contacts", mid,
+        {"executives": len(result.get("executives") or []),
+         "ir_email": bool((result.get("ir_contact") or {}).get("email")),
+         "filings_used": len(result.get("used_filings") or [])},
+    )
+    return result
+
+
+@api_router.post("/buyer-discovery/matches/{mid}/contacts/{contact_idx}/add-to-leads")
+async def add_contact_to_leads(mid: str, contact_idx: int, user=Depends(get_current_user)):
+    """Promote a single resolved executive into the Lead Nurturing kanban."""
+    if user.get("role") not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
+    if not match or (user.get("role") != "admin" and match.get("seller_id") != user["id"]):
+        raise HTTPException(status_code=404, detail="Match not found")
+    execs = ((match.get("contacts") or {}).get("executives")) or []
+    if contact_idx < 0 or contact_idx >= len(execs):
+        raise HTTPException(status_code=404, detail="Contact not found — run find-contacts first")
+    ex = execs[contact_idx]
+    listing = await db.listings.find_one({"id": match.get("listing_id")}, {"_id": 0}) or {}
+    lead = {
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "name": ex.get("name") or "Corporate Development",
+        "company": match.get("buyer_name"),
+        "title": ex.get("title") or "Corporate Development",
+        "email": None,  # never inferred — only if literally in filing
+        "linkedin_url": ex.get("linkedin_url"),
+        "source": "buyer-discovery-contact",
+        "stage": "new",
+        "score": int(match.get("score", 60)),
+        "buyer_match_id": mid,
+        "listing_id": match.get("listing_id"),
+        "listing_company": listing.get("company_name"),
+        "notes": ex.get("rationale"),
+        "country": match.get("country"),
+        "created_at": now_utc().isoformat(),
+    }
+    await db.leads.insert_one(lead)
+    await log_audit(user["id"], "buyer_discovery.contact.to_lead", mid,
+                    {"lead_id": lead["id"], "exec": ex.get("name")})
+    lead.pop("_id", None)
+    return lead
 
 
 @api_router.get("/buyer-alerts")
