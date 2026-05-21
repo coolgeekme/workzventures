@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { Toaster } from "sonner";
 import "@/App.css";
@@ -88,10 +88,20 @@ export default function App() {
 
 function ThemedToaster() {
   const { resolved } = useTheme();
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== "undefined" && window.matchMedia("(max-width: 1023px)").matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 1023px)");
+    const onChange = () => setIsMobile(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
   return (
     <Toaster
       theme={resolved}
-      position="top-right"
+      position={isMobile ? "top-center" : "top-right"}
+      offset={isMobile ? 72 : 16}
       toastOptions={{
         style: {
           background: "var(--wz-surface)",
@@ -100,6 +110,7 @@ function ThemedToaster() {
           borderRadius: 2,
           fontFamily: "'IBM Plex Sans', sans-serif",
         },
+        duration: 3000,
       }}
     />
   );

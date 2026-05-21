@@ -67,6 +67,23 @@ Build an enterprise platform that combines:
 - Buyer Research Hub, Marketing Collateral Generator, Outreach, Lead Nurturing, Newsletter (personal + broadcast), MCP Console (admin), Agent Monitor, Integrations (LinkedIn + Zoho CRM via Composio), Audit Logs (admin)
 - Backend tests: **86/86 pass** (was 73/73 before iter-7)
 
+## What's been implemented (2026-05-21 — iter-8 mobile + theme system)
+- **Mobile-first responsive layout** (breakpoint <1024px)
+  - Desktop 260px sidebar hidden on <lg; replaced with `MobileTopbar` (logo + theme toggle, sticky, env(safe-area-inset-top)) and `BottomTabBar` (5 tabs, fixed bottom, env(safe-area-inset-bottom))
+  - Bottom tab bar items vary by role — Buyer: Home/Research/Market/Vault/More · Seller: Home/Listings/Inbox/Vault/More · Admin: Home/Inbox/Vault/Audit/More. Active tab uses role accent (gold/amber/positive).
+  - `MoreSheet` (slide-up bottom sheet) holds remaining nav items + role pill + sign-out; opens via "More" tab, dismisses via drag-handle/backdrop/close button
+  - Global `px-8 py-8` → `px-4 sm:px-6 lg:px-8 py-6 lg:py-8` across 17 pages
+  - Landing/Login/Register fully responsive (single column on mobile, splash hidden, form-side gets inline logo on mobile)
+  - DealRoomDetail tabs strip is horizontally scrollable on mobile; DRL row grid collapses 3-col → 2-col
+- **Theme system: Dark / Light / Auto**
+  - `ThemeProvider` (lib/theme.jsx) persists preference to `localStorage[wz-theme-preference]`; "auto" follows `prefers-color-scheme` via matchMedia listener
+  - `ThemeToggle` component (Moon/Sun/Monitor icons) cycles dark → light → auto; mounted in MobileTopbar AND desktop Layout header
+  - **Light theme** = warm-paper aesthetic — bg #FAFAF7, surface #F2F1EB, text #1A1A19, gold darkened to #9E7B45, amber to #D97B00, positive #008A2E, negative #D92D20. Shadcn HSL tokens fully overridden for [data-theme="light"]. WCAG AA contrast.
+  - Hardcoded `text-white/bg-black/text-black/border-white` classes auto-overridden in light theme via global CSS (avoids touching 28 files)
+  - ThemedToaster: position=top-center + offset=72 on mobile (avoids topbar collision), top-right on desktop; theme prop follows resolved theme
+  - Viewport meta updated with viewport-fit=cover; theme-color media queries flip per OS preference
+- Frontend tests (iter-8): **43/44 functional checks pass** (1 UX bug — toast/toggle collision — fixed: removed redundant "Authenticated" toast on login)
+
 ## Prioritized backlog
 **P1**
 - Convert long-running Claude endpoints (research, newsletter) to async job pattern (POST → 202 + job id, GET to poll) for headroom beyond 60s ingress

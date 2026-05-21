@@ -20,7 +20,6 @@ export default function Login() {
     setLoading(true);
     try {
       await login(email, password);
-      toast.success("Authenticated");
       const to = loc.state?.from?.pathname || "/app/dashboard";
       nav(to);
     } catch (err) {
