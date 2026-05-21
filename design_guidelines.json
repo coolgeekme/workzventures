@@ -1,100 +1,130 @@
 {
-  "project_name": "Workz Ventures - Enhanced AI-Driven Buyer & Marketing Agency",
-  "theme": "dark",
-  "archetype": "Archetype 4 (Swiss & High-Contrast) + Archetype 5 (Jewel & Luxury)",
-  "vibe": "Bloomberg Terminal meets a high-end strategy consultancy. Editorial typography, data-dense layouts, intentional incompleteness, functional minimalism, highly confident, premium, and professional.",
-  "colors": {
-    "background": "#08080A",
-    "surface": "#121316",
-    "surface_hover": "#1A1B1F",
-    "border": "#27282D",
-    "primary": "#FFFFFF",
-    "primary_foreground": "#000000",
-    "accent_brand": "#C8A97E",
-    "accent_amber": "#FFB000",
-    "metric_positive": "#00FF66",
-    "metric_negative": "#FF3B30",
-    "text_primary": "#FFFFFF",
-    "text_secondary": "#A1A1AA",
-    "text_tertiary": "#71717A"
-  },
-  "typography": {
-    "font_families": {
-      "headings": "'Cabinet Grotesk', sans-serif",
-      "body": "'IBM Plex Sans', sans-serif",
-      "mono": "'JetBrains Mono', monospace"
+  "theme_tokens": {
+    "dark": {
+      "--wz-bg": "#08080A",
+      "--wz-surface": "#121316",
+      "--wz-surface-hover": "#1A1B1F",
+      "--wz-border": "#27282D",
+      "--wz-text-primary": "#FFFFFF",
+      "--wz-text-secondary": "#A1A1AA",
+      "--wz-text-tertiary": "#71717A",
+      "--wz-accent-gold": "#C8A97E",
+      "--wz-accent-amber": "#FFB000",
+      "--wz-positive": "#00FF66",
+      "--wz-negative": "#FF3B30"
     },
-    "font_imports": [
-      "@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap');",
-      "@import url('https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@800,500,700,400,300&display=swap');"
-    ],
-    "rules": {
-      "h1": "text-4xl sm:text-5xl lg:text-6xl tracking-tighter font-medium font-headings",
-      "h2": "text-2xl sm:text-3xl lg:text-4xl tracking-tight font-medium font-headings",
-      "h3": "text-xl sm:text-2xl tracking-tight font-headings",
-      "body": "text-sm sm:text-base font-body text-text_secondary leading-relaxed",
-      "metrics": "font-mono font-medium tracking-tight text-white",
-      "overline": "uppercase tracking-[0.2em] text-[10px] sm:text-xs font-mono text-text_tertiary"
+    "light": {
+      "--wz-bg": "#FAFAF7",
+      "--wz-surface": "#F2F1EB",
+      "--wz-surface-hover": "#E8E7DF",
+      "--wz-border": "#DCDCD5",
+      "--wz-text-primary": "#1A1A19",
+      "--wz-text-secondary": "#575754",
+      "--wz-text-tertiary": "#8A8A85",
+      "--wz-accent-gold": "#9E7B45",
+      "--wz-accent-amber": "#D97B00",
+      "--wz-positive": "#008A2E",
+      "--wz-negative": "#D92D20"
     }
   },
-  "layout_and_spacing": {
-    "strategy": "The 'Control Room Grid' for Dashboards, 'F-pattern hierarchy' for scanning data.",
-    "dashboard_grid": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4, tight gaps (gap-4 or gap-6). Utilize full height (`h-full`).",
-    "border_strategy": "Grid Borders (The Technical Look). Expose the skeleton. Container: `border-collapse`. Items: subtle borders (`border-r border-b border-border`).",
-    "spacing_scale": "Dense inside widgets (`p-4` or `p-6`) to maximize data visibility. Generous padding around the main dashboard container (`p-8` to `p-12`)."
+  "typography": {
+    "fonts": {
+      "display": "Cabinet Grotesk",
+      "body": "IBM Plex Sans",
+      "mono": "JetBrains Mono"
+    }
   },
-  "components": {
-    "cards_and_widgets": "Flat background (`bg-surface`), sharp corners or max 4px radius (`rounded-sm`), 1px subtle border (`border-border`), no shadow. On hover, slight lift and border color brightens to `border-text_tertiary`.",
-    "buttons": "Square or very slightly rounded (`rounded-sm`). Primary CTA: `bg-primary text-primary_foreground hover:bg-gray-200`. Secondary: `border border-border text-white hover:bg-surface_hover`. Danger/Action: `text-accent_amber border-accent_amber`.",
-    "tables_and_data": "Dense layout. Use monospace (`JetBrains Mono`) for all numbers, IDs, and financial metrics. Left-aligned text, right-aligned metrics. Subdued header text using overline typography.",
-    "forms_and_inputs": "Minimalist inputs. `bg-transparent border-b border-border` or strict boxed inputs with `border-border`. No heavy glows, just a crisp 1px highlight on focus.",
-    "navigation_sidebar": "Solid dark background (`bg-background`). High contrast active states with a 2px left border using `border-primary` or `border-accent_brand`. Overline text for category groups."
-  },
-  "motion_and_interactions": {
-    "hover_states": "Crisp and immediate. Text brightness increases, border contrast increases. No bouncy animations.",
-    "transitions": "Use `transition-colors duration-200 ease-in-out` for UI elements.",
-    "loading": "Terminal-style loading. Use monospace percentage counters or subtle linear progress bars at the top of cards, rather than generic spinning circles."
-  },
-  "icons_and_assets": {
-    "library": "@phosphor-icons/react",
-    "style": "Regular or Light weight for dashboard density. Use sharp, un-rounded icons if possible.",
-    "installation": "yarn add @phosphor-icons/react"
-  },
-  "image_urls": {
-    "login_background": {
-      "url": "https://static.prod-images.emergentagent.com/jobs/99d61e05-18d6-4593-8525-63fadbb097b3/images/051604875a1f24b758170839747cdade0243dbdcd5308a8e08000fd5dc35d2c1.png",
-      "description": "Architectural high-end dark institutional building structure. Use this for the Auth/Login page as an immersive side-panel."
+  "mobile_navigation": {
+    "bottom_tab_bar": {
+      "height": "64px",
+      "positioning": "fixed bottom-0 left-0 w-full z-50",
+      "layout": "flex justify-around items-center px-2",
+      "background": "bg-wz-surface/90 backdrop-blur-xl supports-[backdrop-filter]:bg-wz-surface/60",
+      "border": "border-t border-wz-border",
+      "active_state": "text-wz-accent-gold, icon filled",
+      "inactive_state": "text-wz-text-tertiary, icon outline",
+      "icon_size": "24px",
+      "label_typography": "text-[10px] font-medium tracking-wide mt-1",
+      "safe_area_padding": "pb-[env(safe-area-inset-bottom)] pt-2",
+      "items_buyer": ["Dashboard", "Research Hub", "Marketplace", "The Vault", "More"],
+      "items_seller": ["Dashboard", "Listings", "Inbound Inquiries", "The Vault", "More"]
     },
-    "newsletter_cover": {
-      "url": "https://static.prod-images.emergentagent.com/jobs/99d61e05-18d6-4593-8525-63fadbb097b3/images/5cd58ebd0d3fa73fe174fd8942a03605c23c536b3bff18e72a17d700bd86c4b4.png",
-      "description": "Premium black textured paper with subtle gold line. Use this in the Marketing Collateral Generator and Newsletter Center as a cover/placeholder for generated assets."
+    "more_sheet": {
+      "type": "slide-up bottom sheet",
+      "height": "max-h-[85vh]",
+      "backdrop": "bg-black/50 backdrop-blur-sm fixed inset-0 z-50",
+      "surface": "bg-wz-bg rounded-t-[20px] absolute bottom-0 w-full pb-[env(safe-area-inset-bottom)]",
+      "header": "flex justify-between items-center p-4 border-b border-wz-border sticky top-0 bg-wz-bg z-10 rounded-t-[20px]",
+      "close_behavior": "swipe-down to close, tap backdrop to close, explicit close button (X) top right",
+      "content_layout": "flex flex-col gap-1 p-4 overflow-y-auto",
+      "elements": "remaining nav items (as standard horizontal rows with icon + label + chevron), role pill, sign-out button (at bottom, text-wz-negative)"
     },
-    "avatars": [
-      {
-        "url": "https://images.unsplash.com/photo-1767175620484-1ed37931a0d1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MTN8MHwxfHNlYXJjaHwzfHxidXNpbmVzcyUyMGV4ZWN1dGl2ZSUyMHBvcnRyYWl0JTIwZGFyayUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzc5Mjk5NTY1fDA&ixlib=rb-4.1.0&q=85",
-        "description": "Executive portrait for Buyer profiles or Leadership Insights"
-      },
-      {
-        "url": "https://images.unsplash.com/photo-1758600587730-a11917c13b85?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MTN8MHwxfHNlYXJjaHwyfHxidXNpbmVzcyUyMGV4ZWN1dGl2ZSUyMHBvcnRyYWl0JTIwZGFyayUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzc5Mjk5NTY1fDA&ixlib=rb-4.1.0&q=85",
-        "description": "Executive portrait for Lead Nurturing pipelines"
-      },
-      {
-        "url": "https://images.pexels.com/photos/10040258/pexels-photo-10040258.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
-        "description": "Executive portrait for Agent Activity Monitor or Audit Logs"
-      }
+    "mobile_topbar": {
+      "visibility": "visible on <lg (lg:hidden)",
+      "height": "56px",
+      "positioning": "sticky top-0 w-full z-40",
+      "background": "bg-wz-bg/90 backdrop-blur-md",
+      "border": "border-b border-wz-border",
+      "layout": "flex justify-between items-center px-4 pt-[env(safe-area-inset-top)] h-[calc(56px+env(safe-area-inset-top))]",
+      "elements_left": "Brand Logo (height 20px-24px)",
+      "elements_center": "Page Title (text-sm font-medium text-wz-text-primary truncate max-w-[150px]) - optional",
+      "elements_right": "Theme Toggle Button"
+    }
+  },
+  "theme_toggle_ux": {
+    "type": "single icon button cycling 3 states",
+    "cycle_order": ["Dark", "Light", "Auto"],
+    "interaction": "click cycles to next state, persists to localStorage('theme-preference'). 'Auto' applies OS prefers-color-scheme. Modifies <html data-theme='...'>",
+    "tooltip": "Cycle theme: Dark, Light, System",
+    "styling": "p-2 rounded-full hover:bg-wz-surface-hover text-wz-text-secondary transition-colors h-10 w-10 flex items-center justify-center",
+    "icons": {
+      "Dark": "Moon",
+      "Light": "Sun",
+      "Auto": "Monitor/Laptop"
+    }
+  },
+  "responsive_guidance": {
+    "spacing": "px-4 md:px-6 lg:px-8",
+    "grid_patterns": [
+      "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3",
+      "Data metrics: grid-cols-2 md:grid-cols-4 lg:grid-cols-4"
+    ],
+    "data_display": "Tables -> Card stack on mobile. Hide less critical columns on md. Flip entirely to stacked layout (row = card) on <md.",
+    "typography": "text-2xl -> lg:text-3xl for main headers, text-sm -> lg:text-base for body text where appropriate.",
+    "sidebar_layout": "lg:block hidden fixed w-[260px] h-screen border-r border-wz-border bg-wz-surface",
+    "main_content_margin": "lg:ml-[260px] pb-[calc(64px+env(safe-area-inset-bottom))] lg:pb-0 pt-[calc(56px+env(safe-area-inset-top))] lg:pt-0"
+  },
+  "safe_area_considerations": {
+    "viewport_meta": "<meta name='viewport' content='width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover'>",
+    "bottom_inset": "Apply `pb-[env(safe-area-inset-bottom)]` to Bottom Tab Bar and More Sheet surface bottom.",
+    "top_inset": "Apply `pt-[env(safe-area-inset-top)]` to Mobile Topbar and ensure the height includes it.",
+    "min_touch_target": "Ensure all interactive elements (tabs, toggle, sheet rows) have at least 44x44px tappable area."
+  },
+  "component_structure": {
+    "pseudo_code": [
+      "export default function AppShell({ children }) {",
+      "  return (",
+      "    <div className='min-h-screen bg-wz-bg text-wz-text-primary'>",
+      "      <MobileTopbar />",
+      "      <DesktopSidebar />",
+      "      <main className='lg:ml-[260px] pb-[calc(64px+env(safe-area-inset-bottom))] lg:pb-0'>",
+      "        {children}",
+      "      </main>",
+      "      <BottomTabBar />",
+      "      <MoreSheet />",
+      "    </div>",
+      "  );",
+      "}"
     ]
   },
-  "critical_testing_rules": {
-    "data_testid": "All interactive and key informational elements MUST include a `data-testid` attribute (e.g., `data-testid=\"login-submit-button\"`, `data-testid=\"buyer-kpi-aum\"`). This is mandatory for automated testing."
-  },
-  "instructions_to_main_agent": [
-    "Strictly follow the dark theme and avoid pure black or pure gray. Use the provided tinted `#08080A` and `#121316`.",
-    "Do not use purple or teal gradients. Use flat solid colors for all UI elements. Color is functional.",
-    "Implement 'Grid Borders' style for dashboard layouts: expose the structure. Do not overuse isolated floating cards; prefer a unified grid.",
-    "All numbers, stats, and financial metrics MUST use `JetBrains Mono` font.",
-    "For headings, strictly use `Cabinet Grotesk` and apply `tracking-tight` or `tracking-tighter`.",
-    "Ensure `data-testid` is added to all buttons, links, inputs, and major data points.",
-    "For the MCP Actions Console and Agent Activity Monitor, adopt a heavily terminal-inspired look (Monospace text, green/amber status indicators).",
-    "For the Marketing/Newsletter pages, lean into the 'Jewel & Luxury' archetype (use `Cabinet Grotesk`, generous spacing, and the `newsletter_cover` image)."
-  ]
+  "testing_attributes": {
+    "instructions": "All interactive and key informational elements MUST include a data-testid attribute.",
+    "examples": [
+      "data-testid='tab-bar-dashboard'",
+      "data-testid='tab-bar-more'",
+      "data-testid='theme-toggle-btn'",
+      "data-testid='more-sheet-sign-out'",
+      "data-testid='mobile-topbar-logo'"
+    ]
+  }
 }
