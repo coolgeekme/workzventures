@@ -877,7 +877,7 @@ async def list_inquiries(user=Depends(get_current_user)):
         q = {"buyer_id": user["id"]}
     else:
         q = {}
-    items = await db.inquiries.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
+    items = await db.inquiries.find({**q, "deleted_at": {"$exists": False}}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return items
 
 
@@ -1149,7 +1149,7 @@ async def research_company(body: CompanyResearchRequest, user=Depends(get_curren
 
 @api_router.get("/research/history")
 async def research_history(user=Depends(get_current_user)):
-    items = await db.research.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    items = await db.research.find({"user_id": user["id"], "deleted_at": {"$exists": False}}, {"_id": 0}).sort("created_at", -1).to_list(50)
     return items
 
 
@@ -1204,7 +1204,7 @@ async def generate_collateral(body: CollateralRequest, user=Depends(get_current_
 
 @api_router.get("/collateral")
 async def list_collateral(user=Depends(get_current_user)):
-    items = await db.collateral.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    items = await db.collateral.find({"user_id": user["id"], "deleted_at": {"$exists": False}}, {"_id": 0}).sort("created_at", -1).to_list(50)
     return items
 
 
@@ -1259,7 +1259,7 @@ async def create_campaign(body: OutreachCampaignRequest, user=Depends(get_curren
 
 @api_router.get("/outreach/campaigns")
 async def list_campaigns(user=Depends(get_current_user)):
-    items = await db.outreach.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    items = await db.outreach.find({"user_id": user["id"], "deleted_at": {"$exists": False}}, {"_id": 0}).sort("created_at", -1).to_list(50)
     return items
 
 
@@ -1442,7 +1442,7 @@ async def personal_newsletter(body: NewsletterDraftRequest, user=Depends(get_cur
 
 @api_router.get("/newsletter")
 async def list_newsletters(user=Depends(get_current_user)):
-    items = await db.newsletters.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    items = await db.newsletters.find({"user_id": user["id"], "deleted_at": {"$exists": False}}, {"_id": 0}).sort("created_at", -1).to_list(50)
     for it in items:
         it.setdefault("kind", "broadcast")
     return items
@@ -1918,7 +1918,7 @@ async def list_deal_rooms(user=Depends(get_current_user)):
         q = {}
     else:
         q = {"$or": [{"buyer_id": user["id"]}, {"seller_id": user["id"]}]}
-    rooms = await db.deal_rooms.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
+    rooms = await db.deal_rooms.find({**q, "deleted_at": {"$exists": False}}, {"_id": 0}).sort("created_at", -1).to_list(200)
     for r in rooms:
         r["files_count"] = await db.deal_room_files.count_documents({"room_id": r["id"]})
         r["findings_count"] = await db.deal_room_findings.count_documents({"room_id": r["id"]})
@@ -2820,6 +2820,495 @@ async def security_posture(user=Depends(get_current_user)):
             "last_ts": head.get("last_ts"),
         },
     }
+
+
+# -----------------------------------------------------------------------------
+# CRUD: DELETE / EDIT / MESSAGING / COLLATERAL ACTIONS  (iter-11)
+# -----------------------------------------------------------------------------
+
+def _now_iso() -> str:
+    return now_utc().isoformat()
+
+
+async def _soft_delete(collection, query: dict, actor_id: str, action: str, target: str):
+    res = await collection.update_one({**query, "deleted_at": {"$exists": False}}, {"$set": {"deleted_at": _now_iso(), "deleted_by": actor_id}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Not found or already deleted")
+    await log_audit(actor_id, action, target)
+    return {"ok": True, "soft_deleted": True}
+
+
+# ---- Research ---------------------------------------------------------------
+@api_router.delete("/research/{rid}")
+async def delete_research(rid: str, user=Depends(get_current_user)):
+    """Hard delete own research brief — personal content."""
+    res = await db.research.delete_one({"id": rid, "user_id": user["id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Research brief not found")
+    await log_audit(user["id"], "research.delete", rid)
+    return {"ok": True}
+
+
+# ---- Inquiries: messaging + delete -----------------------------------------
+class InquiryMessageCreate(BaseModel):
+    body: str = Field(..., min_length=1, max_length=4000)
+    attachment_id: Optional[str] = None  # collateral_id when seller pushes a piece into the thread
+
+
+async def _inquiry_participant(iid: str, user: dict) -> dict:
+    inq = await db.inquiries.find_one({"id": iid, "deleted_at": {"$exists": False}}, {"_id": 0})
+    if not inq:
+        raise HTTPException(status_code=404, detail="Inquiry not found")
+    if user.get("role") == "admin":
+        return inq
+    if user["id"] not in (inq.get("buyer_id"), inq.get("seller_id")):
+        raise HTTPException(status_code=403, detail="Not a participant of this inquiry")
+    return inq
+
+
+@api_router.get("/inquiries/{iid}/messages")
+async def list_inquiry_messages(iid: str, user=Depends(get_current_user)):
+    await _inquiry_participant(iid, user)
+    msgs = await db.inquiry_messages.find({"inquiry_id": iid}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    # Mark unseen-by-me as read
+    await db.inquiry_messages.update_many(
+        {"inquiry_id": iid, "author_id": {"$ne": user["id"]}, "read_by": {"$nin": [user["id"]]}},
+        {"$addToSet": {"read_by": user["id"]}},
+    )
+    return msgs
+
+
+@api_router.post("/inquiries/{iid}/messages")
+async def post_inquiry_message(iid: str, body: InquiryMessageCreate, user=Depends(get_current_user)):
+    inq = await _inquiry_participant(iid, user)
+    attachment = None
+    if body.attachment_id:
+        coll = await db.collateral.find_one({"id": body.attachment_id, "user_id": user["id"]}, {"_id": 0})
+        if not coll:
+            raise HTTPException(status_code=404, detail="Attachment not found")
+        attachment = {
+            "kind": "collateral",
+            "id": coll["id"],
+            "title": coll.get("title") or coll.get("asset_type") or "Collateral",
+            "asset_type": coll.get("asset_type"),
+        }
+    msg = {
+        "id": str(uuid.uuid4()),
+        "inquiry_id": iid,
+        "author_id": user["id"],
+        "author_name": user.get("name"),
+        "author_role": user.get("role"),
+        "body": body.body,
+        "attachment": attachment,
+        "read_by": [user["id"]],
+        "created_at": _now_iso(),
+    }
+    await db.inquiry_messages.insert_one(msg)
+    await db.inquiries.update_one(
+        {"id": iid},
+        {"$set": {"last_message_at": msg["created_at"], "last_message_preview": (body.body or "")[:140]}, "$inc": {"message_count": 1}},
+    )
+    await log_audit(user["id"], "inquiry.message", iid, {"len": len(body.body), "attachment": bool(attachment)})
+    msg.pop("_id", None)
+    return msg
+
+
+@api_router.delete("/inquiries/{iid}")
+async def delete_inquiry(iid: str, user=Depends(get_current_user)):
+    """Buyer withdraws own inquiry · seller dismisses inbound · admin override. Soft delete."""
+    inq = await db.inquiries.find_one({"id": iid, "deleted_at": {"$exists": False}}, {"_id": 0})
+    if not inq:
+        raise HTTPException(status_code=404, detail="Inquiry not found")
+    if user.get("role") != "admin" and user["id"] not in (inq.get("buyer_id"), inq.get("seller_id")):
+        raise HTTPException(status_code=403, detail="Not your inquiry")
+    return await _soft_delete(db.inquiries, {"id": iid}, user["id"], "inquiry.delete", iid)
+
+
+# ---- Vaults (deal rooms): delete + buyer notes -----------------------------
+@api_router.delete("/deal-rooms/{rid}")
+async def delete_vault(rid: str, user=Depends(get_current_user)):
+    """Soft-delete a vault. Buyer/seller/admin all permitted (it ends the workspace for both)."""
+    room = await db.deal_rooms.find_one({"id": rid, "deleted_at": {"$exists": False}}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    if user.get("role") != "admin" and user["id"] not in (room.get("buyer_id"), room.get("seller_id")):
+        raise HTTPException(status_code=403, detail="Not a participant of this vault")
+    return await _soft_delete(db.deal_rooms, {"id": rid}, user["id"], "dealroom.delete", rid)
+
+
+# Buyer-side uploads: already allowed via /files & /files/binary (participant check
+# admits buyer). We expose a 'buyer_notes' folder option to keep things organized.
+
+
+# ---- Newsletter: edit recipients + delete + buyer interests ----------------
+class NewsletterEdit(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    sectors: Optional[List[str]] = None
+    recipient_ids: Optional[List[str]] = None  # explicit user ids if seller hand-picks
+
+
+@api_router.patch("/newsletter/{nid}")
+async def edit_newsletter(nid: str, body: NewsletterEdit, user=Depends(get_current_user)):
+    nl = await db.newsletters.find_one({"id": nid, "user_id": user["id"]}, {"_id": 0})
+    if not nl:
+        raise HTTPException(status_code=404, detail="Newsletter not found")
+    if nl.get("status") not in ("draft", "approved"):
+        raise HTTPException(status_code=400, detail="Only draft/approved newsletters can be edited")
+    update: Dict[str, Any] = {"updated_at": _now_iso()}
+    for k in ("title", "content", "sectors", "recipient_ids"):
+        v = getattr(body, k, None)
+        if v is not None:
+            update[k] = v
+    await db.newsletters.update_one({"id": nid}, {"$set": update})
+    await log_audit(user["id"], "newsletter.edit", nid, {"fields": list(update.keys())})
+    nl.update(update)
+    return nl
+
+
+@api_router.delete("/newsletter/{nid}")
+async def delete_newsletter(nid: str, user=Depends(get_current_user)):
+    nl = await db.newsletters.find_one({"id": nid, "user_id": user["id"]}, {"_id": 0})
+    if not nl:
+        raise HTTPException(status_code=404, detail="Newsletter not found")
+    # Hard delete drafts; soft delete dispatched (preserve OTS/audit trail)
+    if nl.get("status") in ("draft", "approved"):
+        await db.newsletters.delete_one({"id": nid, "user_id": user["id"]})
+        await log_audit(user["id"], "newsletter.delete", nid, {"mode": "hard"})
+        return {"ok": True, "hard_deleted": True}
+    return await _soft_delete(db.newsletters, {"id": nid, "user_id": user["id"]}, user["id"], "newsletter.delete", nid)
+
+
+class UserInterestsUpdate(BaseModel):
+    interests: List[str] = Field(default_factory=list)
+    newsletter_opt_in: Optional[bool] = None
+    newsletter_cadence: Optional[Literal["weekly", "biweekly", "monthly"]] = None
+
+
+@api_router.patch("/me/interests")
+async def update_my_interests(body: UserInterestsUpdate, user=Depends(get_current_user)):
+    """Buyer-side editor of personalized digest preferences (sectors + opt-in + cadence)."""
+    update: Dict[str, Any] = {"interests": [s.strip() for s in (body.interests or []) if s and s.strip()]}
+    if body.newsletter_opt_in is not None:
+        update["newsletter_opt_in"] = body.newsletter_opt_in
+    if body.newsletter_cadence is not None:
+        update["newsletter_cadence"] = body.newsletter_cadence
+    await db.users.update_one({"id": user["id"]}, {"$set": update})
+    await log_audit(user["id"], "user.interests.update", user["id"], {"interests": update["interests"]})
+    refreshed = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password_hash": 0})
+    return refreshed
+
+
+# ---- Outreach: edit + delete -----------------------------------------------
+class OutreachEdit(BaseModel):
+    name: Optional[str] = None
+    target_persona: Optional[str] = None
+    message_brief: Optional[str] = None
+    draft: Optional[Dict[str, Any]] = None  # the structured AI output (subject/opening/value_props/etc)
+    audience_size: Optional[int] = None
+
+
+@api_router.patch("/outreach/campaigns/{cid}")
+async def edit_outreach(cid: str, body: OutreachEdit, user=Depends(get_current_user)):
+    camp = await db.outreach.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if camp.get("status") not in ("draft", None):
+        raise HTTPException(status_code=400, detail="Only draft campaigns can be edited")
+    update: Dict[str, Any] = {"updated_at": _now_iso()}
+    for k in ("name", "target_persona", "message_brief", "draft", "audience_size"):
+        v = getattr(body, k, None)
+        if v is not None:
+            update[k] = v
+    await db.outreach.update_one({"id": cid}, {"$set": update})
+    await log_audit(user["id"], "outreach.edit", cid, {"fields": list(update.keys())})
+    return {**camp, **update}
+
+
+@api_router.delete("/outreach/campaigns/{cid}")
+async def delete_outreach(cid: str, user=Depends(get_current_user)):
+    camp = await db.outreach.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if camp.get("status") in ("draft", None):
+        await db.outreach.delete_one({"id": cid, "user_id": user["id"]})
+        await log_audit(user["id"], "outreach.delete", cid, {"mode": "hard"})
+        return {"ok": True, "hard_deleted": True}
+    return await _soft_delete(db.outreach, {"id": cid, "user_id": user["id"]}, user["id"], "outreach.delete", cid)
+
+
+# ---- Collateral: edit + versions + PDF + attach/push/send ------------------
+class CollateralEdit(BaseModel):
+    title: Optional[str] = None
+    headline: Optional[str] = None
+    subheadline: Optional[str] = None
+    sections: Optional[List[Dict[str, Any]]] = None
+    cta: Optional[str] = None
+    compliance_note: Optional[str] = None
+    full: Optional[Dict[str, Any]] = None  # full JSON replacement
+
+
+@api_router.patch("/collateral/{cid}")
+async def edit_collateral(cid: str, body: CollateralEdit, user=Depends(get_current_user)):
+    item = await db.collateral.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
+    if not item:
+        raise HTTPException(status_code=404, detail="Collateral not found")
+    # Snapshot the previous version
+    version_doc = {
+        "id": str(uuid.uuid4()),
+        "collateral_id": cid,
+        "user_id": user["id"],
+        "snapshot": {k: v for k, v in item.items() if k not in ("id", "user_id")},
+        "created_at": _now_iso(),
+    }
+    await db.collateral_versions.insert_one(version_doc)
+
+    # Asset content lives under coll["data"]
+    data = dict(item.get("data") or {})
+    if body.full is not None:
+        data.update({k: v for k, v in body.full.items() if k not in ("id", "user_id", "created_at")})
+    for k in ("title", "headline", "subheadline", "sections", "cta", "compliance_note"):
+        v = getattr(body, k, None)
+        if v is not None:
+            data[k] = v
+    update: Dict[str, Any] = {"updated_at": _now_iso(), "data": data}
+    await db.collateral.update_one({"id": cid, "user_id": user["id"]}, {"$set": update})
+    await log_audit(user["id"], "collateral.edit", cid, {"fields": list(data.keys())})
+    refreshed = await db.collateral.find_one({"id": cid}, {"_id": 0})
+    return refreshed
+
+
+def _coll_data(coll: dict) -> dict:
+    """Return the actual asset content dict (handles legacy top-level and new data-nested)."""
+    if isinstance(coll.get("data"), dict) and coll["data"]:
+        return coll["data"]
+    return {k: coll.get(k) for k in ("title", "headline", "subheadline", "sections", "cta", "compliance_note", "asset_type")}
+
+
+@api_router.delete("/collateral/{cid}")
+async def delete_collateral(cid: str, user=Depends(get_current_user)):
+    res = await db.collateral.delete_one({"id": cid, "user_id": user["id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Collateral not found")
+    await db.collateral_versions.delete_many({"collateral_id": cid})
+    await log_audit(user["id"], "collateral.delete", cid)
+    return {"ok": True}
+
+
+@api_router.get("/collateral/{cid}/versions")
+async def list_collateral_versions(cid: str, user=Depends(get_current_user)):
+    item = await db.collateral.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0, "id": 1})
+    if not item:
+        raise HTTPException(status_code=404, detail="Collateral not found")
+    versions = await db.collateral_versions.find(
+        {"collateral_id": cid, "user_id": user["id"]}, {"_id": 0}
+    ).sort("created_at", -1).to_list(100)
+    return versions
+
+
+def _collateral_to_pdf_bytes(coll: dict, user: dict) -> bytes:
+    """Lightweight branded one-pager using ReportLab."""
+    from reportlab.lib import colors as _c
+    from reportlab.lib.enums import TA_LEFT
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
+
+    d = _coll_data(coll)
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=LETTER, leftMargin=0.8 * inch, rightMargin=0.8 * inch,
+        topMargin=0.85 * inch, bottomMargin=0.85 * inch,
+        title=f"Workz · {d.get('title') or coll.get('asset_type','Collateral')}",
+        author=user.get("name") or "Workz Ventures",
+    )
+    s_overline = ParagraphStyle("o", fontName="Helvetica-Bold", fontSize=7, textColor=_c.HexColor("#9E7B45"), leading=9, spaceAfter=4)
+    s_h1 = ParagraphStyle("h1", fontName="Helvetica-Bold", fontSize=22, textColor=_c.HexColor("#1A1A19"), leading=26, spaceAfter=6)
+    s_h2 = ParagraphStyle("h2", fontName="Helvetica-Bold", fontSize=14, textColor=_c.HexColor("#1A1A19"), leading=18, spaceAfter=4, spaceBefore=10)
+    s_body = ParagraphStyle("body", fontName="Helvetica", fontSize=10.5, textColor=_c.HexColor("#1A1A19"), leading=15)
+    s_subhead = ParagraphStyle("sub", fontName="Helvetica-Oblique", fontSize=11.5, textColor=_c.HexColor("#575754"), leading=16, spaceAfter=10)
+    s_cta = ParagraphStyle("cta", fontName="Helvetica-Bold", fontSize=11.5, textColor=_c.HexColor("#9E7B45"), leading=16, spaceBefore=12)
+    s_small = ParagraphStyle("sm", fontName="Helvetica", fontSize=8, textColor=_c.HexColor("#8A8A85"), leading=11)
+
+    story = []
+    story.append(Paragraph(f"WORKZ VENTURES · {(coll.get('asset_type') or 'COLLATERAL').upper().replace('_',' ')}", s_overline))
+    story.append(Paragraph(d.get("headline") or d.get("title") or coll.get("deal_name","Untitled"), s_h1))
+    if d.get("subheadline"):
+        story.append(Paragraph(d["subheadline"], s_subhead))
+    story.append(HRFlowable(width="100%", thickness=0.6, color=_c.HexColor("#DCDCD5"), spaceAfter=10))
+    for sec in d.get("sections") or []:
+        if isinstance(sec, dict):
+            if sec.get("heading"):
+                story.append(Paragraph(sec["heading"], s_h2))
+            if sec.get("body"):
+                story.append(Paragraph(sec["body"], s_body))
+    if d.get("cta"):
+        story.append(Paragraph(d["cta"], s_cta))
+    if d.get("compliance_note"):
+        story.append(Spacer(1, 0.18 * inch))
+        story.append(HRFlowable(width="100%", thickness=0.4, color=_c.HexColor("#DCDCD5"), spaceAfter=6))
+        story.append(Paragraph(d["compliance_note"], s_small))
+    story.append(Spacer(1, 0.15 * inch))
+    story.append(Paragraph(f"Prepared by {user.get('name','—')} · {user.get('organization','—')} · {_fmt_now_short()}", s_small))
+    doc.build(story)
+    return buf.getvalue()
+
+
+def _fmt_now_short() -> str:
+    return now_utc().strftime("%Y-%m-%d")
+
+
+@api_router.get("/collateral/{cid}/pdf")
+async def collateral_pdf(cid: str, user=Depends(get_current_user)):
+    coll = await db.collateral.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
+    if not coll:
+        raise HTTPException(status_code=404, detail="Collateral not found")
+    try:
+        pdf = _collateral_to_pdf_bytes(coll, user)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not render PDF: {e}")
+    await log_audit(user["id"], "collateral.export.pdf", cid)
+    cd = _coll_data(coll)
+    safe = (cd.get("title") or coll.get("deal_name") or "collateral").lower().replace(" ", "-")
+    return StreamingResponse(
+        io.BytesIO(pdf), media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="workz-{safe}.pdf"'},
+    )
+
+
+class AttachToListing(BaseModel):
+    listing_id: str
+
+
+@api_router.post("/collateral/{cid}/attach-to-listing")
+async def attach_collateral(cid: str, body: AttachToListing, user=Depends(get_current_user)):
+    coll = await db.collateral.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
+    if not coll:
+        raise HTTPException(status_code=404, detail="Collateral not found")
+    listing = await db.listings.find_one({"id": body.listing_id, "seller_id": user["id"]}, {"_id": 0})
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found or not yours")
+    cd = _coll_data(coll)
+    attachments = listing.get("collateral_attachments") or []
+    attachments = [a for a in attachments if a.get("collateral_id") != cid]  # dedupe
+    attachments.append({
+        "collateral_id": cid,
+        "title": cd.get("title") or cd.get("headline") or coll.get("deal_name") or "Collateral",
+        "asset_type": coll.get("asset_type"),
+        "attached_at": _now_iso(),
+    })
+    await db.listings.update_one({"id": body.listing_id}, {"$set": {"collateral_attachments": attachments}})
+    await log_audit(user["id"], "collateral.attach.listing", cid, {"listing_id": body.listing_id})
+    return {"ok": True, "attachments": attachments}
+
+
+class PushToVault(BaseModel):
+    room_id: str
+    folder: Literal["financials", "legal", "hr", "it", "operations", "commercial", "other"] = "commercial"
+
+
+@api_router.post("/collateral/{cid}/push-to-vault")
+async def push_collateral_to_vault(cid: str, body: PushToVault, user=Depends(get_current_user)):
+    coll = await db.collateral.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
+    if not coll:
+        raise HTTPException(status_code=404, detail="Collateral not found")
+    room = await db.deal_rooms.find_one({"id": body.room_id, "deleted_at": {"$exists": False}}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    if user.get("role") != "admin" and user["id"] not in (room.get("buyer_id"), room.get("seller_id")):
+        raise HTTPException(status_code=403, detail="Not a participant of this vault")
+    if room.get("status") == "pending_nda":
+        raise HTTPException(status_code=400, detail="Vault still pending NDA")
+
+    # Render PDF
+    pdf = _collateral_to_pdf_bytes(coll, user)
+    cd = _coll_data(coll)
+    filename = f"{(cd.get('title') or coll.get('deal_name') or 'collateral').lower().replace(' ', '-')}.pdf"
+    file_id = str(uuid.uuid4())
+    plaintext_sha = sha256_hex(pdf)
+
+    storage_bytes = pdf
+    encrypted = False
+    encryption_alg = None
+    if encryption_configured():
+        try:
+            aad = f"{room['id']}:{file_id}".encode("utf-8")
+            enc = encrypt_bytes(pdf, associated_data=aad)
+            storage_bytes = enc["envelope"]
+            encrypted = True
+            encryption_alg = enc["alg"]
+        except Exception as e:
+            logger.warning(f"Collateral→Vault encryption failed: {e}")
+
+    gridfs_id = await gridfs_bucket.upload_from_stream(
+        filename, io.BytesIO(storage_bytes),
+        metadata={"room_id": room["id"], "file_id": file_id, "uploaded_by": user["id"],
+                  "content_type": "application/pdf", "encrypted": encrypted, "encryption_alg": encryption_alg, "source": f"collateral:{cid}"},
+    )
+    doc = {
+        "id": file_id,
+        "room_id": room["id"],
+        "filename": filename,
+        "folder": body.folder,
+        "content_type": "application/pdf",
+        "size_bytes": len(pdf),
+        "page_count": 1,
+        "pages": [{"page": 1, "text": _collateral_flat_text(coll)}],
+        "content": _collateral_flat_text(coll),
+        "char_count": len(_collateral_flat_text(coll)),
+        "gridfs_id": str(gridfs_id),
+        "storage": "gridfs",
+        "encrypted": encrypted,
+        "encryption_alg": encryption_alg,
+        "sha256_hex": plaintext_sha,
+        "note": f"Generated from collateral '{coll.get('title','')}'",
+        "uploaded_by": user["id"],
+        "uploaded_by_role": user.get("role"),
+        "uploaded_at": _now_iso(),
+        "matched_request_id": None,
+        "source_collateral_id": cid,
+    }
+    await db.deal_room_files.insert_one(doc)
+    doc.pop("_id", None)
+    await log_audit(user["id"], "collateral.push.vault", cid, {"room_id": room["id"], "file_id": file_id})
+    asyncio.create_task(notarize_bytes(
+        kind="vault.file", target_id=file_id, data=pdf, owner_user_id=user["id"],
+        label=f"Vault file (from collateral): {filename}", extra={"vault_id": room["id"], "filename": filename, "size_bytes": len(pdf), "source_collateral_id": cid},
+    ))
+    doc.pop("content", None); doc.pop("pages", None)
+    return doc
+
+
+def _collateral_flat_text(coll: dict) -> str:
+    d = _coll_data(coll)
+    parts = [d.get("headline",""), d.get("subheadline","")]
+    for sec in d.get("sections") or []:
+        if isinstance(sec, dict):
+            parts.append(sec.get("heading",""))
+            parts.append(sec.get("body",""))
+    if d.get("cta"): parts.append(d["cta"])
+    if d.get("compliance_note"): parts.append(d["compliance_note"])
+    return "\n\n".join(p for p in parts if p)
+
+
+class SendToInquiry(BaseModel):
+    inquiry_id: str
+    note: Optional[str] = None
+
+
+@api_router.post("/collateral/{cid}/send-to-inquiry")
+async def send_collateral_to_inquiry(cid: str, body: SendToInquiry, user=Depends(get_current_user)):
+    coll = await db.collateral.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
+    if not coll:
+        raise HTTPException(status_code=404, detail="Collateral not found")
+    inq = await _inquiry_participant(body.inquiry_id, user)
+    body_text = body.note or f"Sharing this collateral for your review: {coll.get('title') or coll.get('asset_type','one-pager')}."
+    msg_in = InquiryMessageCreate(body=body_text, attachment_id=cid)
+    return await post_inquiry_message(body.inquiry_id, msg_in, user)
+
+
+# -----------------------------------------------------------------------------
 
 
 # -----------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
-import { PaperPlaneTilt, Rocket } from "@phosphor-icons/react";
+import { PaperPlaneTilt, Rocket, Trash, PencilSimple, Check, X } from "@phosphor-icons/react";
 
 export default function Outreach() {
   const [form, setForm] = useState({
@@ -25,16 +25,6 @@ export default function Outreach() {
       toast.error(err?.response?.data?.detail || "Failed");
     } finally {
       setLoading(false);
-    }
-  };
-
-  const launch = async (id) => {
-    try {
-      const r = await api.post(`/outreach/campaigns/${id}/launch`);
-      toast.success(`Launched · ${r.data.sent_count} prospects`);
-      load();
-    } catch (err) {
-      toast.error(err?.response?.data?.detail || "Launch failed");
     }
   };
 
@@ -80,42 +70,126 @@ export default function Outreach() {
         <div className="overline mb-4">Campaigns</div>
         <div className="space-y-4" data-testid="campaign-list">
           {campaigns.map((c) => (
-            <div key={c.id} className="wz-card p-6">
-              <div className="flex items-start justify-between gap-6">
-                <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="font-display text-xl tracking-tight">{c.name}</div>
-                    <span className={`pill ${c.status === "launched" ? "pill-positive" : "pill-amber"}`}>{c.status}</span>
-                    <span className="pill pill-gold">{c.channel}</span>
-                  </div>
-                  <div className="text-sm text-[var(--wz-text-secondary)]">{c.target_persona}</div>
-
-                  <div className="mt-4 grid md:grid-cols-2 gap-4">
-                    <div className="border border-[var(--wz-border)] p-3">
-                      <div className="overline mb-1">LinkedIn message</div>
-                      <div className="text-xs leading-relaxed whitespace-pre-line">{c.draft?.linkedin_message || c.draft?.opening || "—"}</div>
-                    </div>
-                    <div className="border border-[var(--wz-border)] p-3">
-                      <div className="overline mb-1">Email body</div>
-                      <div className="text-xs leading-relaxed whitespace-pre-line">{c.draft?.email_body || c.draft?.opening || "—"}</div>
-                    </div>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="font-mono-wz text-2xl">{c.sent_count}/{c.audience_size}</div>
-                  <div className="overline mt-1">prospects sent</div>
-                  {c.status !== "launched" && (
-                    <button data-testid={`launch-${c.id}`} onClick={() => launch(c.id)} className="wz-btn mt-4 flex items-center gap-2 text-sm">
-                      <Rocket size={14} /> Launch (mocked)
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
+            <CampaignCard key={c.id} c={c} onChange={load} />
           ))}
           {campaigns.length === 0 && (
             <div className="wz-card p-10 text-center text-sm text-[var(--wz-text-tertiary)]">No campaigns yet.</div>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CampaignCard({ c, onChange }) {
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [linkedin, setLinkedin] = useState(c.draft?.linkedin_message || c.draft?.opening || "");
+  const [email, setEmail] = useState(c.draft?.email_body || c.draft?.opening || "");
+  const [name, setName] = useState(c.name || "");
+  const isDraft = c.status !== "launched";
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const newDraft = { ...(c.draft || {}), linkedin_message: linkedin, email_body: email };
+      await api.patch(`/outreach/campaigns/${c.id}`, { name, draft: newDraft });
+      toast.success("Campaign updated");
+      setEditing(false);
+      onChange?.();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Save failed");
+    } finally { setBusy(false); }
+  };
+
+  const remove = async () => {
+    if (!window.confirm(isDraft ? "Delete this draft campaign?" : "Archive this launched campaign? Audit records are preserved.")) return;
+    try {
+      await api.delete(`/outreach/campaigns/${c.id}`);
+      toast.success(isDraft ? "Campaign deleted" : "Campaign archived");
+      onChange?.();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Delete failed");
+    }
+  };
+
+  const launch = async () => {
+    try {
+      await api.post(`/outreach/campaigns/${c.id}/launch`);
+      toast.success("Campaign launched (MOCKED dispatch — wire LinkedIn API to go live)");
+      onChange?.();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Launch failed");
+    }
+  };
+
+  return (
+    <div className="wz-card p-6" data-testid={`campaign-${c.id}`}>
+      <div className="flex items-start justify-between gap-6 flex-wrap">
+        <div className="flex-1 min-w-[220px]">
+          <div className="flex items-center gap-3 mb-1 flex-wrap">
+            {editing ? (
+              <input value={name} onChange={(e) => setName(e.target.value)} className="wz-input text-xl font-display tracking-tight" data-testid={`campaign-name-edit-${c.id}`} />
+            ) : (
+              <div className="font-display text-xl tracking-tight">{c.name}</div>
+            )}
+            <span className={`pill ${c.status === "launched" ? "pill-positive" : "pill-amber"}`}>{c.status}</span>
+            <span className="pill pill-gold">{c.channel}</span>
+          </div>
+          <div className="text-sm text-[var(--wz-text-secondary)]">{c.target_persona}</div>
+
+          <div className="mt-4 grid md:grid-cols-2 gap-4">
+            <div className="border border-[var(--wz-border)] p-3">
+              <div className="overline mb-1">LinkedIn message</div>
+              {editing ? (
+                <textarea value={linkedin} onChange={(e) => setLinkedin(e.target.value)} rows={6} className="wz-input text-xs w-full" data-testid={`campaign-linkedin-edit-${c.id}`} />
+              ) : (
+                <div className="text-xs leading-relaxed whitespace-pre-line">{linkedin || "—"}</div>
+              )}
+            </div>
+            <div className="border border-[var(--wz-border)] p-3">
+              <div className="overline mb-1">Email body</div>
+              {editing ? (
+                <textarea value={email} onChange={(e) => setEmail(e.target.value)} rows={6} className="wz-input text-xs w-full" data-testid={`campaign-email-edit-${c.id}`} />
+              ) : (
+                <div className="text-xs leading-relaxed whitespace-pre-line">{email || "—"}</div>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="text-right flex flex-col items-end gap-2">
+          <div className="font-mono-wz text-2xl">{c.sent_count}/{c.audience_size}</div>
+          <div className="overline">prospects sent</div>
+          <div className="flex gap-2 mt-3 flex-wrap justify-end">
+            {!editing && isDraft && (
+              <button onClick={() => setEditing(true)} data-testid={`campaign-edit-${c.id}`} className="wz-btn-ghost wz-btn flex items-center gap-1.5 text-xs">
+                <PencilSimple size={12} /> Edit
+              </button>
+            )}
+            {editing && (
+              <>
+                <button onClick={save} disabled={busy} data-testid={`campaign-save-${c.id}`} className="wz-btn wz-btn-gold flex items-center gap-1.5 text-xs">
+                  <Check size={12} /> Save
+                </button>
+                <button onClick={() => { setEditing(false); setLinkedin(c.draft?.linkedin_message || ""); setEmail(c.draft?.email_body || ""); setName(c.name); }} className="wz-btn-ghost wz-btn flex items-center gap-1.5 text-xs">
+                  <X size={12} /> Cancel
+                </button>
+              </>
+            )}
+            {isDraft && !editing && (
+              <button data-testid={`launch-${c.id}`} onClick={launch} className="wz-btn flex items-center gap-1.5 text-xs">
+                <Rocket size={12} /> Launch
+              </button>
+            )}
+            <button
+              onClick={remove}
+              data-testid={`campaign-delete-${c.id}`}
+              title={isDraft ? "Delete" : "Archive"}
+              className="wz-btn-ghost wz-btn flex items-center gap-1.5 text-xs hover:!text-[var(--wz-negative)] hover:!border-[var(--wz-negative)]"
+            >
+              <Trash size={12} /> {isDraft ? "Delete" : "Archive"}
+            </button>
+          </div>
         </div>
       </div>
     </div>

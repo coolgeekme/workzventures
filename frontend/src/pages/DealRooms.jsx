@@ -1,17 +1,30 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { toast } from "sonner";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { FileText, Files, MagnifyingGlass, ListChecks, ArrowUpRight } from "@phosphor-icons/react";
+import { FileText, Files, MagnifyingGlass, ListChecks, ArrowUpRight, Trash } from "@phosphor-icons/react";
 
 export default function DealRooms() {
   const { user } = useAuth();
   const [rooms, setRooms] = useState([]);
   const isSeller = user?.role === "seller";
 
-  useEffect(() => {
-    api.get("/deal-rooms").then((r) => setRooms(r.data));
-  }, []);
+  const load = () => api.get("/deal-rooms").then((r) => setRooms(r.data));
+  useEffect(() => { load(); }, []);
+
+  const remove = async (e, r) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!window.confirm(`Close & archive the Vault for "${r.listing_name}"? Proofs and audit logs are preserved.`)) return;
+    try {
+      await api.delete(`/deal-rooms/${r.id}`);
+      toast.success("Vault archived");
+      load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Delete failed");
+    }
+  };
 
   return (
     <div data-testid="deal-rooms-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
@@ -44,6 +57,14 @@ export default function DealRooms() {
               <span className={`pill ${r.status === "active" ? "pill-positive" : r.status === "closed" ? "pill-gold" : "pill-amber"}`}>
                 {r.status.replace("_", " ")}
               </span>
+              <button
+                onClick={(e) => remove(e, r)}
+                data-testid={`delete-room-${r.id}`}
+                title="Close vault"
+                className="p-1 text-[var(--wz-text-tertiary)] hover:text-[var(--wz-negative)]"
+              >
+                <Trash size={13} />
+              </button>
             </div>
 
             <div className="grid grid-cols-3 gap-2 mt-5">

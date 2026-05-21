@@ -1,0 +1,45 @@
+{
+  "summary": "Iter-11 CRUD: delete/edit/messaging/collateral-actions tested end-to-end. 18/18 new pytest cases pass after fixes. Found and fixed 1 backend serialization bug (push-to-vault leaked Mongo `_id` ObjectId → 500). Cross-role authorization verified (buyer→seller collateral=404, outsider→inquiry=403). Soft-delete filter correctness verified across /inquiries, /deal-rooms, /newsletter. Push-to-vault end-to-end chain verified (encrypted PDF in GridFS, deal_room_files row created, OTS vault.file proof emitted). Frontend smoke test confirms data-testids and trash/edit affordances render across Inquiries, ResearchHub, DealRooms, Newsletter (buyer+seller), Outreach.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/collateral/{cid}/push-to-vault", "issue": "Was returning 500 — endpoint returned the doc AFTER `insert_one(doc)` which mutates the dict with Mongo `_id` (ObjectId). FastAPI failed to serialize. FIXED by adding `doc.pop('_id', None)` immediately after insert."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter11_crud.py",
+    "/app/test_reports/pytest/iter11_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Audit other endpoints that return a doc after `insert_one(doc)` — same ObjectId-leak pattern may exist elsewhere. A quick grep for `await db.*.insert_one(doc)` followed by `return doc` without a `_id` pop will surface candidates.",
+    "(Optional) Collateral preview UI is gated on selecting a history item. Consider auto-opening the most recent collateral on page load so the edit/PDF/distribution row is immediately discoverable to users."
+  ],
+  "critical_code_review_comments": [
+    "BUG (FIXED): /api/collateral/{cid}/push-to-vault leaked Mongo ObjectId in response → 500. Pattern: `await db.deal_room_files.insert_one(doc); ... return doc` — `insert_one` mutates the dict to add `_id`.",
+    "Soft-delete helper `_soft_delete` correctly returns 404 when target is already soft-deleted (matched_count==0 due to {$exists: False} guard). Good idempotency.",
+    "_inquiry_participant returns the inquiry but the helper is only used for its side-effect in callers like delete_inquiry where the result `inq` isn't reused — the pre-existing F841 lint flag is fine.",
+    "Cross-role authorization correctly uses owner-scoped queries (user_id) which produce 404 (not 403) for non-owners on collateral/outreach/newsletter — semantically reasonable (don't leak existence), but worth a product-level decision if uniform 403 is preferred.",
+    "Send-to-inquiry only allows the seller to attach their OWN collateral (`coll find_one user_id: user.id`). Buyers cannot attach the seller's collateral into the same thread — acceptable for this iteration.",
+    "Push-to-vault calls `notarize_bytes` via `asyncio.create_task` (fire-and-forget). Confirmed proofs are created. If the request lifetime is short, consider awaiting in a background task manager for stronger guarantees.",
+    "Newsletter delete: hard for draft/approved, soft for dispatched — matches spec; verified."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter11_crud.py (new — 18 tests)",
+    "/app/backend/server.py (1-line bugfix at push_collateral_to_vault: doc.pop('_id', None) after insert_one)"
+  ],
+  "success_rate": {
+    "backend": "100% (18/18 iter-11 tests passing after bugfix)",
+    "frontend": "~95% — all data-testids present, list/trash/edit affordances render. Collateral edit/PDF/distribution row is conditionally rendered after selecting a history item (not auto-opened) — verified present in source code."
+  },
+  "test_credentials": "All 3 (alex/mira/admin) from /app/memory/test_credentials.md work; one ephemeral TEST_outsider_<uuid>@example.com created at runtime for non-participant 403 verification.",
+  "seed_data_creation": "Test runs create a small amount of TEST_-prefixed research/inquiries/newsletters/outreach/collateral; most are cleaned up by their own delete steps; ephemeral outsider user remains in users collection.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Reusable test file: /app/backend/tests/test_iter11_crud.py (18 tests, ~2.5min). Key API conventions discovered: research generation is POST /api/research/company (NOT /research/brief); seller listings are GET /api/listings (no /mine suffix); buyer inquiry creation is POST /api/marketplace/{lid}/inquire with {message} (NOT POST /api/inquiries); deal-room files are inside GET /api/deal-rooms/{rid} response (NO separate /files endpoint); newsletter draft is seller-only via /newsletter/draft (buyers get 403); collateral creation needs `target_audience` + `key_points` (NOT `audience`/`highlights`). Push-to-vault now correctly returns the file row JSON without Mongo _id leak.",
+  "rca_of_push_to_vault_500": "Motor's `insert_one(doc)` mutates the input dict in place to add a Mongo-assigned `_id` (ObjectId). The endpoint then returned that mutated dict directly. FastAPI's `jsonable_encoder` chokes on bson.ObjectId with 'TypeError: ObjectId object is not iterable'. Fix: `doc.pop('_id', None)` immediately after insert (before any further use), consistent with the pattern already used in many other endpoints in this file (e.g., seed_demo_user, marketplace inquire)."
+}

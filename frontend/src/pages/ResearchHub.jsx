@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
-import { MagnifyingGlass } from "@phosphor-icons/react";
+import { MagnifyingGlass, Trash } from "@phosphor-icons/react";
 
 export default function ResearchHub() {
   const [form, setForm] = useState({ company_name: "", sector: "", region: "", notes: "" });
@@ -185,15 +185,36 @@ export default function ResearchHub() {
         <div className="overline mb-4">Research history</div>
         <div className="wz-grid grid-cols-1 md:grid-cols-3" data-testid="research-history">
           {history.map((h) => (
-            <button
-              key={h.id}
-              onClick={() => setCurrent(h)}
-              className="p-5 text-left hover:bg-[var(--wz-surface-hover)] transition-colors"
-            >
-              <div className="font-display tracking-tight">{h.company_name}</div>
-              <div className="overline mt-1">{new Date(h.created_at).toLocaleString()}</div>
-              <div className="text-xs text-[var(--wz-text-secondary)] mt-2 line-clamp-2">{h.data?.one_liner}</div>
-            </button>
+            <div key={h.id} className="p-5 group relative" data-testid={`research-item-${h.id}`}>
+              <button
+                onClick={() => setCurrent(h)}
+                className="w-full text-left"
+                data-testid={`research-open-${h.id}`}
+              >
+                <div className="font-display tracking-tight pr-8">{h.company_name}</div>
+                <div className="overline mt-1">{new Date(h.created_at).toLocaleString()}</div>
+                <div className="text-xs text-[var(--wz-text-secondary)] mt-2 line-clamp-2">{h.data?.one_liner}</div>
+              </button>
+              <button
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (!window.confirm(`Delete research brief for ${h.company_name}?`)) return;
+                  try {
+                    await api.delete(`/research/${h.id}`);
+                    toast.success("Research brief deleted");
+                    if (current?.id === h.id) setCurrent(null);
+                    loadHistory();
+                  } catch (err) {
+                    toast.error(err?.response?.data?.detail || "Delete failed");
+                  }
+                }}
+                data-testid={`research-delete-${h.id}`}
+                title="Delete this brief"
+                className="absolute top-3 right-3 p-1 text-[var(--wz-text-tertiary)] hover:text-[var(--wz-negative)] transition-colors"
+              >
+                <Trash size={13} />
+              </button>
+            </div>
           ))}
           {history.length === 0 && (
             <div className="p-8 text-sm text-[var(--wz-text-tertiary)] col-span-3">No briefs yet.</div>

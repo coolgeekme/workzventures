@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { EnvelopeSimple, CheckCircle, PaperPlaneTilt, Megaphone } from "@phosphor-icons/react";
+import { EnvelopeSimple, CheckCircle, PaperPlaneTilt, Megaphone, Trash } from "@phosphor-icons/react";
 
 const COVER = "https://customer-assets.emergentagent.com/job_buyer-intel-lab/artifacts/mtl2u4cl_eb9c42c75e492db9ec952105c8ad0f0d.png";
 const INTERESTS = ["SaaS", "HealthTech", "Industrial", "FinServ", "ClimateTech", "Consumer", "EMEA", "NA", "APAC"];
@@ -175,7 +175,26 @@ function BuyerDigest() {
                   <div className="p-6">
                     <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
                       <div className="overline">{D.issue_tagline || "Personal digest"}</div>
-                      <span className="pill pill-positive">delivered</span>
+                      <div className="flex items-center gap-2">
+                        <span className="pill pill-positive">delivered</span>
+                        <button
+                          onClick={async () => {
+                            if (!window.confirm("Delete this digest from your history?")) return;
+                            try {
+                              await api.delete(`/newsletter/${n.id}`);
+                              toast.success("Digest deleted");
+                              load();
+                            } catch (err) {
+                              toast.error(err?.response?.data?.detail || "Delete failed");
+                            }
+                          }}
+                          data-testid={`newsletter-delete-${n.id}`}
+                          className="p-1 text-[var(--wz-text-tertiary)] hover:text-[var(--wz-negative)]"
+                          title="Delete digest"
+                        >
+                          <Trash size={13} />
+                        </button>
+                      </div>
                     </div>
                     <h2 className="font-display text-2xl tracking-tight">{D.title || "Your digest"}</h2>
 
@@ -314,10 +333,30 @@ function SellerBroadcast() {
                 <div className="p-6">
                   <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
                     <div className="overline">{D.issue_tagline || "Broadcast"}</div>
-                    <span className={`pill ${
-                      n.status === "dispatched" ? "pill-positive" :
-                      n.status === "approved" ? "pill-gold" : "pill-amber"
-                    }`}>{n.status}</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`pill ${
+                        n.status === "dispatched" ? "pill-positive" :
+                        n.status === "approved" ? "pill-gold" : "pill-amber"
+                      }`}>{n.status}</span>
+                      <button
+                        onClick={async () => {
+                          const verb = n.status === "draft" || n.status === "approved" ? "Delete" : "Archive";
+                          if (!window.confirm(`${verb} this broadcast?`)) return;
+                          try {
+                            await api.delete(`/newsletter/${n.id}`);
+                            toast.success(`${verb}d`);
+                            load();
+                          } catch (err) {
+                            toast.error(err?.response?.data?.detail || "Delete failed");
+                          }
+                        }}
+                        data-testid={`newsletter-delete-${n.id}`}
+                        title="Delete / archive"
+                        className="p-1 text-[var(--wz-text-tertiary)] hover:text-[var(--wz-negative)]"
+                      >
+                        <Trash size={13} />
+                      </button>
+                    </div>
                   </div>
                   <h2 className="font-display text-2xl tracking-tight">{D.title || "Untitled broadcast"}</h2>
 
