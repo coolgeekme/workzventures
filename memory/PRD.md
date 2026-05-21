@@ -93,6 +93,16 @@ Build an enterprise platform that combines:
 - New deps: `opentimestamps==0.4.5`, `pycryptodomex==3.23.0`, `python-bitcoinlib==0.12.2` (cryptography 48 already present).
 - Backend tests (iter-9): **21/21 pytest pass · 100% frontend UI pass · zero bugs**. Admin acct now seeded for chain-verifier happy-path regression.
 
+## What's been implemented (2026-05-21 — iter-10 Cryptographic Provenance Certificate)
+- **`GET /api/deal-rooms/{rid}/certificate`** generates a per-Vault PDF artifact suitable for handing to a regulator, court, or counterparty. Aggregates: deal/buyer/seller metadata, NDA e-signature status with signer + timestamp, full Bitcoin-anchored event timeline (every OTS proof for this room/inquiry sorted by time), Vault file inventory (filename, folder, size, plaintext SHA-256, AES-GCM flag), AI findings summary (up to 8), audit-chain anchor (seq + last_hash + timestamp), and a copy-pasteable `ots verify` CLI snippet. QR code links back to /app/security.
+- **`provenance.py`** new module using ReportLab Platypus + qrcode. Brand palette matches platform light theme (warm paper / graphite / dark gold). 2-page typical render in ~0.5s. Page chrome on every page (cert ID, page numbers, verification footer).
+- **Self-notarizing**: the generated PDF itself is hashed and submitted to OpenTimestamps as `kind='vault.certificate'` — anyone can later prove the certificate existed in its exact form at issuance time.
+- Audit logged with action `dealroom.certificate.generate` (cert_id, proof_count, file_count in meta).
+- Auth scoping: room participants (buyer/seller) + admin can download; third parties get 403; non-existent room 404.
+- Frontend: "Provenance certificate" button in DealRoomDetail header next to the status pill. Disabled when room is pending_nda. Responsive label collapse on mobile ("Certificate"). Click triggers blob download with sensible filename.
+- New deps: `reportlab==4.5.1`, `qrcode==8.2`.
+- Backend tests (iter-10): **11/11 certificate tests pass · 20/21 security regression** (same 1 pre-existing skip as iter-9) · audit chain valid across 472 entries. Reusable test file at `/app/backend/tests/test_provenance_certificate.py`.
+
 ## Prioritized backlog
 **P1**
 - Convert long-running Claude endpoints (research, newsletter) to async job pattern (POST → 202 + job id, GET to poll) for headroom beyond 60s ingress
