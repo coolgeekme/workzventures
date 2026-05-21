@@ -2027,7 +2027,8 @@ async def upload_file(rid: str, body: FileUpload, user=Depends(get_current_user)
     if not room:
         raise HTTPException(status_code=404, detail="Vault not found")
     role = await participant_check(room, user)
-    if room.get("status") == "pending_nda":
+    # Sellers may stage documents pre-NDA; buyers cannot upload until they sign.
+    if room.get("status") == "pending_nda" and role != "seller":
         raise HTTPException(status_code=400, detail="Buyer must accept NDA before files can be exchanged")
 
     file_id = str(uuid.uuid4())
@@ -2163,7 +2164,8 @@ async def upload_file_binary(
     if not room:
         raise HTTPException(status_code=404, detail="Vault not found")
     role = await participant_check(room, user)
-    if room.get("status") == "pending_nda":
+    # Sellers may stage documents pre-NDA; buyers cannot upload until they sign.
+    if room.get("status") == "pending_nda" and role != "seller":
         raise HTTPException(status_code=400, detail="Buyer must accept NDA before files can be exchanged")
 
     data = await file.read()

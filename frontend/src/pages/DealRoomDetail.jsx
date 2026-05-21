@@ -263,8 +263,18 @@ export default function DealRoomDetail() {
         </div>
       )}
       {room.status === "pending_nda" && isSeller && (
-        <div className="wz-card p-5 mb-6 text-sm text-[var(--wz-text-secondary)]">
-          Waiting for <span className="text-white">{room.buyer_name}</span> to sign the NDA before the room unlocks.
+        <div className="wz-card p-5 mb-6 text-sm text-[var(--wz-text-secondary)]" data-testid="seller-pending-nda-banner">
+          <div className="flex items-start gap-3">
+            <ShieldCheck size={18} className="text-[var(--wz-amber)] mt-0.5 shrink-0" />
+            <div>
+              <div className="text-white font-medium mb-1">
+                Stage your data room while waiting for <span className="italic">{room.buyer_name}</span> to sign the NDA.
+              </div>
+              <div>
+                You can upload documents and apply a DRL template now — they stay locked from the buyer until the NDA is e-signed. Findings, Co-pilot, and buyer downloads unlock automatically on signature.
+              </div>
+            </div>
+          </div>
         </div>
       )}
       {room.status === "active" && room.nda_signed_name && (
@@ -365,8 +375,8 @@ export default function DealRoomDetail() {
             </div>
           </div>
 
-          {/* Upload */}
-          {isParticipant && room.status === "active" && (
+          {/* Upload — seller may stage pre-NDA; buyer waits for NDA sign-off */}
+          {isParticipant && (room.status === "active" || (isSeller && room.status === "pending_nda")) && (
             <form onSubmit={submitUpload} className="wz-card p-5 h-fit" data-testid="upload-form">
               <div className="flex items-center gap-2 mb-3">
                 <CloudArrowUp size={16} className={accentClass} />
