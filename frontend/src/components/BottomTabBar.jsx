@@ -108,6 +108,7 @@ export default function BottomTabBar() {
           <button
             onClick={() => setOpen(true)}
             data-testid="tab-bar-more"
+            id="tab-more"
             className="flex flex-col items-center justify-center gap-1 text-[var(--wz-text-tertiary)] hover:text-[var(--wz-text)]"
           >
             <DotsThreeOutline size={22} weight="regular" />

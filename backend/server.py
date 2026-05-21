@@ -42,6 +42,7 @@ from security_service import (
     stamp_digest, parse_ots, verify_ots, upgrade_ots, find_btc_attestation,
     encrypt_bytes, decrypt_envelope, encryption_configured,
 )
+from provenance import build_provenance_pdf
 
 # -----------------------------------------------------------------------------
 # Bootstrap
@@ -2292,6 +2293,97 @@ async def download_file(rid: str, file_id: str, user=Depends(get_current_user)):
         streamer(),
         media_type=f.get("content_type") or "application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{f["filename"]}"'},
+    )
+
+
+@api_router.get("/deal-rooms/{rid}/certificate")
+async def vault_provenance_certificate(rid: str, request: Request, user=Depends(get_current_user)):
+    """Generate a Cryptographic Provenance Certificate PDF for this Vault.
+
+    Aggregates every Bitcoin-anchored event (NDA signature, file uploads, AI findings,
+    inquiry status changes), the file inventory with SHA-256s and encryption flags, and
+    the current audit-chain head. Anyone — including a court, regulator, or counterparty —
+    can independently verify every event using the open-source `ots verify` CLI.
+    """
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    await participant_check(room, user)
+
+    inquiry = await db.inquiries.find_one({"id": room.get("inquiry_id")}, {"_id": 0}) or {}
+    listing = await db.listings.find_one({"id": room.get("listing_id")}, {"_id": 0}) or {}
+    if not listing.get("name"):
+        listing["name"] = room.get("listing_name") or inquiry.get("listing_name") or "Deal"
+    buyer = await db.users.find_one({"id": room.get("buyer_id")}, {"_id": 0, "password_hash": 0}) or {}
+    seller = await db.users.find_one({"id": room.get("seller_id")}, {"_id": 0, "password_hash": 0}) or {}
+
+    files = await db.deal_room_files.find(
+        {"room_id": rid},
+        {"_id": 0, "content": 0, "pages": 0},
+    ).sort("uploaded_at", 1).to_list(500)
+
+    file_ids = [f["id"] for f in files]
+    inquiry_id = room.get("inquiry_id")
+    proof_query = {
+        "$or": [
+            {"kind": "nda.signature", "target_id": rid},
+            {"kind": "vault.findings", "target_id": rid},
+            {"kind": "vault.file", "target_id": {"$in": file_ids}},
+            {"kind": "inquiry.status", "target_id": inquiry_id},
+        ]
+    }
+    proofs = await db.ots_proofs.find(
+        proof_query, {"_id": 0, "ots_bytes": 0}
+    ).sort("created_at", 1).to_list(500)
+
+    findings = await db.deal_room_findings.find(
+        {"room_id": rid}, {"_id": 0}
+    ).sort("created_at", 1).to_list(200)
+
+    chain_head = await db.audit_chain_head.find_one({"_id": "head"}, {"_id": 0}) or {}
+
+    cert_id = str(uuid.uuid4())[:8].upper()
+    generated_at = now_utc().isoformat()
+    base_url = str(request.base_url).rstrip("/").replace("/api", "")
+
+    try:
+        pdf_bytes = build_provenance_pdf(
+            cert_id=cert_id,
+            generated_at=generated_at,
+            room=room,
+            inquiry=inquiry,
+            listing=listing,
+            buyer=buyer,
+            seller=seller,
+            files=files,
+            proofs=proofs,
+            findings=findings,
+            chain_head=chain_head,
+            base_url=base_url,
+        )
+    except Exception as e:
+        logger.exception("Provenance PDF render failed")
+        raise HTTPException(status_code=500, detail=f"Could not render certificate: {e}")
+
+    await log_audit(user["id"], "dealroom.certificate.generate", rid, {
+        "cert_id": cert_id, "proof_count": len(proofs), "file_count": len(files),
+    })
+    # Notarize the certificate itself (Bitcoin-anchored "this certificate existed at T")
+    asyncio.create_task(notarize_bytes(
+        kind="vault.certificate",
+        target_id=rid,
+        data=pdf_bytes,
+        owner_user_id=user["id"],
+        label=f"Provenance certificate {cert_id} · {listing.get('name','')}",
+        extra={"vault_id": rid, "cert_id": cert_id, "size_bytes": len(pdf_bytes)},
+    ))
+
+    safe_name = (listing.get("name") or "deal").lower().replace(" ", "-").replace("/", "-")
+    filename = f"workz-provenance-{safe_name}-{cert_id}.pdf"
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

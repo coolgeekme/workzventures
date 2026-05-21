@@ -6,6 +6,7 @@ import { useAuth } from "../lib/auth";
 import {
   FileText, Files, MagnifyingGlass, ListChecks, ShieldCheck,
   CloudArrowUp, CheckCircle, Warning, ArrowLeft, ChatCircleDots, PaperPlaneTilt,
+  Certificate,
 } from "@phosphor-icons/react";
 
 const FOLDERS = [
@@ -81,6 +82,28 @@ export default function DealRoomDetail() {
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Failed");
     } finally { setBusy(false); }
+  };
+
+  const downloadCertificate = async () => {
+    setBusy(true);
+    try {
+      const r = await api.get(`/deal-rooms/${id}/certificate`, { responseType: "blob" });
+      const blob = new Blob([r.data], { type: "application/pdf" });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const safe = (room?.listing_name || "deal").toLowerCase().replace(/\s+/g, "-");
+      a.href = url;
+      a.download = `workz-provenance-${safe}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success("Provenance certificate downloaded");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not generate certificate");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const submitUpload = async (e) => {
@@ -166,9 +189,20 @@ export default function DealRoomDetail() {
             buyer <span className="text-white">{room.buyer_name}</span> ({room.buyer_org}) · seller <span className="text-white">{room.seller_name}</span> ({room.seller_org})
           </div>
         </div>
-        <span className={`pill ${room.status === "active" ? "pill-positive" : room.status === "closed" ? "pill-gold" : "pill-amber"}`}>
-          {room.status.replace("_", " ")}
-        </span>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={downloadCertificate}
+            disabled={busy || room.status === "pending_nda"}
+            data-testid="download-certificate-btn"
+            title={room.status === "pending_nda" ? "Sign NDA to unlock the certificate" : "Download Bitcoin-anchored Provenance Certificate (PDF)"}
+            className="wz-btn-ghost wz-btn text-xs flex items-center gap-2"
+          >
+            <Certificate size={14} /> <span className="hidden sm:inline">Provenance certificate</span><span className="sm:hidden">Certificate</span>
+          </button>
+          <span className={`pill ${room.status === "active" ? "pill-positive" : room.status === "closed" ? "pill-gold" : "pill-amber"}`}>
+            {room.status.replace("_", " ")}
+          </span>
+        </div>
       </div>
 
       {/* NDA gate */}

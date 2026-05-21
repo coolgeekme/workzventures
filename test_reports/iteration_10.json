@@ -1,0 +1,49 @@
+{
+  "summary": "Cryptographic Provenance Certificate (PDF) end-to-end testing — backend endpoint + frontend trigger. All 11 new certificate tests pass; 20/21 existing security tests still pass (no regression). Audit chain remains valid (472 entries).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_provenance_certificate.py",
+    "/app/test_reports/pytest/provenance_results.xml",
+    "/app/test_reports/pytest/security_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "PDF generation runs synchronously inside the request thread via reportlab — fine for the SLA budget (~0.5s observed for 3 events / 1 file), but consider offloading to a thread pool (run_in_executor) once vaults grow beyond ~100 events/files to avoid blocking the event loop.",
+    "Certificate notarization (notarize_bytes) is fire-and-forget via asyncio.create_task; if the request ends quickly, the task is still owned by the running event loop so this is OK in practice, but failures would only surface in backend logs — confirmed working: a new 'vault.certificate' proof IS created and is visible via /api/security/proofs.",
+    "filename uses listing.name lowercased & space-collapsed; works but underscores in listing names (e.g. 'TEST_Acme_eb2bb9') leak into filename — cosmetic only.",
+    "DealRoomDetail downloadCertificate uses room.listing_name slug (frontend) while backend uses listing.name + cert_id; cosmetic mismatch but both deliver valid PDFs."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_provenance_certificate.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (11/11 certificate tests + 20/21 security regression — 1 pre-existing skip)",
+    "frontend": "100% (desktop + mobile button visibility, click, download, filename, MIME, PDF magic bytes)"
+  },
+  "test_credentials": "Loaded from /app/memory/test_credentials.md — all 3 (buyer/seller/admin) work.",
+  "seed_data_creation": "Created one TEST_thirdparty_<ts>@example.com user to validate 403 non-participant scoping (the 403 path was hit successfully).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Reusable certificate test file: /app/backend/tests/test_provenance_certificate.py. The login response uses key 'token' (not 'access_token'). The audit log endpoint is /api/audit/logs (returns a list) and entries use fields 'target' and 'meta' (not 'target_id'/'metadata'). Active rooms with full event chain: 590511af-0c7b-47a3-b4bf-b2abff404e01 (buyer alex@, seller mira@). The PDF embeds reportlab text-extractable strings — pypdf can read all sections.",
+  "verified_acceptance_criteria": {
+    "pdf_validity": "PASS — %PDF- magic, application/pdf, Content-Disposition attachment, filename starts workz-provenance-",
+    "auth_scoping": "PASS — buyer/seller/admin all 200; non-existent 404; unauth 401; third-party non-participant 403",
+    "content_correctness": "PASS — title, buyer name+org+email, seller name+org+email, NDA e-signed by + timestamp, event timeline w/ SHA-256 + Bitcoin status (pending/block), file inventory w/ AES-GCM flag, audit-chain anchor (seq + last_hash + timestamp), 'ots verify' CLI snippet — all rendered. 2 pages.",
+    "vault_certificate_proof_entry": "PASS — new ots_proofs entry with kind='vault.certificate' created (verified via /api/security/proofs delta)",
+    "audit_log": "PASS — entry with action='dealroom.certificate.generate' includes cert_id, proof_count, file_count in meta",
+    "performance": "PASS — cert endpoint completes in ~0.5s (well under 5s)",
+    "frontend_button_desktop": "PASS — [data-testid='download-certificate-btn'] visible, enabled, label 'Provenance certificate', tooltip 'Download Bitcoin-anchored Provenance Certificate (PDF)'",
+    "frontend_button_mobile": "PASS — viewport 390px shows shorter 'Certificate' label, still visible/clickable",
+    "frontend_download": "PASS — Click triggers application/pdf download, filename matches workz-provenance-<slug>.pdf",
+    "disabled_state_pending_nda": "VERIFIED via code review — `disabled={busy || room.status === 'pending_nda'}` with title 'Sign NDA to unlock the certificate'. No active pending_nda room available in test data to UI-verify, but the logic is correct.",
+    "no_regression_security": "PASS — 20/21 security tests pass (same 1 pre-existing skip as iter-9); audit chain valid (472 entries)."
+  }
+}

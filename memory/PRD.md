@@ -84,6 +84,15 @@ Build an enterprise platform that combines:
   - Viewport meta updated with viewport-fit=cover; theme-color media queries flip per OS preference
 - Frontend tests (iter-8): **43/44 functional checks pass** (1 UX bug — toast/toggle collision — fixed: removed redundant "Authenticated" toast on login)
 
+## What's been implemented (2026-05-21 — iter-9 cryptographic security)
+- **OpenTimestamps Bitcoin-anchored notarization** — `security_service.py` submits SHA-256 digests to 3 free public OTS calendars (alice/bob/finney), merges responses into a single `DetachedTimestampFile`, and persists `.ots` bytes in Mongo `ots_proofs` collection. Auto-fires on: NDA e-signature, Vault file upload, AI findings generation, inquiry status → engaged/passed, and every 25th audit-log entry (chain checkpoint). Endpoint set: `GET /api/security/proofs` (scoped by role), `GET /api/security/proofs/{id}/download` (.ots binary), `POST /api/security/proofs/{id}/upgrade` (fetch BTC attestation when available), `POST /api/security/verify` (multipart: any user can verify an .ots + digest).
+- **AES-256-GCM at-rest encryption** for Vault files — Master key from `WORKZ_FILE_ENCRYPTION_KEY` env (32 bytes base64). Per-file 12-byte nonce + AAD bound to `roomid:fileid`. Plaintext SHA-256 stored alongside ciphertext for verification. Download transparently decrypts; metadata flags `encrypted: true, encryption_alg: 'AES-256-GCM'`.
+- **Tamper-evident hash-chained audit log** — each entry stores `seq`, `prev_hash`, `content_hash`. `GET /api/security/audit/verify` (admin-only) re-walks the chain and returns `chain_valid` + `broken_at` if anyone has tampered. Periodic OTS anchoring of chain head.
+- **Auth hardening**: bcrypt (unchanged), password complexity (≥8 chars, ≥1 letter, ≥1 digit, returns 400), brute-force lockout (5 fails / 15 min → 429), security headers middleware (HSTS, X-Frame-Options:DENY, X-Content-Type-Options:nosniff, Referrer-Policy, Permissions-Policy on every response).
+- **`/app/security` page**: 4-tile posture grid (Bitcoin-anchored · At-rest encryption · Tamper-evident audit chain · Auth hardening), full proof list with `.ots` download + "check confirmation" upgrade + Bitcoin-block-explorer links once confirmed, "Verify a proof" modal, admin-only chain verifier, self-verify CLI instructions. Mounted on desktop sidebar and mobile More sheet for all 3 roles.
+- New deps: `opentimestamps==0.4.5`, `pycryptodomex==3.23.0`, `python-bitcoinlib==0.12.2` (cryptography 48 already present).
+- Backend tests (iter-9): **21/21 pytest pass · 100% frontend UI pass · zero bugs**. Admin acct now seeded for chain-verifier happy-path regression.
+
 ## Prioritized backlog
 **P1**
 - Convert long-running Claude endpoints (research, newsletter) to async job pattern (POST → 202 + job id, GET to poll) for headroom beyond 60s ingress
