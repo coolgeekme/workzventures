@@ -1,12 +1,14 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../lib/auth";
-import { MagnifyingGlass, Plugs, X, ArrowSquareOut } from "@phosphor-icons/react";
+import { MagnifyingGlass, Plugs, X, ArrowSquareOut, ArrowLeft } from "@phosphor-icons/react";
 import { COMPOSIO_APPS } from "../data/composio_apps";
+import Logo from "../components/Logo";
+import ThemeToggle from "../components/ThemeToggle";
 
 /**
- * Hidden "/apps" route — a searchable index of every Composio app that can be
- * connected via username + password (not OAuth). Not linked from nav by design.
+ * Public "/apps" route — a searchable index of every Composio app that can be
+ * connected via username + password (not OAuth). Publicly browsable, not linked from nav.
  */
 export default function ConnectableApps() {
   const { user } = useAuth();
@@ -28,20 +30,7 @@ export default function ConnectableApps() {
     return Object.entries(g).sort(([a], [b]) => (a === "#" ? 1 : b === "#" ? -1 : a.localeCompare(b)));
   }, [filtered]);
 
-  if (!user) {
-    return (
-      <div className="px-4 sm:px-6 lg:px-8 py-10 max-w-[1600px] mx-auto">
-        <div className="wz-card p-10 text-center">
-          <div className="overline mb-2">Restricted</div>
-          <div className="text-sm text-[var(--wz-text-secondary)]">
-            <Link to="/login" className="underline">Sign in</Link> to view connectable apps.
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
+  const body = (
     <div data-testid="apps-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8 max-w-[1600px] mx-auto w-full">
       <div className="overline mb-3" style={{ color: "var(--wz-amber)" }}>Internal · Composio app catalog</div>
       <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium flex items-center gap-3">
@@ -141,8 +130,46 @@ export default function ConnectableApps() {
 
       <div className="mt-12 text-xs text-[var(--wz-text-tertiary)] border-t border-[var(--wz-border)] pt-6 max-w-2xl">
         Each tile links to the Composio app page where you can authorize the connection. Already-wired
-        integrations live on the <Link to="/app/composio" className="underline">Integrations</Link> page.
+        integrations live on the{" "}
+        {user ? (
+          <Link to="/app/composio" className="underline">Integrations</Link>
+        ) : (
+          <Link to="/login" className="underline">Integrations</Link>
+        )}{" "}
+        page.
       </div>
+    </div>
+  );
+
+  // Authenticated visitors get the page rendered inside the app shell (Layout
+  // wraps it via App.js for `/app/*` routes). For unauthenticated visitors we
+  // render a minimal public chrome around the body so the catalog stands alone.
+  if (user) return body;
+
+  return (
+    <div className="min-h-screen grain" data-testid="apps-public-shell">
+      <header className="border-b border-[var(--wz-border)] sticky top-0 z-30 backdrop-blur-md"
+              style={{ background: "color-mix(in srgb, var(--wz-bg) 88%, transparent)" }}>
+        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between gap-4">
+          <Link to="/" className="flex items-center gap-3 min-w-0" data-testid="apps-public-brand">
+            <Logo size="sm" testid="apps-public-logo" />
+            <div className="min-w-0">
+              <div className="font-display font-medium tracking-tighter text-base leading-none">Workz Ventures</div>
+              <div className="overline mt-1 truncate">Composio app catalog · public</div>
+            </div>
+          </Link>
+          <div className="flex items-center gap-3 shrink-0">
+            <Link to="/" className="hidden sm:inline-flex text-xs text-[var(--wz-text-secondary)] hover:text-[var(--wz-text)] items-center gap-1.5">
+              <ArrowLeft size={12} /> Workz home
+            </Link>
+            <Link to="/login" data-testid="apps-public-signin" className="wz-btn wz-btn-gold text-xs px-3 py-1.5">
+              Sign in
+            </Link>
+            <ThemeToggle testId="apps-public-theme" />
+          </div>
+        </div>
+      </header>
+      {body}
     </div>
   );
 }

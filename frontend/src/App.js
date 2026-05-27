@@ -72,7 +72,7 @@ function AppRoutes() {
       <Route path="/app/security" element={<Protected><Security /></Protected>} />
       <Route path="/app/buyers" element={<Protected><BuyerDiscovery /></Protected>} />
       <Route path="/app/buyer-alerts" element={<Protected><BuyerAlerts /></Protected>} />
-      <Route path="/apps" element={<Protected><ConnectableApps /></Protected>} />
+      <Route path="/apps" element={<ConnectableApps />} />
       <Route path="/app/audit" element={<AdminOnly><Audit /></AdminOnly>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
