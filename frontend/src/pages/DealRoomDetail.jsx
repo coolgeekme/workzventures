@@ -190,6 +190,22 @@ export default function DealRoomDetail() {
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {isParticipant && (room.status === "active" || (isSeller && room.status === "pending_nda")) && (
+            <button
+              onClick={() => {
+                setTab("files");
+                setTimeout(() => {
+                  document.querySelector('[data-testid="upload-form"]')?.scrollIntoView({ behavior: "smooth", block: "center" });
+                  document.querySelector('[data-testid="upload-file-input"]')?.focus();
+                }, 50);
+              }}
+              data-testid="header-upload-btn"
+              title="Upload a document into this Vault"
+              className="wz-btn wz-btn-gold text-xs flex items-center gap-2"
+            >
+              <CloudArrowUp size={14} /> <span className="hidden sm:inline">Upload document</span><span className="sm:hidden">Upload</span>
+            </button>
+          )}
           <button
             onClick={downloadCertificate}
             disabled={busy || room.status === "pending_nda"}

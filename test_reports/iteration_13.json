@@ -1,0 +1,43 @@
+{
+  "summary": "Iter-13 — Listing-level pre-stage data room (option D: a+c) and Vault auto-clone on open. Wrote 9 backend pytest cases (TestListingStagedFiles + TestVaultAutoClone) covering CRUD, AES-256-GCM at rest (response shape + decrypt round-trip), 400/413/403 edge cases, 7-folder coercion, and the end-to-end clone flow: stage 2 files → buyer inquire → seller engage → open-room → vault detail.files contains both clones with cloned_from_listing_file pointing back to originals + encrypted:true + encryption_alg:AES-256-GCM → buyer signs NDA via /accept-nda → buyer downloads cloned files and gets the EXACT original plaintext (SHA-256 match) → /audit/logs contains listing.stagedfile.upload and dealroom.open with meta.cloned_staged_files>=2. All 9/9 pass. Frontend playwright: /app/listings shows per-listing ListingDataRoom collapsibles; folder dropdown has exactly 7 options; upload button disabled-until-file-picked; uploaded row shows AES-256 pill + folder + size + page count + timestamp; in DealRoomDetail the new header 'Upload document' button (data-testid=header-upload-btn) is present, switches to the Files tab on click and focuses upload-file-input. Visual confirmation of the clone flow on Helios MedTech vault — already shows the cloned TEST_clone_fin.txt / TEST_clone_legal.txt rows the backend test seeded.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_listing_dataroom.py",
+    "/app/test_reports/pytest/iter13_results.xml"
+  ],
+  "action_items": [
+    "Helios MedTech vault now contains several TEST_clone_* files from the auto-clone integration test (also visible on the listing data room from the earlier round-trip test on Vertex Climate — those were cleaned up). Consider a one-shot cleanup of `TEST_clone_fin.txt` / `TEST_clone_legal.txt` rows from /app/rooms/23f17e14-... if a clean demo is needed; the listing-level staged copies were already soft-deleted by the test.",
+    "Optional: dedupe auto-clone — if open-room is called twice (e.g. seller re-opens a closed-and-reopened inquiry path), staged files would be cloned again. Current implementation early-returns the existing room when one already exists, so this is safe today, but worth a comment noting the idempotency relies on the inquiry→room 1:1 mapping.",
+    "Optional consistency: the listing-staged response uses keys `target`/`meta` while the audit log returns those same keys; some test code in this repo expected `target_id`/`metadata`. Confirm public API contract documentation lists `target` + `meta` so future consumers don't drift."
+  ],
+  "critical_code_review_comments": [
+    "Encryption-at-rest is correctly implemented with per-file AAD on the listing side (`listing:{lid}:{file_id}`) AND re-encrypted with a vault-bound AAD (`{room_id}:{new_file_id}`) on clone, which is exactly what the spec asked for. Verified end-to-end by round-tripping the plaintext through both layers and asserting SHA-256 equality.",
+    "_clone_listing_files_into_room correctly per-file try/except's so one bad blob does not abort the room opening, and open_deal_room wraps the whole clone in a try/except too — defensive depth is good.",
+    "Folder whitelist coercion to 'other' is implemented in the right place (server-side) — frontend dropdown happens to match, so any client-side bypass still ends up sanitized.",
+    "Response from POST /listings/{lid}/staged-files/binary correctly pops `_id`, `content`, and `pages` — verified explicitly in the test.",
+    "Audit log key is `meta` (not `metadata`) — test was adjusted to read both for forward-compat; consider documenting this in the public API spec.",
+    "ListingDataRoom subcomponent is ~180 LOC inside MyListings.jsx — fine for now but if more form fields are added consider extracting to its own file under /pages/listings/.",
+    "Notarization runs as asyncio.create_task() — fire-and-forget is OK here since Bitcoin anchoring is best-effort, but errors are not surfaced to the operator anywhere. Consider a 'last_notarize_status' on the listing_staged_files doc for diagnostics."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_listing_dataroom.py (new — 9 tests, ~280 LOC)"
+  ],
+  "success_rate": {
+    "backend": "100% (9/9 passed in 6.81s)",
+    "frontend": "100% — all six checked behaviors verified: dataroom toggles, 7-option folder dropdown, disabled-until-file submit, AES-256 pill on row, header-upload-btn visibility + tab switch + focus, cloned files visible in vault"
+  },
+  "test_credentials": "mira@workz.example.com / WorkzPass123! ; alex@workz.example.com / WorkzPass123! ; admin@workz.example.com / WorkzAdmin123! (all valid)",
+  "seed_data_creation": "Test transiently uploaded + deleted 2 small TXT files to Vertex Climate (cleanup ran). Helios MedTech: clone test left 2 cloned files in the Vault attached to inquiry created during the run (these stay in the room intentionally as part of the assertion that buyer can download them). The two staged source files on Helios were soft-deleted at end of test.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Reusable suite: /app/backend/tests/test_listing_dataroom.py (~7s). Key facts: (1) BASE_URL falls back to reading /app/frontend/.env if REACT_APP_BACKEND_URL env var is not set, (2) inquiry engagement is PATCH /api/inquiries/{iid}/status with {status:'engaged'}, (3) NDA endpoint is POST /api/deal-rooms/{rid}/accept-nda with {signed_name}, (4) audit endpoint is GET /api/audit/logs (admin), (5) audit row keys are `target` + `meta` (not target_id/metadata). The clone helper re-encrypts every file with AAD={room_id}:{new_file_id}; original listing-side AAD is `listing:{lid}:{file_id}`. AES-256-GCM verified both sides.",
+  "rca of the issue": "No issues; feature works end-to-end."
+}

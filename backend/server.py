@@ -70,6 +70,7 @@ logger = logging.getLogger("workz")
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 gridfs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="deal_room_files_fs")
+listing_files_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="listing_staged_files_fs")
 
 app = FastAPI(title="Workz Ventures AI Platform", version="1.0.0")
 api_router = APIRouter(prefix="/api")
@@ -823,6 +824,258 @@ async def delete_listing(lid: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Listing not found")
     await log_audit(user["id"], "listing.delete", lid)
     return {"ok": True}
+
+
+# ---- Listing-level data room (pre-stage documents) --------------------------
+async def _seller_listing_or_404(lid: str, user: dict) -> Dict[str, Any]:
+    """Fetch a listing the current user is allowed to manage staged docs for."""
+    listing = await db.listings.find_one({"id": lid}, {"_id": 0})
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    if user.get("role") != "admin" and listing.get("seller_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Not your listing")
+    return listing
+
+
+@api_router.get("/listings/{lid}/staged-files")
+async def list_listing_staged_files(lid: str, user=Depends(get_current_user)):
+    await _seller_listing_or_404(lid, user)
+    items = await db.listing_staged_files.find(
+        {"listing_id": lid, "deleted_at": {"$exists": False}},
+        {"_id": 0, "content": 0, "pages": 0},
+    ).sort("uploaded_at", -1).to_list(500)
+    return items
+
+
+@api_router.post("/listings/{lid}/staged-files/binary")
+async def upload_listing_staged_file(
+    lid: str,
+    file: UploadFile = File(...),
+    folder: str = Form("other"),
+    note: Optional[str] = Form(None),
+    user=Depends(get_current_user),
+):
+    """Seller uploads a document to the LISTING data room. These files auto-clone into
+    every Vault opened against this listing."""
+    await _seller_listing_or_404(lid, user)
+    if folder not in ("financials", "legal", "hr", "it", "operations", "commercial", "other"):
+        folder = "other"
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File exceeds 25 MB limit")
+
+    file_id = str(uuid.uuid4())
+    filename = file.filename or f"upload-{file_id}"
+    plaintext_sha256_hex = sha256_hex(data)
+
+    storage_bytes = data
+    encrypted = False
+    encryption_alg = None
+    if encryption_configured():
+        try:
+            aad = f"listing:{lid}:{file_id}".encode("utf-8")
+            enc = encrypt_bytes(data, associated_data=aad)
+            storage_bytes = enc["envelope"]
+            encrypted = True
+            encryption_alg = enc["alg"]
+        except Exception as e:
+            logger.warning(f"At-rest encryption failed, storing plaintext: {e}")
+
+    gridfs_id = await listing_files_bucket.upload_from_stream(
+        filename,
+        io.BytesIO(storage_bytes),
+        metadata={
+            "listing_id": lid,
+            "file_id": file_id,
+            "uploaded_by": user["id"],
+            "content_type": file.content_type or "application/octet-stream",
+            "encrypted": encrypted,
+            "encryption_alg": encryption_alg,
+        },
+    )
+
+    pages = extract_pages_from_bytes(filename, data)
+    flat = pages_to_flat_text(pages)
+
+    doc = {
+        "id": file_id,
+        "listing_id": lid,
+        "filename": filename,
+        "folder": folder,
+        "content_type": file.content_type or "application/octet-stream",
+        "size_bytes": len(data),
+        "page_count": len(pages),
+        "pages": pages,
+        "content": flat,
+        "char_count": len(flat),
+        "gridfs_id": str(gridfs_id),
+        "storage": "listing_gridfs",
+        "encrypted": encrypted,
+        "encryption_alg": encryption_alg,
+        "sha256_hex": plaintext_sha256_hex,
+        "note": note,
+        "uploaded_by": user["id"],
+        "uploaded_at": now_utc().isoformat(),
+    }
+    await db.listing_staged_files.insert_one(doc)
+    await log_audit(user["id"], "listing.stagedfile.upload", lid, {
+        "file_id": file_id, "filename": filename, "folder": folder, "bytes": len(data),
+        "sha256": plaintext_sha256_hex, "encrypted": encrypted,
+    })
+    asyncio.create_task(notarize_bytes(
+        kind="listing.staged_file",
+        target_id=file_id,
+        data=data,
+        owner_user_id=user["id"],
+        label=f"Staged listing file: {filename}",
+        extra={"listing_id": lid, "filename": filename, "size_bytes": len(data)},
+    ))
+    doc.pop("_id", None)
+    doc.pop("content", None)
+    doc.pop("pages", None)
+    return doc
+
+
+@api_router.get("/listings/{lid}/staged-files/{file_id}/download")
+async def download_listing_staged_file(lid: str, file_id: str, user=Depends(get_current_user)):
+    await _seller_listing_or_404(lid, user)
+    f = await db.listing_staged_files.find_one(
+        {"id": file_id, "listing_id": lid, "deleted_at": {"$exists": False}},
+        {"_id": 0},
+    )
+    if not f or not f.get("gridfs_id"):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        grid_out = await listing_files_bucket.open_download_stream(ObjectId(f["gridfs_id"]))
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Binary not found: {e}")
+    if f.get("encrypted"):
+        envelope = await grid_out.read()
+        try:
+            aad = f"listing:{lid}:{file_id}".encode("utf-8")
+            plaintext = decrypt_envelope(envelope, associated_data=aad)
+        except Exception as e:
+            logger.exception("Listing staged file decryption failed")
+            raise HTTPException(status_code=500, detail=f"Decryption failed: {e}")
+        await log_audit(user["id"], "listing.stagedfile.download", lid, {"filename": f["filename"]})
+        return StreamingResponse(
+            io.BytesIO(plaintext),
+            media_type=f.get("content_type") or "application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{f["filename"]}"'},
+        )
+
+    async def streamer():
+        while True:
+            chunk = await grid_out.readchunk()
+            if not chunk:
+                break
+            yield chunk
+
+    await log_audit(user["id"], "listing.stagedfile.download", lid, {"filename": f["filename"]})
+    return StreamingResponse(
+        streamer(),
+        media_type=f.get("content_type") or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{f["filename"]}"'},
+    )
+
+
+@api_router.delete("/listings/{lid}/staged-files/{file_id}")
+async def delete_listing_staged_file(lid: str, file_id: str, user=Depends(get_current_user)):
+    await _seller_listing_or_404(lid, user)
+    res = await db.listing_staged_files.update_one(
+        {"id": file_id, "listing_id": lid, "deleted_at": {"$exists": False}},
+        {"$set": {"deleted_at": now_utc().isoformat()}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="File not found")
+    await log_audit(user["id"], "listing.stagedfile.delete", lid, {"file_id": file_id})
+    return {"ok": True}
+
+
+async def _clone_listing_files_into_room(listing_id: str, room_id: str, user_id: str) -> int:
+    """Copy every active staged file on a listing into a newly opened Vault. Re-encrypts
+    with the vault's AAD so the cipher stays bound to its room. Returns number cloned."""
+    staged = await db.listing_staged_files.find(
+        {"listing_id": listing_id, "deleted_at": {"$exists": False}},
+        {"_id": 0},
+    ).sort("uploaded_at", 1).to_list(500)
+    if not staged:
+        return 0
+    cloned = 0
+    for s in staged:
+        try:
+            grid_out = await listing_files_bucket.open_download_stream(ObjectId(s["gridfs_id"]))
+        except Exception as e:
+            logger.warning(f"clone: skipping staged file {s['id']}: {e}")
+            continue
+        envelope_or_plain = await grid_out.read()
+        # Recover plaintext
+        if s.get("encrypted"):
+            try:
+                aad = f"listing:{listing_id}:{s['id']}".encode("utf-8")
+                plaintext = decrypt_envelope(envelope_or_plain, associated_data=aad)
+            except Exception as e:
+                logger.warning(f"clone: decryption failed for {s['id']}: {e}")
+                continue
+        else:
+            plaintext = envelope_or_plain
+
+        new_file_id = str(uuid.uuid4())
+        storage_bytes = plaintext
+        encrypted = False
+        encryption_alg = None
+        if encryption_configured():
+            try:
+                aad = f"{room_id}:{new_file_id}".encode("utf-8")
+                enc = encrypt_bytes(plaintext, associated_data=aad)
+                storage_bytes = enc["envelope"]
+                encrypted = True
+                encryption_alg = enc["alg"]
+            except Exception as e:
+                logger.warning(f"clone: re-encryption failed for {s['id']}: {e}")
+
+        new_gridfs_id = await gridfs_bucket.upload_from_stream(
+            s["filename"],
+            io.BytesIO(storage_bytes),
+            metadata={
+                "room_id": room_id, "file_id": new_file_id,
+                "uploaded_by": user_id,
+                "content_type": s.get("content_type") or "application/octet-stream",
+                "encrypted": encrypted, "encryption_alg": encryption_alg,
+                "cloned_from_listing": listing_id, "cloned_from_file": s["id"],
+            },
+        )
+        pages = s.get("pages") or extract_pages_from_bytes(s["filename"], plaintext)
+        flat = pages_to_flat_text(pages) if pages else (s.get("content") or "")
+        doc = {
+            "id": new_file_id,
+            "room_id": room_id,
+            "filename": s["filename"],
+            "folder": s.get("folder") or "other",
+            "content_type": s.get("content_type") or "application/octet-stream",
+            "size_bytes": s.get("size_bytes") or len(plaintext),
+            "page_count": len(pages) if pages else 0,
+            "pages": pages or [],
+            "content": flat,
+            "char_count": len(flat),
+            "gridfs_id": str(new_gridfs_id),
+            "storage": "gridfs",
+            "encrypted": encrypted,
+            "encryption_alg": encryption_alg,
+            "sha256_hex": s.get("sha256_hex") or sha256_hex(plaintext),
+            "note": s.get("note"),
+            "uploaded_by": user_id,
+            "uploaded_by_role": "seller",
+            "uploaded_at": now_utc().isoformat(),
+            "matched_request_id": None,
+            "cloned_from_listing_file": s["id"],
+        }
+        await db.deal_room_files.insert_one(doc)
+        cloned += 1
+    return cloned
 
 
 @api_router.get("/marketplace")
@@ -1918,7 +2171,16 @@ async def open_deal_room(inquiry_id: str, user=Depends(get_current_user)):
     }
     await db.deal_rooms.insert_one(room)
     await db.inquiries.update_one({"id": inquiry_id}, {"$set": {"deal_room_id": room["id"]}})
-    await log_audit(user["id"], "dealroom.open", room["id"], {"listing": inquiry["listing_name"]})
+
+    # Auto-clone any staged listing data-room files into the new vault so the seller doesn't
+    # have to re-upload anything they prepared at the listing level.
+    cloned = 0
+    try:
+        cloned = await _clone_listing_files_into_room(inquiry["listing_id"], room["id"], user["id"])
+    except Exception as e:
+        logger.warning(f"open-room: clone of staged listing files failed: {e}")
+    await log_audit(user["id"], "dealroom.open", room["id"],
+                    {"listing": inquiry["listing_name"], "cloned_staged_files": cloned})
     room.pop("_id", None)
     return room
 

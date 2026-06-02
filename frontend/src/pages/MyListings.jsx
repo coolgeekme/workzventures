@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
-import { Plus, Tag, Trash } from "@phosphor-icons/react";
+import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X } from "@phosphor-icons/react";
 
 const STATUSES = [
   { v: "draft", l: "Draft" },
@@ -149,6 +149,8 @@ export default function MyListings() {
               </ul>
             )}
 
+            <ListingDataRoom listingId={l.id} listingName={l.company_name} />
+
             <div className="mt-5 pt-4 border-t border-[var(--wz-border)] flex items-center justify-between flex-wrap gap-3">
               <div className="text-xs font-mono-wz text-[var(--wz-text-secondary)]">
                 {l.view_count} views · {l.inquiry_count} inquiries
@@ -199,6 +201,201 @@ function Metric({ label, value }) {
     <div className="border border-[var(--wz-border)] p-2">
       <div className="overline mb-1">{label}</div>
       <div className="font-mono-wz text-sm">{value}</div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * ListingDataRoom — per-listing pre-stage area; auto-clones into vaults on open
+ * ========================================================================== */
+function ListingDataRoom({ listingId, listingName }) {
+  const [open, setOpen] = useState(false);
+  const [files, setFiles] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [folder, setFolder] = useState("financials");
+  const [note, setNote] = useState("");
+  const [chosen, setChosen] = useState(null);
+
+  const load = async () => {
+    try {
+      const r = await api.get(`/listings/${listingId}/staged-files`);
+      setFiles(r.data || []);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Failed to load data room");
+    } finally {
+      setLoaded(true);
+    }
+  };
+
+  useEffect(() => {
+    if (open && !loaded) load();
+  }, [open]); // eslint-disable-line
+
+  const upload = async (e) => {
+    e.preventDefault();
+    if (!chosen) return;
+    setBusy(true);
+    const fd = new FormData();
+    fd.append("file", chosen);
+    fd.append("folder", folder);
+    if (note) fd.append("note", note);
+    try {
+      await api.post(`/listings/${listingId}/staged-files/binary`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      toast.success(`Staged · ${chosen.name}`);
+      setChosen(null);
+      setNote("");
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Upload failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const downloadFile = async (f) => {
+    try {
+      const r = await api.get(`/listings/${listingId}/staged-files/${f.id}/download`, { responseType: "blob" });
+      const blob = new Blob([r.data], { type: f.content_type || "application/octet-stream" });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = f.filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error("Download failed");
+    }
+  };
+
+  const removeFile = async (fid) => {
+    if (!window.confirm("Remove this staged document?")) return;
+    try {
+      await api.delete(`/listings/${listingId}/staged-files/${fid}`);
+      setFiles((arr) => arr.filter((x) => x.id !== fid));
+      toast.success("Removed");
+    } catch (err) {
+      toast.error("Delete failed");
+    }
+  };
+
+  return (
+    <div className="mt-5 border border-[var(--wz-border)]" data-testid={`listing-dataroom-${listingId}`}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        data-testid={`dataroom-toggle-${listingId}`}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-[var(--wz-surface-hover)] transition-colors"
+      >
+        <span className="flex items-center gap-2">
+          <Files size={16} className="text-[var(--wz-amber)]" />
+          <span className="text-sm font-medium">Listing data room</span>
+          <span className="overline">{loaded ? `${files.length} staged` : "stage docs before NDA"}</span>
+        </span>
+        {open ? <CaretUp size={14} /> : <CaretDown size={14} />}
+      </button>
+
+      {open && (
+        <div className="border-t border-[var(--wz-border)] p-4 space-y-4">
+          <p className="text-xs text-[var(--wz-text-secondary)] leading-relaxed">
+            Documents you upload here are <strong>encrypted at rest (AES-256-GCM)</strong> and auto-clone
+            into every Vault opened on this listing — so when a buyer signs the NDA, your data room is
+            already populated. Stage your CIM, financials, customer cohort, contracts here.
+          </p>
+
+          {/* Upload form */}
+          <form onSubmit={upload} className="border border-[var(--wz-border)] p-3" data-testid={`dataroom-upload-${listingId}`}>
+            <div className="flex items-center gap-2 mb-3">
+              <CloudArrowUp size={14} className="text-[var(--wz-amber)]" />
+              <div className="text-sm font-medium">Add document</div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_140px_auto] gap-2 items-end">
+              <label className="block">
+                <div className="overline mb-1">File · PDF / DOCX / TXT · ≤ 25 MB</div>
+                <input
+                  type="file"
+                  accept=".pdf,.docx,.txt,.md,.csv"
+                  onChange={(e) => setChosen(e.target.files?.[0] || null)}
+                  className="wz-input"
+                  data-testid={`dataroom-file-${listingId}`}
+                />
+              </label>
+              <label className="block">
+                <div className="overline mb-1">Folder</div>
+                <select
+                  value={folder}
+                  onChange={(e) => setFolder(e.target.value)}
+                  className="wz-input"
+                  data-testid={`dataroom-folder-${listingId}`}
+                >
+                  {["financials","legal","hr","it","operations","commercial","other"].map((f) => (
+                    <option key={f} value={f}>{f}</option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="submit"
+                disabled={busy || !chosen}
+                data-testid={`dataroom-submit-${listingId}`}
+                className="wz-btn wz-btn-gold text-xs h-[38px] px-4 whitespace-nowrap"
+              >
+                {busy ? "Uploading…" : "Upload"}
+              </button>
+            </div>
+            <input
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Note (optional) — e.g., 'Q3 2025 financial deck'"
+              className="wz-input mt-2 text-sm"
+              data-testid={`dataroom-note-${listingId}`}
+            />
+          </form>
+
+          {/* File list */}
+          <div className="divide-y divide-[var(--wz-border)]" data-testid={`dataroom-files-${listingId}`}>
+            {!loaded ? (
+              <div className="py-6 text-center text-xs text-[var(--wz-text-tertiary)]">Loading…</div>
+            ) : files.length === 0 ? (
+              <div className="py-6 text-center text-xs text-[var(--wz-text-tertiary)]">
+                Nothing staged yet for <span className="text-[var(--wz-text-secondary)]">{listingName}</span>.
+              </div>
+            ) : (
+              files.map((f) => (
+                <div key={f.id} className="py-2 flex items-center justify-between gap-3 text-sm" data-testid={`dataroom-file-row-${f.id}`}>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium truncate">{f.filename}</span>
+                      <span className="pill text-[10px]">{f.folder}</span>
+                      {f.encrypted && <span className="pill pill-positive text-[10px]">AES-256</span>}
+                    </div>
+                    <div className="text-[10px] font-mono-wz text-[var(--wz-text-tertiary)] mt-0.5">
+                      {(f.size_bytes / 1024).toFixed(1)} KB · {f.page_count || 0} pg · {new Date(f.uploaded_at).toLocaleString()}
+                    </div>
+                    {f.note && <div className="text-xs text-[var(--wz-text-secondary)] italic mt-0.5">{f.note}</div>}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => downloadFile(f)}
+                      className="text-xs text-[var(--wz-gold)] hover:underline flex items-center gap-1"
+                      data-testid={`dataroom-download-${f.id}`}
+                    >
+                      <DownloadSimple size={12} /> Download
+                    </button>
+                    <button
+                      onClick={() => removeFile(f.id)}
+                      className="text-[var(--wz-text-tertiary)] hover:text-[var(--wz-negative)]"
+                      title="Remove"
+                      data-testid={`dataroom-delete-${f.id}`}
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
