@@ -1544,7 +1544,7 @@ async def get_detailed_report(rid: str, user=Depends(get_current_user)):
 
 @api_router.delete("/research/detailed/{rid}")
 async def delete_detailed_report(rid: str, user=Depends(get_current_user)):
-    q = {"id": rid}
+    q: Dict[str, Any] = {"id": rid, "deleted_at": {"$exists": False}}
     if user.get("role") != "admin":
         q["user_id"] = user["id"]
     res = await db.detailed_reports.update_one(q, {"$set": {"deleted_at": now_utc().isoformat()}})

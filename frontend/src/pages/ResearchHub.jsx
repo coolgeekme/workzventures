@@ -105,11 +105,21 @@ export default function ResearchHub() {
               <div className="font-display text-2xl tracking-tight">{D.company_name || current.company_name}</div>
               <div className="text-sm text-[var(--wz-text-secondary)] mt-1">{D.one_liner}</div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               {current.live_research_used && (
                 <span className="pill pill-positive" data-testid="live-research-pill">live web research</span>
               )}
               <span className="pill pill-gold">{D.sector || current.sector || "—"}</span>
+              <button
+                onClick={runDetailed}
+                disabled={queueingDetailed}
+                data-testid="run-detailed-btn"
+                title="Generate the full 14-section institutional analysis with sources, risks, valuation, due-diligence questions"
+                className="wz-btn wz-btn-gold text-xs flex items-center gap-2"
+              >
+                <FileMagnifyingGlass size={13} />
+                {queueingDetailed ? "Queuing…" : "Run Detailed Analysis"}
+              </button>
             </div>
           </div>
 
