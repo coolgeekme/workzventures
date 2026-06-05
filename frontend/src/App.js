@@ -31,6 +31,7 @@ import Security from "./pages/Security";
 import BuyerDiscovery from "./pages/BuyerDiscovery";
 import BuyerAlerts from "./pages/BuyerAlerts";
 import ConnectableApps from "./pages/ConnectableApps";
+import DetailedReport from "./pages/DetailedReport";
 
 function Protected({ children }) {
   const { user } = useAuth();
@@ -72,6 +73,7 @@ function AppRoutes() {
       <Route path="/app/security" element={<Protected><Security /></Protected>} />
       <Route path="/app/buyers" element={<Protected><BuyerDiscovery /></Protected>} />
       <Route path="/app/buyer-alerts" element={<Protected><BuyerAlerts /></Protected>} />
+      <Route path="/app/research/detailed/:rid" element={<Protected><DetailedReport /></Protected>} />
       <Route path="/apps" element={<ConnectableApps />} />
       <Route path="/app/audit" element={<AdminOnly><Audit /></AdminOnly>} />
       <Route path="*" element={<Navigate to="/" replace />} />

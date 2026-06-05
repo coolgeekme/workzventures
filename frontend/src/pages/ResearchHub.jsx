@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
-import { MagnifyingGlass, Trash } from "@phosphor-icons/react";
+import { MagnifyingGlass, Trash, FileMagnifyingGlass } from "@phosphor-icons/react";
 
 export default function ResearchHub() {
+  const navigate = useNavigate();
   const [form, setForm] = useState({ company_name: "", sector: "", region: "", notes: "" });
   const [loading, setLoading] = useState(false);
   const [current, setCurrent] = useState(null);
   const [history, setHistory] = useState([]);
+  const [queueingDetailed, setQueueingDetailed] = useState(false);
 
   const loadHistory = () => api.get("/research/history").then((r) => setHistory(r.data));
 
@@ -31,6 +34,26 @@ export default function ResearchHub() {
   };
 
   const D = current?.data || {};
+
+  const runDetailed = async () => {
+    setQueueingDetailed(true);
+    try {
+      const r = await api.post("/research/detailed", {
+        company_name: current.company_name,
+        company_url: D.website || null,
+        industry: current.sector || D.sector || null,
+        region: current.region || null,
+        buyer_notes: form.notes || null,
+        research_id: current.id,
+      });
+      toast.success("Detailed analysis queued — typically 60-180s");
+      navigate(`/app/research/detailed/${r.data.id}`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Failed to queue detailed analysis");
+    } finally {
+      setQueueingDetailed(false);
+    }
+  };
 
   return (
     <div data-testid="research-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">

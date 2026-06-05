@@ -1407,6 +1407,282 @@ async def research_history(user=Depends(get_current_user)):
 
 
 # -----------------------------------------------------------------------------
+# DETAILED ANALYSIS (Buyer-side "Standard" Kenshin-style 14-section report)
+# -----------------------------------------------------------------------------
+from detailed_analysis import run_detailed_analysis  # noqa: E402
+
+
+class DetailedAnalysisRequest(BaseModel):
+    company_name: str
+    company_url: Optional[str] = None
+    industry: Optional[str] = None
+    region: Optional[str] = None
+    funding_stage: Optional[str] = None
+    buyer_notes: Optional[str] = None
+    research_id: Optional[str] = None  # optional link back to a /research/company brief
+
+
+@api_router.post("/research/detailed")
+async def create_detailed_report(body: DetailedAnalysisRequest, user=Depends(get_current_user)):
+    """Buyer / admin: queue a 14-section detailed institutional analysis. Returns
+    immediately with `{id, status: "pending"}`; frontend polls GET /research/detailed/{id}
+    until status flips to `completed` or `failed`. The pipeline (Perplexity + 4× Brave +
+    Claude 4.5 with grounded context) typically takes 60-180s — well beyond the ingress
+    60s read timeout, hence the async pattern."""
+    if user.get("role") not in ("buyer", "admin"):
+        raise HTTPException(status_code=403, detail="Detailed analysis is buyer/admin only")
+    if not body.company_name or not body.company_name.strip():
+        raise HTTPException(status_code=400, detail="company_name is required")
+    rid = str(uuid.uuid4())
+    skeleton = {
+        "id": rid,
+        "user_id": user["id"],
+        "research_id": body.research_id,
+        "kind": "detailed",
+        "status": "pending",
+        "company_name": body.company_name.strip(),
+        "company_url": body.company_url,
+        "industry": body.industry,
+        "region": body.region,
+        "funding_stage": body.funding_stage,
+        "buyer_notes": body.buyer_notes,
+        "data": None,
+        "sources": [],
+        "source_count": 0,
+        "live_research_used": False,
+        "duration_ms": None,
+        "error": None,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.detailed_reports.insert_one(skeleton)
+    await log_audit(user["id"], "detailed_report.queue", rid, {"company": body.company_name})
+    asyncio.create_task(_execute_detailed_analysis(rid, body, user["id"]))
+    skeleton.pop("_id", None)
+    return skeleton
+
+
+async def _execute_detailed_analysis(rid: str, body: "DetailedAnalysisRequest", user_id: str) -> None:
+    """Background worker. Persists `status` transitions analyzing → completed | failed."""
+    try:
+        await db.detailed_reports.update_one(
+            {"id": rid}, {"$set": {"status": "analyzing"}},
+        )
+        result = await run_detailed_analysis(
+            call_claude=call_claude,
+            query_perplexity=query_perplexity,
+            search_brave=search_brave,
+            company_name=body.company_name.strip(),
+            company_url=body.company_url,
+            industry=body.industry,
+            region=body.region,
+            funding_stage=body.funding_stage,
+            buyer_notes=body.buyer_notes,
+            user_id=user_id,
+        )
+        await db.detailed_reports.update_one(
+            {"id": rid},
+            {"$set": {
+                "status": "completed",
+                "data": result["data"],
+                "sources": result["sources"],
+                "live_research_used": result["live_research_used"],
+                "source_count": result["source_count"],
+                "duration_ms": result["duration_ms"],
+                "completed_at": now_utc().isoformat(),
+            }},
+        )
+        await log_agent_activity(
+            "detailed-analysis-agent",
+            f"company:{body.company_name} · {result['source_count']} sources",
+            "completed",
+            user_id=user_id, duration_ms=result["duration_ms"],
+            meta={"recommendation": result["data"].get("executiveSummary", {}).get("recommendation"),
+                  "source_count": result["source_count"]},
+        )
+        try:
+            asyncio.create_task(notarize_bytes(
+                kind="detailed_report",
+                target_id=rid,
+                data=json.dumps(result["data"], sort_keys=True).encode("utf-8"),
+                owner_user_id=user_id,
+                label=f"Detailed analysis: {body.company_name}",
+                extra={"sources": result["source_count"]},
+            ))
+        except Exception:
+            logger.warning("notarize for detailed report failed silently")
+    except Exception as e:
+        logger.exception(f"Detailed analysis worker failed for {rid}")
+        await db.detailed_reports.update_one(
+            {"id": rid},
+            {"$set": {"status": "failed", "error": str(e)[:500],
+                      "completed_at": now_utc().isoformat()}},
+        )
+        await log_agent_activity(
+            "detailed-analysis-agent", f"company:{body.company_name}", "failed",
+            user_id=user_id, friction=str(e)[:200],
+        )
+
+
+@api_router.get("/research/detailed")
+async def list_detailed_reports(user=Depends(get_current_user)):
+    q: Dict[str, Any] = {"deleted_at": {"$exists": False}}
+    if user.get("role") != "admin":
+        q["user_id"] = user["id"]
+    items = await db.detailed_reports.find(q, {"_id": 0, "data": 0, "sources": 0}).sort("created_at", -1).to_list(100)
+    return items
+
+
+@api_router.get("/research/detailed/{rid}")
+async def get_detailed_report(rid: str, user=Depends(get_current_user)):
+    doc = await db.detailed_reports.find_one({"id": rid, "deleted_at": {"$exists": False}}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if user.get("role") != "admin" and doc.get("user_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Not your report")
+    return doc
+
+
+@api_router.delete("/research/detailed/{rid}")
+async def delete_detailed_report(rid: str, user=Depends(get_current_user)):
+    q = {"id": rid}
+    if user.get("role") != "admin":
+        q["user_id"] = user["id"]
+    res = await db.detailed_reports.update_one(q, {"$set": {"deleted_at": now_utc().isoformat()}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Report not found")
+    await log_audit(user["id"], "detailed_report.delete", rid)
+    return {"ok": True}
+
+
+@api_router.get("/research/detailed/{rid}/pdf")
+async def export_detailed_report_pdf(rid: str, user=Depends(get_current_user)):
+    doc = await db.detailed_reports.find_one({"id": rid, "deleted_at": {"$exists": False}}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if user.get("role") != "admin" and doc.get("user_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Not your report")
+    from detailed_report_pdf import generate_detailed_report_pdf  # local import keeps module-load cheap
+    pdf_bytes = generate_detailed_report_pdf(doc)
+    fname = f"detailed-analysis-{doc.get('company_name','company').replace(' ', '-').lower()}.pdf"
+    await log_audit(user["id"], "detailed_report.pdf", rid, {"bytes": len(pdf_bytes)})
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+class AttachDetailedReportRequest(BaseModel):
+    room_id: Optional[str] = None       # attach into an active Vault
+    listing_id: Optional[str] = None    # attach into the listing data room (seller side)
+
+
+@api_router.post("/research/detailed/{rid}/attach")
+async def attach_detailed_report(rid: str, body: AttachDetailedReportRequest, user=Depends(get_current_user)):
+    """Generate the PDF on the fly and persist it into a Vault (deal_room_files) or a
+    Listing data room (listing_staged_files). Either room_id or listing_id is required."""
+    doc = await db.detailed_reports.find_one({"id": rid, "deleted_at": {"$exists": False}}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if user.get("role") != "admin" and doc.get("user_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Not your report")
+    if not (body.room_id or body.listing_id):
+        raise HTTPException(status_code=400, detail="room_id or listing_id is required")
+    if body.room_id and body.listing_id:
+        raise HTTPException(status_code=400, detail="Provide either room_id or listing_id, not both")
+
+    from detailed_report_pdf import generate_detailed_report_pdf
+    pdf_bytes = generate_detailed_report_pdf(doc)
+    filename = f"workz-detailed-analysis-{doc.get('company_name','company').replace(' ', '-').lower()}.pdf"
+    plain_sha = sha256_hex(pdf_bytes)
+
+    # Vault attach (buyer-side)
+    if body.room_id:
+        room = await db.deal_rooms.find_one({"id": body.room_id}, {"_id": 0})
+        if not room:
+            raise HTTPException(status_code=404, detail="Vault not found")
+        role = await participant_check(room, user)
+        if role == "buyer" and room.get("status") == "pending_nda":
+            raise HTTPException(status_code=400, detail="Sign the NDA before adding files")
+        file_id = str(uuid.uuid4())
+        storage_bytes = pdf_bytes
+        encrypted = False
+        encryption_alg = None
+        if encryption_configured():
+            try:
+                aad = f"{body.room_id}:{file_id}".encode("utf-8")
+                env = encrypt_bytes(pdf_bytes, associated_data=aad)
+                storage_bytes = env["envelope"]
+                encrypted = True
+                encryption_alg = env["alg"]
+            except Exception as e:
+                logger.warning(f"vault attach encrypt failed: {e}")
+        grid_id = await gridfs_bucket.upload_from_stream(
+            filename, io.BytesIO(storage_bytes),
+            metadata={"room_id": body.room_id, "file_id": file_id,
+                      "uploaded_by": user["id"], "content_type": "application/pdf",
+                      "encrypted": encrypted, "encryption_alg": encryption_alg,
+                      "source": "detailed_report", "report_id": rid},
+        )
+        await db.deal_room_files.insert_one({
+            "id": file_id, "room_id": body.room_id, "filename": filename,
+            "folder": "commercial",
+            "content_type": "application/pdf",
+            "size_bytes": len(pdf_bytes), "page_count": 0,
+            "pages": [], "content": "", "char_count": 0,
+            "gridfs_id": str(grid_id), "storage": "gridfs",
+            "encrypted": encrypted, "encryption_alg": encryption_alg,
+            "sha256_hex": plain_sha, "note": f"Workz Detailed Analysis · auto-attached from research ({rid[:8]})",
+            "uploaded_by": user["id"],
+            "uploaded_by_role": role or user.get("role"),
+            "uploaded_at": now_utc().isoformat(),
+            "detailed_report_id": rid,
+        })
+        await log_audit(user["id"], "detailed_report.attach.vault", rid,
+                        {"room_id": body.room_id, "file_id": file_id})
+        return {"ok": True, "room_id": body.room_id, "file_id": file_id, "filename": filename}
+
+    # Listing data-room attach (seller/admin)
+    listing = await _seller_listing_or_404(body.listing_id, user)  # 403 if not owner
+    file_id = str(uuid.uuid4())
+    storage_bytes = pdf_bytes
+    encrypted = False
+    encryption_alg = None
+    if encryption_configured():
+        try:
+            aad = f"listing:{body.listing_id}:{file_id}".encode("utf-8")
+            env = encrypt_bytes(pdf_bytes, associated_data=aad)
+            storage_bytes = env["envelope"]
+            encrypted = True
+            encryption_alg = env["alg"]
+        except Exception as e:
+            logger.warning(f"listing attach encrypt failed: {e}")
+    grid_id = await listing_files_bucket.upload_from_stream(
+        filename, io.BytesIO(storage_bytes),
+        metadata={"listing_id": body.listing_id, "file_id": file_id,
+                  "uploaded_by": user["id"], "content_type": "application/pdf",
+                  "encrypted": encrypted, "encryption_alg": encryption_alg,
+                  "source": "detailed_report", "report_id": rid},
+    )
+    await db.listing_staged_files.insert_one({
+        "id": file_id, "listing_id": body.listing_id, "filename": filename,
+        "folder": "commercial", "content_type": "application/pdf",
+        "size_bytes": len(pdf_bytes), "page_count": 0,
+        "pages": [], "content": "", "char_count": 0,
+        "gridfs_id": str(grid_id), "storage": "listing_gridfs",
+        "encrypted": encrypted, "encryption_alg": encryption_alg,
+        "sha256_hex": plain_sha,
+        "note": f"Workz Detailed Analysis · auto-attached from research ({rid[:8]})",
+        "uploaded_by": user["id"],
+        "uploaded_at": now_utc().isoformat(),
+        "detailed_report_id": rid,
+    })
+    await log_audit(user["id"], "detailed_report.attach.listing", rid,
+                    {"listing_id": body.listing_id, "file_id": file_id, "listing": listing.get("company_name")})
+    return {"ok": True, "listing_id": body.listing_id, "file_id": file_id, "filename": filename}
+
+
+# -----------------------------------------------------------------------------
 # COLLATERAL
 # -----------------------------------------------------------------------------
 COLLATERAL_SYS = """You are a senior marketing copywriter for a top-tier private equity firm, Workz Ventures.
