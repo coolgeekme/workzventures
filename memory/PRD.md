@@ -166,6 +166,11 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Frontend notice**: new `components/DemoBanner.jsx` mounted at the top of `Layout` — amber strip with warning glyph, clock icon, dismiss button (re-surfaces hourly via `localStorage`). Login page shows an inline amber notice when arriving via `?demo=...`.
 - Backend tests (iter-15): **5/5 pass** at `/app/backend/tests/test_demo_cleanup.py` covering `is_demo` flag, retention-info endpoint, admin-only purge, seed-survives-purge, and fresh-content-not-purged.
 
+## What's been implemented (2026-06-07 — iter-15.1 Detailed Report polling resilience)
+- **Bug fix** for "Failed to load" state on `/app/research/detailed/:rid`. A transient poll failure during the 2-3 minute Claude+Brave+Perplexity pipeline (504, network blip) used to permanently nuke the polling UI even after the report finished. Now: polling failures only surface an error when no report has been loaded yet; once data is in hand, transient failures are swallowed. Successful poll clears prior error state.
+- **Recoverable error screen**: new amber warning UI with a `Retry` button (re-fetches the doc) and a `Back to Research Hub` button. No more "refresh the whole page" dead-end. `data-testid="detailed-error"`, `data-testid="retry-load-btn"`.
+- File: `frontend/src/pages/DetailedReport.jsx` (load callback hardened, error block restyled).
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)

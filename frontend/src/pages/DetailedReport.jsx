@@ -46,9 +46,18 @@ export default function DetailedReport() {
     try {
       const r = await api.get(`/research/detailed/${rid}`);
       setReport(r.data);
+      setError(null);
       return r.data;
     } catch (err) {
-      setError(err?.response?.data?.detail || "Failed to load");
+      // Only surface an error if we haven't already loaded a report.
+      // Transient poll failures (network blip during the 2-3 min pipeline)
+      // must not nuke the report UI once data is in hand.
+      setReport((prev) => {
+        if (!prev) {
+          setError(err?.response?.data?.detail || "Failed to load");
+        }
+        return prev;
+      });
     }
   };
 
@@ -83,7 +92,30 @@ export default function DetailedReport() {
   const sources = report?.sources || [];
 
   if (error) {
-    return <div className="px-6 py-10 max-w-3xl mx-auto wz-card text-center text-sm text-[var(--wz-text-tertiary)]">{error}</div>;
+    return (
+      <div className="px-6 py-10 max-w-3xl mx-auto wz-card text-center" data-testid="detailed-error">
+        <WarningOctagon size={28} className="text-[var(--wz-amber)] mx-auto mb-3" />
+        <div className="font-medium text-sm">{error}</div>
+        <div className="text-xs text-[var(--wz-text-tertiary)] mt-2 max-w-md mx-auto">
+          The pipeline may still be running. Reports finish in 60-180s after submission.
+        </div>
+        <div className="mt-4 flex items-center justify-center gap-2">
+          <button
+            data-testid="retry-load-btn"
+            onClick={() => { setError(null); load(); }}
+            className="wz-btn wz-btn-gold text-xs"
+          >
+            Retry
+          </button>
+          <button
+            onClick={() => navigate("/app/research")}
+            className="wz-btn wz-btn-ghost text-xs"
+          >
+            Back to Research Hub
+          </button>
+        </div>
+      </div>
+    );
   }
   if (!report) {
     return <div className="px-6 py-10 max-w-3xl mx-auto wz-card text-center text-sm text-[var(--wz-text-tertiary)]">Loading…</div>;
