@@ -75,6 +75,7 @@ def generate_detailed_report_pdf(report: Dict[str, Any]) -> bytes:
     """Render the detailed analysis to a polished PDF. `report` is the persisted Mongo doc."""
     data = report.get("data") or {}
     sources = report.get("sources") or []
+    social = report.get("social_profiles") or {}
     style = _styles()
 
     buf = io.BytesIO()
@@ -205,6 +206,25 @@ def generate_detailed_report_pdf(report: Dict[str, Any]) -> bytes:
         ("Patents", ti.get("patents")),
         ("R&D capabilities", ti.get("rdCapabilities")),
     ], style))
+
+    # ---- Social presence
+    if social:
+        flow.extend(_section_title("Social & community presence", style))
+        social_rows: List[tuple] = []
+        for key, label in [("linkedin", "LinkedIn"), ("twitter", "X (Twitter)"),
+                           ("github", "GitHub"), ("youtube", "YouTube"),
+                           ("crunchbase", "Crunchbase"), ("producthunt", "Product Hunt"),
+                           ("instagram", "Instagram")]:
+            p = social.get(key)
+            if not p or not p.get("url"):
+                continue
+            sig_parts = []
+            for sk in ("followers", "employees", "subscribers", "stars", "repos", "upvotes"):
+                if p.get(sk):
+                    sig_parts.append(f"{p[sk]} {sk}")
+            sig = " · ".join(sig_parts) if sig_parts else ""
+            social_rows.append((label, f"{p['url']}{(' — ' + sig) if sig else ''}"))
+        flow.append(_kv_table(social_rows, style))
 
     flow.append(PageBreak())
 

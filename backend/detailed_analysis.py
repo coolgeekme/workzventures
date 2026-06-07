@@ -199,8 +199,12 @@ async def run_detailed_analysis(
     funding_stage: Optional[str] = None,
     buyer_notes: Optional[str] = None,
     user_id: Optional[str] = None,
+    discover_social: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None,
 ) -> Dict[str, Any]:
-    """Returns the full structured report dict + meta (sources, duration, etc.)."""
+    """Returns the full structured report dict + meta (sources, duration, etc.).
+    `discover_social` is an optional injected coroutine; when provided it runs
+    in parallel with the Perplexity/Brave passes and the result is attached as
+    `social_profiles` on the response."""
     started = datetime.now(timezone.utc)
 
     # ---- 1. Parallel evidence gathering ------------------------------------
@@ -220,21 +224,35 @@ async def run_detailed_analysis(
     brave_news = f"{company_name} news 2026 OR 2025".strip()
     brave_competitors = f"{company_name} competitors alternatives vs".strip()
 
-    perplexity_res, b_general, b_finance, b_news, b_compet = await asyncio.gather(
+    tasks = [
         query_perplexity(perplexity_prompt),
         search_brave(brave_general, count=6),
         search_brave(brave_finance, count=6),
         search_brave(brave_news, count=6),
         search_brave(brave_competitors, count=5),
-        return_exceptions=True,
-    )
+    ]
+    gathered = await asyncio.gather(*tasks, return_exceptions=True)
 
     def _ok(x):
         return x if not isinstance(x, Exception) else None
 
-    perplexity_res = _ok(perplexity_res) or {}
-    brave_hits = (_ok(b_general) or []) + (_ok(b_finance) or []) + (_ok(b_news) or []) + (_ok(b_compet) or [])
+    perplexity_res = _ok(gathered[0]) or {}
+    b_general = _ok(gathered[1])
+    b_finance = _ok(gathered[2])
+    b_news = _ok(gathered[3])
+    b_compet = _ok(gathered[4])
+    brave_hits = (b_general or []) + (b_finance or []) + (b_news or []) + (b_compet or [])
     sources = _build_sources(perplexity_res.get("citations") or [], brave_hits)
+
+    # Social discovery runs sequentially with rate-limit spacing AFTER the main
+    # Brave burst, so we don't blow the 1 req/sec free-plan limit.
+    social_profiles: Dict[str, Any] = {}
+    if discover_social is not None:
+        try:
+            social_profiles = await discover_social(company_name=company_name, company_url=company_url) or {}
+        except Exception as e:
+            logger.warning(f"detailed_analysis: social discovery failed: {e}")
+            social_profiles = {}
 
     # ---- 2. Prompt Claude with the grounded context ------------------------
     sources_block = "\n".join(
@@ -303,6 +321,7 @@ async def run_detailed_analysis(
         "funding_stage": funding_stage,
         "data": data,
         "sources": sources,
+        "social_profiles": social_profiles or {},
         "perplexity_summary": perp_summary[:8000] if perp_summary else "",
         "live_research_used": bool(perp_summary or brave_hits),
         "source_count": len(sources),

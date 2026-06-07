@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 import { MagnifyingGlass, Trash, FileMagnifyingGlass } from "@phosphor-icons/react";
+import SocialStrip from "../components/SocialStrip";
 
 export default function ResearchHub() {
   const navigate = useNavigate();
@@ -170,6 +171,8 @@ export default function ResearchHub() {
               </div>
             ))}
           </div>
+
+          <SocialStrip profiles={current.social_profiles} compact />
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-px bg-[var(--wz-border)]">
             <Section title="Business model" body={D.business_model} />

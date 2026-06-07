@@ -1402,8 +1402,17 @@ async def _execute_research_company(rid: str, body: CompanyResearchRequest, user
         perplexity_res = results[0] if not isinstance(results[0], Exception) else {}
         brave_res = results[1] if not isinstance(results[1], Exception) else []
         if len(results) > 2 and not isinstance(results[2], Exception):
-            # merge domain hits into the brave_res list, with domain hits first (higher signal)
             brave_res = (results[2] or []) + (brave_res or [])
+
+        # Social discovery is rate-limit friendly (sequential, 1.1s spacing) so it
+        # runs AFTER the main Brave burst to avoid 429s on the free plan.
+        try:
+            social_profiles = await discover_social_profiles(
+                search_brave=search_brave, company_name=company, company_url=body.company_url,
+            )
+        except Exception as e:
+            logger.warning(f"research: social discovery failed: {e}")
+            social_profiles = {}
 
         sources = build_sources(perplexity_res.get("citations", []) if isinstance(perplexity_res, dict) else [], brave_res or [])
 
@@ -1434,6 +1443,7 @@ async def _execute_research_company(rid: str, body: CompanyResearchRequest, user
             {"$set": {
                 "data": data,
                 "sources": sources,
+                "social_profiles": social_profiles,
                 "live_research_used": bool(perplexity_summary or brave_res),
                 "status": "completed",
                 "completed_at": now_utc().isoformat(),
@@ -1536,6 +1546,14 @@ async def _execute_detailed_analysis(rid: str, body: "DetailedAnalysisRequest", 
         await db.detailed_reports.update_one(
             {"id": rid}, {"$set": {"status": "analyzing"}},
         )
+
+        async def _discover_social_bound(company_name: str, company_url: Optional[str] = None):
+            return await discover_social_profiles(
+                search_brave=search_brave,
+                company_name=company_name,
+                company_url=company_url,
+            )
+
         result = await run_detailed_analysis(
             call_claude=call_claude,
             query_perplexity=query_perplexity,
@@ -1547,6 +1565,7 @@ async def _execute_detailed_analysis(rid: str, body: "DetailedAnalysisRequest", 
             funding_stage=body.funding_stage,
             buyer_notes=body.buyer_notes,
             user_id=user_id,
+            discover_social=_discover_social_bound,
         )
         await db.detailed_reports.update_one(
             {"id": rid},
@@ -1554,6 +1573,7 @@ async def _execute_detailed_analysis(rid: str, body: "DetailedAnalysisRequest", 
                 "status": "completed",
                 "data": result["data"],
                 "sources": result["sources"],
+                "social_profiles": result.get("social_profiles") or {},
                 "live_research_used": result["live_research_used"],
                 "source_count": result["source_count"],
                 "duration_ms": result["duration_ms"],
@@ -3944,6 +3964,7 @@ async def send_collateral_to_inquiry(cid: str, body: SendToInquiry, user=Depends
 # BUYER DISCOVERY · Phase 1 (SEC EDGAR + Companies House [stubbed] + Claude)
 # -----------------------------------------------------------------------------
 from buyer_discovery import gather_candidates, rank_with_claude, resolve_match_contacts  # noqa: E402
+from social_presence import discover_social_profiles  # noqa: E402
 
 BUYER_DISCOVERY_RESCAN_HOURS = int(os.environ.get("BUYER_DISCOVERY_RESCAN_HOURS", "24"))
 BUYER_MATCH_ALERT_THRESHOLD = 70  # only score >= 70 produces a new-buyer alert

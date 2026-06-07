@@ -4,9 +4,10 @@ import { toast } from "sonner";
 import {
   FileMagnifyingGlass, ArrowLeft, ArrowSquareOut, DownloadSimple,
   CheckCircle, WarningOctagon, ChartLineUp, Briefcase, Buildings, ChartBar,
-  Users, ShieldCheck, Money, ListChecks, Lightbulb, Files, Plus,
+  Users, ShieldCheck, Money, ListChecks, Lightbulb, Files, Plus, ShareNetwork,
 } from "@phosphor-icons/react";
 import { api } from "../lib/api";
+import SocialStrip from "../components/SocialStrip";
 
 const REC_PILL = {
   "strong-buy": "pill-positive",
@@ -18,6 +19,7 @@ const REC_PILL = {
 const SECTIONS = [
   { id: "exec",       label: "Executive summary",     icon: Lightbulb },
   { id: "company",    label: "Company overview",      icon: Buildings },
+  { id: "social",     label: "Social presence",       icon: ShareNetwork },
   { id: "market",     label: "Market analysis",       icon: ChartLineUp },
   { id: "competition",label: "Competitive landscape", icon: Briefcase },
   { id: "financial",  label: "Financial analysis",    icon: Money },
@@ -211,6 +213,15 @@ export default function DetailedReport() {
           ]} />
         </SectionCard>
 
+        {report.social_profiles && Object.keys(report.social_profiles).length > 0 && (
+          <SectionCard id="social" icon={ShareNetwork} title="Social & community presence">
+            <p className="text-xs text-[var(--wz-text-secondary)] mb-3">
+              Profiles discovered via web search — verify before relying on metrics. URLs link to the live page.
+            </p>
+            <SocialStrip profiles={report.social_profiles} />
+          </SectionCard>
+        )}
+
         <SectionCard id="market" icon={ChartLineUp} title="Market analysis">
           <KVList rows={[
             ["TAM", data.marketAnalysis?.tam],
@@ -332,12 +343,28 @@ function AttachPanel({ rid, attaching, setAttaching, onClose }) {
   const [chosen, setChosen] = useState("");
 
   useEffect(() => {
-    if (target === "vault") {
-      api.get("/deal-rooms").then((r) => setVaults(r.data || [])).catch(() => {});
-    } else {
-      api.get("/listings").then((r) => setListings(r.data || [])).catch(() => {});
-    }
-    setChosen("");
+    let cancelled = false;
+    const fetchOptions = async () => {
+      try {
+        if (target === "vault") {
+          const r = await api.get("/deal-rooms");
+          if (!cancelled) {
+            setVaults(r.data || []);
+            setChosen("");
+          }
+        } else {
+          const r = await api.get("/listings");
+          if (!cancelled) {
+            setListings(r.data || []);
+            setChosen("");
+          }
+        }
+      } catch {
+        /* silent */
+      }
+    };
+    fetchOptions();
+    return () => { cancelled = true; };
   }, [target]);
 
   const submit = async () => {
