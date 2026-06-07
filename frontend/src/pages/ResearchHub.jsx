@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
@@ -11,24 +11,51 @@ export default function ResearchHub() {
   const [current, setCurrent] = useState(null);
   const [history, setHistory] = useState([]);
   const [queueingDetailed, setQueueingDetailed] = useState(false);
+  const pollRef = useRef(null);
 
   const loadHistory = () => api.get("/research/history").then((r) => setHistory(r.data));
 
   useEffect(() => { loadHistory(); }, []);
+  useEffect(() => () => pollRef.current && clearInterval(pollRef.current), []);
 
   const submit = async (e) => {
     e?.preventDefault();
     if (!form.company_name) return;
     setLoading(true);
     setCurrent(null);
+    pollRef.current && clearInterval(pollRef.current);
     try {
       const r = await api.post("/research/company", form);
       setCurrent(r.data);
-      toast.success(`Research brief ready: ${r.data.company_name}`);
-      loadHistory();
+      // Async pipeline: poll until completed | failed
+      if (r.data.status === "completed") {
+        toast.success(`Research brief ready: ${r.data.company_name}`);
+        setLoading(false);
+        loadHistory();
+        return;
+      }
+      // Begin polling
+      const rid = r.data.id;
+      pollRef.current = setInterval(async () => {
+        try {
+          const pr = await api.get(`/research/detail/${rid}`);
+          setCurrent(pr.data);
+          if (pr.data.status === "completed") {
+            clearInterval(pollRef.current);
+            setLoading(false);
+            toast.success(`Research brief ready: ${pr.data.company_name}`);
+            loadHistory();
+          } else if (pr.data.status === "failed") {
+            clearInterval(pollRef.current);
+            setLoading(false);
+            toast.error(pr.data.error || "Research failed");
+          }
+        } catch {
+          // transient network error — keep polling
+        }
+      }, 4000);
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Research failed");
-    } finally {
+      toast.error(err?.response?.data?.detail || "Research failed to queue");
       setLoading(false);
     }
   };
@@ -91,14 +118,17 @@ export default function ResearchHub() {
 
       {loading && (
         <div className="mt-6 wz-card p-6 font-mono-wz text-sm text-[var(--wz-text-secondary)]" data-testid="research-loading">
-          <div className="flex items-center gap-3"><div className="dot-blink" /> Researcher streaming…</div>
+          <div className="flex items-center gap-3"><div className="dot-blink" /> {current?.status === "analyzing" ? "AI analyzing — Perplexity + Brave + Claude in flight…" : "Queuing your research…"}</div>
           <div className="mt-3 h-1 bg-[var(--wz-border)] overflow-hidden">
-            <div className="h-full bg-[var(--wz-gold)] animate-pulse" style={{ width: "60%" }} />
+            <div className="h-full bg-[var(--wz-gold)] animate-pulse" style={{ width: current?.status === "analyzing" ? "75%" : "20%" }} />
+          </div>
+          <div className="mt-3 text-xs text-[var(--wz-text-tertiary)]">
+            Typically 30-90s · we&apos;ll auto-refresh until the brief is ready, no need to wait on this tab.
           </div>
         </div>
       )}
 
-      {current && D && (
+      {current && current.status === "completed" && D && (
         <div className="mt-8 wz-card" data-testid="research-result">
           <div className="border-b border-[var(--wz-border)] px-6 py-5 flex items-center justify-between gap-3 flex-wrap">
             <div>

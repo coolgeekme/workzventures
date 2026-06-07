@@ -1329,74 +1329,116 @@ def build_sources(perplexity_urls: List[str], brave_hits: List[dict]) -> List[di
 
 @api_router.post("/research/company")
 async def research_company(body: CompanyResearchRequest, user=Depends(get_current_user)):
-    started = now_utc()
-    company = body.company_name
-
-    # Phase 1: gather live web evidence in parallel (Perplexity Sonar + Brave)
-    sonar_prompt = (
-        f"Provide an institutional-investor overview of {company}"
-        + (f" (sector hint: {body.sector})" if body.sector else "")
-        + (f" (region: {body.region})" if body.region else "")
-        + ". Cover business model, recent news, leadership, competitive position, and any 2026 events."
-    )
-    brave_query = f"{company} {body.sector or ''} company news 2026".strip()
-
-    perplexity_task = query_perplexity(sonar_prompt)
-    brave_task = search_brave(brave_query, count=6)
-    perplexity_res, brave_res = await asyncio.gather(perplexity_task, brave_task)
-
-    sources = build_sources(perplexity_res.get("citations", []), brave_res)
-
-    # Phase 2: feed grounded context to Claude
-    sources_block = "\n".join(
-        f"[{s['index']}] {s.get('title') or s['url']} — {s['url']}"
-        + (f" :: {s.get('snippet')}" if s.get("snippet") else "")
-        for s in sources
-    ) or "(no live sources available — proceed with model knowledge)"
-
-    perplexity_summary = (perplexity_res.get("text") or "").strip()
-    grounded_user = (
-        f"Company: {company}\n"
-        f"Sector hint: {body.sector or 'unspecified'}\n"
-        f"Region hint: {body.region or 'global'}\n"
-        f"Buyer notes: {body.notes or 'none'}\n\n"
-        f"LIVE WEB-RESEARCH SUMMARY (from real-time search):\n{perplexity_summary or '(none)'}\n\n"
-        f"SOURCES (cite as [n] inline):\n{sources_block}\n\n"
-        "Now produce the JSON brief, embedding [n] citations where you reference a source."
-    )
-
-    try:
-        raw = await call_claude(RESEARCH_SYS, grounded_user, session_id=f"research-{user['id']}")
-        data = safe_json_loads(raw)
-    except Exception as e:
-        logger.exception("Claude research failed")
-        await log_agent_activity("research-agent", f"research:{company}", "failed",
-                                 user_id=user["id"], friction=str(e))
-        raise HTTPException(status_code=502, detail=f"AI research failed: {e}")
-
-    doc = {
-        "id": str(uuid.uuid4()),
+    """Queue a grounded research brief. Returns immediately with status='pending'.
+    Background worker transitions pending → analyzing → completed | failed (or returns
+    inline if the pipeline finishes within ~25s)."""
+    rid = str(uuid.uuid4())
+    skeleton = {
+        "id": rid,
         "user_id": user["id"],
-        "company_name": company,
+        "company_name": body.company_name,
         "sector": body.sector,
         "region": body.region,
-        "data": data,
-        "sources": sources,
-        "live_research_used": bool(perplexity_summary or brave_res),
+        "notes": body.notes,
+        "data": None,
+        "sources": [],
+        "live_research_used": False,
+        "status": "pending",
+        "error": None,
         "created_at": now_utc().isoformat(),
     }
-    await db.research.insert_one(doc)
-    duration = int((now_utc() - started).total_seconds() * 1000)
-    await log_agent_activity(
-        "research-agent",
-        f"research:{company} · grounded({len(sources)} sources)",
-        "completed",
-        user_id=user["id"],
-        duration_ms=duration,
-        meta={"sources_count": len(sources), "providers": list({s["provider"] for s in sources})},
-    )
-    await log_audit(user["id"], "research.create", company, {"sources": len(sources)})
-    doc.pop("_id", None)
+    await db.research.insert_one(skeleton)
+    asyncio.create_task(_execute_research_company(rid, body, user["id"]))
+    skeleton.pop("_id", None)
+    return skeleton
+
+
+async def _execute_research_company(rid: str, body: CompanyResearchRequest, user_id: str) -> None:
+    """Background worker for /api/research/company. Avoids the 60s ingress timeout
+    that was failing user-facing research calls."""
+    started = now_utc()
+    company = body.company_name
+    try:
+        await db.research.update_one({"id": rid}, {"$set": {"status": "analyzing"}})
+
+        sonar_prompt = (
+            f"Provide an institutional-investor overview of {company}"
+            + (f" (sector hint: {body.sector})" if body.sector else "")
+            + (f" (region: {body.region})" if body.region else "")
+            + ". Cover business model, recent news, leadership, competitive position, and any 2026 events."
+        )
+        brave_query = f"{company} {body.sector or ''} company news 2026".strip()
+
+        perplexity_res, brave_res = await asyncio.gather(
+            query_perplexity(sonar_prompt),
+            search_brave(brave_query, count=6),
+            return_exceptions=True,
+        )
+        if isinstance(perplexity_res, Exception):
+            perplexity_res = {}
+        if isinstance(brave_res, Exception):
+            brave_res = []
+
+        sources = build_sources(perplexity_res.get("citations", []) if isinstance(perplexity_res, dict) else [], brave_res or [])
+
+        sources_block = "\n".join(
+            f"[{s['index']}] {s.get('title') or s['url']} — {s['url']}"
+            + (f" :: {s.get('snippet')}" if s.get("snippet") else "")
+            for s in sources
+        ) or "(no live sources available — proceed with model knowledge)"
+
+        perplexity_summary = (perplexity_res.get("text") if isinstance(perplexity_res, dict) else "" or "").strip()
+        grounded_user = (
+            f"Company: {company}\n"
+            f"Sector hint: {body.sector or 'unspecified'}\n"
+            f"Region hint: {body.region or 'global'}\n"
+            f"Buyer notes: {body.notes or 'none'}\n\n"
+            f"LIVE WEB-RESEARCH SUMMARY (from real-time search):\n{perplexity_summary or '(none)'}\n\n"
+            f"SOURCES (cite as [n] inline):\n{sources_block}\n\n"
+            "Now produce the JSON brief, embedding [n] citations where you reference a source."
+        )
+
+        raw = await call_claude(RESEARCH_SYS, grounded_user, session_id=f"research-{user_id}")
+        data = safe_json_loads(raw)
+
+        duration = int((now_utc() - started).total_seconds() * 1000)
+        await db.research.update_one(
+            {"id": rid},
+            {"$set": {
+                "data": data,
+                "sources": sources,
+                "live_research_used": bool(perplexity_summary or brave_res),
+                "status": "completed",
+                "completed_at": now_utc().isoformat(),
+                "duration_ms": duration,
+            }},
+        )
+        await log_agent_activity(
+            "research-agent",
+            f"research:{company} · grounded({len(sources)} sources)",
+            "completed",
+            user_id=user_id, duration_ms=duration,
+            meta={"sources_count": len(sources), "providers": list({s["provider"] for s in sources})},
+        )
+        await log_audit(user_id, "research.create", company, {"sources": len(sources)})
+    except Exception as e:
+        logger.exception(f"Research worker failed for {rid}")
+        await db.research.update_one(
+            {"id": rid},
+            {"$set": {"status": "failed", "error": str(e)[:500],
+                      "completed_at": now_utc().isoformat()}},
+        )
+        await log_agent_activity("research-agent", f"research:{company}", "failed",
+                                 user_id=user_id, friction=str(e)[:200])
+
+
+@api_router.get("/research/detail/{rid}")
+async def get_research(rid: str, user=Depends(get_current_user)):
+    doc = await db.research.find_one({"id": rid, "deleted_at": {"$exists": False}}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Research not found")
+    if user.get("role") != "admin" and doc.get("user_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Not your research")
     return doc
 
 
