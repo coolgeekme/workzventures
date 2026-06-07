@@ -4,6 +4,7 @@ FastAPI backend with JWT auth, Claude Sonnet 4.5 research/newsletter generation,
 Composio LinkedIn OAuth integration, WebMCP action registry.
 """
 import os
+import re
 import uuid
 import json
 import logging
@@ -149,6 +150,7 @@ class TokenResponse(BaseModel):
 
 class CompanyResearchRequest(BaseModel):
     company_name: str
+    company_url: Optional[str] = None
     sector: Optional[str] = None
     region: Optional[str] = None
     notes: Optional[str] = None
@@ -1327,6 +1329,20 @@ def build_sources(perplexity_urls: List[str], brave_hits: List[dict]) -> List[di
     return sources
 
 
+def _extract_domain(url: Optional[str]) -> Optional[str]:
+    """Strip protocol, www, path, query, port from a URL. Returns None on failure or empty."""
+    if not url or not isinstance(url, str):
+        return None
+    s = url.strip()
+    if not s:
+        return None
+    s = re.sub(r"^https?://", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^www\.", "", s, flags=re.IGNORECASE)
+    s = s.split("/")[0].split("?")[0].split("#")[0]
+    s = s.split(":")[0]  # strip port
+    return s.lower() or None
+
+
 @api_router.post("/research/company")
 async def research_company(body: CompanyResearchRequest, user=Depends(get_current_user)):
     """Queue a grounded research brief. Returns immediately with status='pending'.
@@ -1337,6 +1353,7 @@ async def research_company(body: CompanyResearchRequest, user=Depends(get_curren
         "id": rid,
         "user_id": user["id"],
         "company_name": body.company_name,
+        "company_url": body.company_url,
         "sector": body.sector,
         "region": body.region,
         "notes": body.notes,
@@ -1363,21 +1380,30 @@ async def _execute_research_company(rid: str, body: CompanyResearchRequest, user
 
         sonar_prompt = (
             f"Provide an institutional-investor overview of {company}"
+            + (f" (official website: {body.company_url})" if body.company_url else "")
             + (f" (sector hint: {body.sector})" if body.sector else "")
             + (f" (region: {body.region})" if body.region else "")
             + ". Cover business model, recent news, leadership, competitive position, and any 2026 events."
         )
         brave_query = f"{company} {body.sector or ''} company news 2026".strip()
+        # Domain-anchored Brave query — pulls signals directly from the company's own site
+        brave_domain_query = None
+        domain = _extract_domain(body.company_url) if body.company_url else None
+        if domain:
+            brave_domain_query = f"site:{domain} about OR pricing OR customers OR team OR investors"
 
-        perplexity_res, brave_res = await asyncio.gather(
+        tasks = [
             query_perplexity(sonar_prompt),
             search_brave(brave_query, count=6),
-            return_exceptions=True,
-        )
-        if isinstance(perplexity_res, Exception):
-            perplexity_res = {}
-        if isinstance(brave_res, Exception):
-            brave_res = []
+        ]
+        if brave_domain_query:
+            tasks.append(search_brave(brave_domain_query, count=6))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        perplexity_res = results[0] if not isinstance(results[0], Exception) else {}
+        brave_res = results[1] if not isinstance(results[1], Exception) else []
+        if len(results) > 2 and not isinstance(results[2], Exception):
+            # merge domain hits into the brave_res list, with domain hits first (higher signal)
+            brave_res = (results[2] or []) + (brave_res or [])
 
         sources = build_sources(perplexity_res.get("citations", []) if isinstance(perplexity_res, dict) else [], brave_res or [])
 
@@ -1390,6 +1416,7 @@ async def _execute_research_company(rid: str, body: CompanyResearchRequest, user
         perplexity_summary = (perplexity_res.get("text") if isinstance(perplexity_res, dict) else "" or "").strip()
         grounded_user = (
             f"Company: {company}\n"
+            f"Website: {body.company_url or 'unknown'}\n"
             f"Sector hint: {body.sector or 'unspecified'}\n"
             f"Region hint: {body.region or 'global'}\n"
             f"Buyer notes: {body.notes or 'none'}\n\n"
@@ -4560,3 +4587,4 @@ async def shutdown_db_client():
         except (asyncio.CancelledError, Exception):
             pass
     client.close()
+()

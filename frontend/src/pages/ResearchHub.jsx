@@ -6,7 +6,7 @@ import { MagnifyingGlass, Trash, FileMagnifyingGlass } from "@phosphor-icons/rea
 
 export default function ResearchHub() {
   const navigate = useNavigate();
-  const [form, setForm] = useState({ company_name: "", sector: "", region: "", notes: "" });
+  const [form, setForm] = useState({ company_name: "", company_url: "", sector: "", region: "", notes: "" });
   const [loading, setLoading] = useState(false);
   const [current, setCurrent] = useState(null);
   const [history, setHistory] = useState([]);
@@ -67,7 +67,7 @@ export default function ResearchHub() {
     try {
       const r = await api.post("/research/detailed", {
         company_name: current.company_name,
-        company_url: D.website || null,
+        company_url: current.company_url || D.website || form.company_url || null,
         industry: current.sector || D.sector || null,
         region: current.region || null,
         buyer_notes: form.notes || null,
@@ -97,6 +97,10 @@ export default function ResearchHub() {
           <div className="overline mb-2">Company name *</div>
           <input data-testid="research-company" className="wz-input" required value={form.company_name} onChange={(e) => setForm({ ...form, company_name: e.target.value })} placeholder="Anthropic, Stripe, Klarna…" />
         </div>
+        <div className="md:col-span-2">
+          <div className="overline mb-2">Company website</div>
+          <input data-testid="research-website" type="url" inputMode="url" className="wz-input" value={form.company_url} onChange={(e) => setForm({ ...form, company_url: e.target.value })} placeholder="https://stripe.com" />
+        </div>
         <div>
           <div className="overline mb-2">Sector hint</div>
           <input data-testid="research-sector" className="wz-input" value={form.sector} onChange={(e) => setForm({ ...form, sector: e.target.value })} placeholder="SaaS, HealthTech…" />
@@ -105,11 +109,11 @@ export default function ResearchHub() {
           <div className="overline mb-2">Region</div>
           <input data-testid="research-region" className="wz-input" value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} placeholder="EMEA, NA, APAC" />
         </div>
-        <div className="md:col-span-3">
+        <div className="md:col-span-2">
           <div className="overline mb-2">Buyer notes (optional)</div>
           <input data-testid="research-notes" className="wz-input" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="e.g., looking for $200M–$500M EBITDA targets" />
         </div>
-        <div className="flex items-end">
+        <div className="flex items-end md:col-span-4">
           <button type="submit" disabled={loading} data-testid="research-submit" className="wz-btn wz-btn-gold w-full flex items-center justify-center gap-2">
             {loading ? "Synthesizing…" : (<><MagnifyingGlass size={16} /> Generate brief</>)}
           </button>
