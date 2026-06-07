@@ -91,6 +91,8 @@ class UserPublic(BaseModel):
     interests: List[str] = Field(default_factory=list)
     newsletter_opt_in: bool = False
     created_at: datetime
+    is_demo: bool = False
+    demo_data_retention_hours: Optional[int] = None
 
 
 class RegisterRequest(BaseModel):
@@ -232,6 +234,7 @@ def decode_token(token: str) -> Dict[str, Any]:
 
 
 def serialize_user(doc: dict) -> dict:
+    is_demo = bool(doc.get("is_demo"))
     return {
         "id": doc["id"],
         "email": doc["email"],
@@ -243,6 +246,8 @@ def serialize_user(doc: dict) -> dict:
         "created_at": doc["created_at"]
         if isinstance(doc["created_at"], datetime)
         else datetime.fromisoformat(doc["created_at"]),
+        "is_demo": is_demo,
+        "demo_data_retention_hours": 48 if is_demo else None,
     }
 
 
@@ -4410,6 +4415,14 @@ async def delete_buyer_alert(aid: str, user=Depends(get_current_user)):
 
 # ---- Background rescan scheduler --------------------------------------------
 _buyer_scheduler_task: Optional[asyncio.Task] = None
+_demo_cleanup_task: Optional[asyncio.Task] = None
+
+from demo_cleanup import (  # noqa: E402
+    DEMO_EMAILS,
+    DEMO_RETENTION_HOURS,
+    demo_cleanup_scheduler,
+    purge_demo_data,
+)
 
 
 async def _buyer_discovery_scheduler():
@@ -4467,6 +4480,7 @@ async def seed_demo_user():
             "newsletter_opt_in": True,
             "newsletter_cadence": "weekly",
             "created_at": now_utc().isoformat(),
+            "is_demo": True,
         })
 
     seller_email = "mira@workz.example.com"
@@ -4483,12 +4497,34 @@ async def seed_demo_user():
             "interests": ["HealthTech", "Industrial"],
             "newsletter_opt_in": False,
             "created_at": now_utc().isoformat(),
+            "is_demo": True,
         })
     else:
         seller_id = seller["id"]
 
+    admin_email = "admin@workz.example.com"
+    if not await db.users.find_one({"email": admin_email}):
+        await db.users.insert_one({
+            "id": str(uuid.uuid4()),
+            "email": admin_email,
+            "name": "Workz Admin",
+            "role": "admin",
+            "organization": "Workz Ventures",
+            "password_hash": hash_password("WorkzAdmin123!"),
+            "interests": [],
+            "newsletter_opt_in": False,
+            "created_at": now_utc().isoformat(),
+            "is_demo": True,
+        })
+
+    # Backfill the is_demo flag on any pre-existing demo accounts
+    await db.users.update_many(
+        {"email": {"$in": list(DEMO_EMAILS)}, "is_demo": {"$ne": True}},
+        {"$set": {"is_demo": True}},
+    )
+
     # Seed sample seller listings if none yet
-    if await db.listings.count_documents({"seller_id": seller_id}) == 0:
+    if await db.listings.count_documents({"seller_id": seller_id, "is_seed": True}) == 0:
         sample = [
             {
                 "company_name": "Helios MedTech",
@@ -4540,6 +4576,7 @@ async def seed_demo_user():
                 "inquiry_count": 0,
                 "view_count": 0,
                 "created_at": now_utc().isoformat(),
+                "is_seed": True,
             } for s in sample
         ])
 
@@ -4552,17 +4589,24 @@ async def seed_demo():
     await seed_demo_user()
     if await db.deals.count_documents({}) == 0:
         await db.deals.insert_many([
-            {"id": str(uuid.uuid4()), "name": "Project Helios", "sector": "Industrial Tech", "stage": "DD", "value_usd_m": 412, "geography": "EMEA", "status": "active", "created_at": now_utc().isoformat()},
-            {"id": str(uuid.uuid4()), "name": "Project Atlas", "sector": "SaaS", "stage": "LOI", "value_usd_m": 287, "geography": "NA", "status": "active", "created_at": now_utc().isoformat()},
-            {"id": str(uuid.uuid4()), "name": "Project Meridian", "sector": "Healthcare", "stage": "Sourcing", "value_usd_m": 619, "geography": "APAC", "status": "active", "created_at": now_utc().isoformat()},
-            {"id": str(uuid.uuid4()), "name": "Project Nautilus", "sector": "FinServ", "stage": "Closing", "value_usd_m": 1240, "geography": "EMEA", "status": "active", "created_at": now_utc().isoformat()},
-            {"id": str(uuid.uuid4()), "name": "Project Vertex", "sector": "ClimateTech", "stage": "DD", "value_usd_m": 178, "geography": "NA", "status": "active", "created_at": now_utc().isoformat()},
+            {"id": str(uuid.uuid4()), "name": "Project Helios", "sector": "Industrial Tech", "stage": "DD", "value_usd_m": 412, "geography": "EMEA", "status": "active", "created_at": now_utc().isoformat(), "is_seed": True},
+            {"id": str(uuid.uuid4()), "name": "Project Atlas", "sector": "SaaS", "stage": "LOI", "value_usd_m": 287, "geography": "NA", "status": "active", "created_at": now_utc().isoformat(), "is_seed": True},
+            {"id": str(uuid.uuid4()), "name": "Project Meridian", "sector": "Healthcare", "stage": "Sourcing", "value_usd_m": 619, "geography": "APAC", "status": "active", "created_at": now_utc().isoformat(), "is_seed": True},
+            {"id": str(uuid.uuid4()), "name": "Project Nautilus", "sector": "FinServ", "stage": "Closing", "value_usd_m": 1240, "geography": "EMEA", "status": "active", "created_at": now_utc().isoformat(), "is_seed": True},
+            {"id": str(uuid.uuid4()), "name": "Project Vertex", "sector": "ClimateTech", "stage": "DD", "value_usd_m": 178, "geography": "NA", "status": "active", "created_at": now_utc().isoformat(), "is_seed": True},
         ])
     # Buyer Discovery background scheduler — periodic rescan of live listings
     global _buyer_scheduler_task
     if _buyer_scheduler_task is None or _buyer_scheduler_task.done():
         _buyer_scheduler_task = asyncio.create_task(_buyer_discovery_scheduler())
         logger.info("buyer-discovery scheduler started")
+    # Demo data 48h retention sweeper
+    global _demo_cleanup_task
+    if _demo_cleanup_task is None or _demo_cleanup_task.done():
+        _demo_cleanup_task = asyncio.create_task(
+            demo_cleanup_scheduler(db, gridfs_bucket, listing_files_bucket)
+        )
+        logger.info("demo-cleanup scheduler started (48h retention)")
     logger.info("Workz Ventures backend ready")
 
 
@@ -4572,6 +4616,30 @@ async def seed_demo():
 @api_router.get("/")
 async def health():
     return {"service": "workz-ventures", "ok": True}
+
+
+@api_router.get("/demo/retention-info")
+async def demo_retention_info(user=Depends(get_current_user)):
+    """Public-to-the-authenticated-user introspection of demo retention policy."""
+    return {
+        "is_demo": bool(user.get("is_demo")),
+        "retention_hours": DEMO_RETENTION_HOURS,
+        "demo_emails": sorted(DEMO_EMAILS),
+        "policy": (
+            "Demo accounts are for evaluation only. Any content created in this "
+            f"workspace is permanently deleted {DEMO_RETENTION_HOURS} hours after it "
+            "is created. Seeded illustrative data (listings, sample deals) is preserved."
+        ),
+    }
+
+
+@api_router.post("/admin/demo/purge")
+async def admin_demo_purge(user=Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    summary = await purge_demo_data(db, gridfs_bucket, listing_files_bucket)
+    await log_audit(user["id"], "admin.demo.purge", "manual_trigger", summary)
+    return summary
 
 
 # Register router + middleware
@@ -4600,12 +4668,13 @@ app.add_middleware(
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    global _buyer_scheduler_task
-    if _buyer_scheduler_task and not _buyer_scheduler_task.done():
-        _buyer_scheduler_task.cancel()
-        try:
-            await _buyer_scheduler_task
-        except (asyncio.CancelledError, Exception):
-            pass
+    global _buyer_scheduler_task, _demo_cleanup_task
+    for t in (_buyer_scheduler_task, _demo_cleanup_task):
+        if t and not t.done():
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
     client.close()
 ()

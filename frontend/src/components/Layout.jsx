@@ -11,6 +11,7 @@ import Logo from "./Logo";
 import ThemeToggle from "./ThemeToggle";
 import MobileTopbar from "./MobileTopbar";
 import BottomTabBar from "./BottomTabBar";
+import DemoBanner from "./DemoBanner";
 
 const BUYER_NAV = [
   { to: "/app/dashboard", label: "Dashboard", icon: House, group: "Core" },
@@ -174,6 +175,8 @@ export default function Layout({ children }) {
 
       {/* Main */}
       <main className="flex flex-col min-h-screen pb-20 lg:pb-0">
+        {/* Demo workspace 48h retention banner */}
+        <DemoBanner />
         {/* Desktop topbar (>= lg) */}
         <header className="hidden lg:flex border-b border-[var(--wz-border)] px-8 py-3 items-center justify-between" data-testid="topbar">
           <div className="flex items-center gap-4">

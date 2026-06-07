@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate, useLocation } from "react-router-dom";
+import { Link, useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "../lib/auth";
 import Logo, { WORKZ_HERO_URL } from "../components/Logo";
@@ -7,12 +7,27 @@ import ThemeToggle from "../components/ThemeToggle";
 
 const BG = WORKZ_HERO_URL;
 
+// Demo accounts that the Landing page links to via `?demo=...`
+const DEMO_ACCOUNT_PASSWORDS = {
+  "alex@workz.example.com": "WorkzPass123!",
+  "mira@workz.example.com": "WorkzPass123!",
+};
+
 export default function Login() {
   const { login } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [params] = useSearchParams();
+  // Prefill from ?demo=email@workz.example.com (set by Landing's demo CTAs) — done
+  // via lazy useState initializer rather than useEffect to avoid the
+  // react-hooks/set-state-in-effect rule.
+  const demoEmail = params.get("demo");
+  const [email, setEmail] = useState(() =>
+    demoEmail && DEMO_ACCOUNT_PASSWORDS[demoEmail] ? demoEmail : "",
+  );
+  const [password, setPassword] = useState(() =>
+    demoEmail && DEMO_ACCOUNT_PASSWORDS[demoEmail] ? DEMO_ACCOUNT_PASSWORDS[demoEmail] : "",
+  );
   const [loading, setLoading] = useState(false);
 
   const submit = async (e) => {
@@ -94,6 +109,18 @@ export default function Login() {
           >
             {loading ? "Authenticating…" : "Enter terminal"}
           </button>
+
+          {demoEmail && DEMO_ACCOUNT_PASSWORDS[demoEmail] && (
+            <div
+              data-testid="demo-login-notice"
+              className="mt-5 text-[11px] leading-relaxed border border-[var(--wz-amber)]/40 bg-[var(--wz-amber)]/10 px-3 py-2.5 rounded-sm text-[var(--wz-text-secondary)]"
+            >
+              <span className="text-[var(--wz-amber)] font-medium">Demo workspace</span> ·
+              {" "}content created in this account is auto-deleted after{" "}
+              <span className="font-medium text-[var(--wz-text)]">48 hours</span>. Sample
+              listings and seeded data stay so platform features remain demo-ready.
+            </div>
+          )}
 
           <div className="mt-6 text-xs text-[var(--wz-text-secondary)]">
             No account yet?{" "}

@@ -159,6 +159,13 @@ Build an enterprise platform that combines:
 ## Seed credentials
 See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123!`
 
+## What's been implemented (2026-06-07 — iter-15 Demo Account Retention)
+- **48-hour demo data retention** for `alex@`, `mira@`, and `admin@workz.example.com`. New `backend/demo_cleanup.py` module + hourly background sweeper started from `seed_demo()`. On each pass it deletes demo-user-owned rows older than 48 h from: `research`, `detailed_reports`, `collateral`, `outreach`, `newsletters`, `leads`, `watchlist`, `agent_activity`, `composio_connections`, plus cascade-deletes their `listings` (non-seed) → `listing_staged_files` (with GridFS blob removal) → `inquiries` → `inquiry_messages` → `deal_rooms` → `deal_room_files` (with GridFS blob removal) / `deal_room_findings` / `deal_room_messages` / `deal_room_requests`, plus `buyer_matches` / `buyer_alerts` / `buyer_scans`. Audit logs preserved to keep the hash-chain intact.
+- **Seed preservation**: every seeded listing/deal now carries `is_seed: true` and is excluded from the sweep. `seed_demo_user()` reseeds Helios MedTech, Atlas Logistics, and Vertex Climate on startup whenever the seed listings count drops to zero, so platform features stay demo-ready.
+- **Demo flag on the wire**: `UserPublic` now exposes `is_demo` and `demo_data_retention_hours`. New endpoints `GET /api/demo/retention-info` (any authed user) and `POST /api/admin/demo/purge` (admin manual trigger). Backfill on startup tags any existing demo users with `is_demo: true`.
+- **Frontend notice**: new `components/DemoBanner.jsx` mounted at the top of `Layout` — amber strip with warning glyph, clock icon, dismiss button (re-surfaces hourly via `localStorage`). Login page shows an inline amber notice when arriving via `?demo=...`.
+- Backend tests (iter-15): **5/5 pass** at `/app/backend/tests/test_demo_cleanup.py` covering `is_demo` flag, retention-info endpoint, admin-only purge, seed-survives-purge, and fresh-content-not-purged.
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)
