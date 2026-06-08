@@ -87,9 +87,23 @@ export default function DealRooms() {
           <div className="wz-card p-10 text-center text-sm text-[var(--wz-text-tertiary)] lg:col-span-2">
             <FileText size={28} className="mx-auto mb-3 text-[var(--wz-text-tertiary)]" />
             {isSeller ? (
-              <>No Vaults yet. A Vault opens after the seller <span className="text-[var(--wz-positive)] font-medium">accepts</span> your inquiry on the <Link to="/app/inquiries" className="text-[var(--wz-amber)] hover:underline">Inquiries page</Link>, then opens the room. If your inquiry shows <span className="text-[var(--wz-negative)] font-medium">Declined</span>, the seller passed on it — no Vault will open for that listing.</>
+              <>
+                No active Vaults yet. A Vault opens when you mark a buyer&apos;s inquiry as{" "}
+                <span className="text-[var(--wz-positive)] font-medium">Accepted</span> on the{" "}
+                <Link to="/app/inquiries" className="text-[var(--wz-amber)] hover:underline">Inquiries page</Link>
+                {" "}and click <span className="font-medium">Open Vault</span>. Documents you upload to a
+                listing&apos;s <Link to="/app/listings" className="text-[var(--wz-amber)] hover:underline">Data Room</Link>
+                {" "}auto-copy into every Vault you open — so the buyer reads them as soon as they sign the NDA.
+              </>
             ) : (
-              <>No vaults yet. Sellers open these when they engage with your inquiry.</>
+              <>
+                No Vaults yet. A Vault opens after the seller marks your inquiry{" "}
+                <span className="text-[var(--wz-positive)] font-medium">Accepted</span> on the{" "}
+                <Link to="/app/inquiries" className="text-[var(--wz-amber)] hover:underline">Inquiries page</Link>
+                {" "}and opens it for you. If your inquiry shows{" "}
+                <span className="text-[var(--wz-negative)] font-medium">Declined</span>, the seller passed —
+                no Vault will open for that listing.
+              </>
             )}
           </div>
         )}

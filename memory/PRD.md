@@ -198,6 +198,12 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Empty-state copy** on the Vault list page now explains the full lifecycle and what `Declined` means.
 - Backend tests (iter-18): **2/2 pass** at `/app/backend/tests/test_inquiry_to_vault.py` — verifying `passed` does NOT create a Vault (buyer's rooms list stays empty, force-open returns 400) and the full `engaged → open-room → buyer accepts NDA → active` lifecycle works end-to-end.
 
+## What's been implemented (2026-06-08 — iter-19 Listing Data Room ≠ Vault clarity)
+- **Root issue**: user uploaded a PDF on a new listing (Prahsys) and looked for it in the Vault. The Listing Data Room is a *pre-NDA staging area* — files only auto-clone into a Vault once a buyer's inquiry is `Accepted` and the seller clicks **Open Vault**.
+- **Amber explainer banner** added on top of the expanded Data Room: *"This is not a Vault yet. Files here live in this listing's Data Room. A Vault is created per-buyer when you mark their inquiry as Accepted and click Open Vault. Everything staged here is auto-copied into that Vault the moment it opens — so the buyer can read it as soon as they sign the NDA."*
+- **Upload toast** now includes a descriptive subtitle so the seller immediately knows what happened: *"Stored in this listing's Data Room. It will auto-copy into a Vault the moment a buyer's inquiry is Accepted and you open one."* (7 s duration).
+- **Vault empty state inversion fixed**: the seller branch and buyer branch were swapped — sellers were being shown buyer copy. Seller empty state now reads: *"No active Vaults yet. A Vault opens when you mark a buyer's inquiry as Accepted on the Inquiries page and click Open Vault. Documents you upload to a listing's Data Room auto-copy into every Vault you open…"*
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)

@@ -228,9 +228,7 @@ function ListingDataRoom({ listingId, listingName }) {
     }
   };
 
-  useEffect(() => {
-    if (open && !loaded) load();
-  }, [open]); // eslint-disable-line
+  useEffect(() => { if (open && !loaded) load(); }, [open]); // eslint-disable-line
 
   const upload = async (e) => {
     e.preventDefault();
@@ -244,7 +242,10 @@ function ListingDataRoom({ listingId, listingName }) {
       await api.post(`/listings/${listingId}/staged-files/binary`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-      toast.success(`Staged · ${chosen.name}`);
+      toast.success(`Staged · ${chosen.name}`, {
+        description: "Stored in this listing's Data Room. It will auto-copy into a Vault the moment a buyer's inquiry is Accepted and you open one.",
+        duration: 7000,
+      });
       setChosen(null);
       setNote("");
       await load();
@@ -297,6 +298,16 @@ function ListingDataRoom({ listingId, listingName }) {
 
       {open && (
         <div className="border-t border-[var(--wz-border)] p-4 space-y-4">
+          <div className="flex items-start gap-2 border border-[var(--wz-amber)]/40 bg-[var(--wz-amber)]/10 px-3 py-2.5 text-xs leading-relaxed">
+            <Files size={14} className="text-[var(--wz-amber)] mt-0.5 shrink-0" />
+            <div className="text-[var(--wz-text-secondary)]">
+              <span className="text-[var(--wz-text)] font-medium">This is not a Vault yet.</span>{" "}
+              Files here live in <em>this listing&apos;s</em> Data Room. A Vault is created per-buyer
+              when you mark their inquiry as <span className="text-[var(--wz-positive)] font-medium">Accepted</span>{" "}
+              and click <span className="font-medium">Open Vault</span>. Everything staged here is
+              auto-copied into that Vault the moment it opens — so the buyer can read it as soon as they sign the NDA.
+            </div>
+          </div>
           <p className="text-xs text-[var(--wz-text-secondary)] leading-relaxed">
             Documents you upload here are <strong>encrypted at rest (AES-256-GCM)</strong> and auto-clone
             into every Vault opened on this listing — so when a buyer signs the NDA, your data room is
