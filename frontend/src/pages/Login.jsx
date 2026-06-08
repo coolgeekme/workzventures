@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
+import { ArrowLeft } from "@phosphor-icons/react";
 import { useAuth } from "../lib/auth";
 import Logo, { WORKZ_HERO_URL } from "../components/Logo";
 import ThemeToggle from "../components/ThemeToggle";
@@ -64,6 +65,16 @@ export default function Login() {
       </div>
 
       <div className="flex items-center justify-center px-4 sm:px-6 py-8 sm:py-12 relative">
+        <div className="absolute top-4 left-4 lg:top-6 lg:left-6">
+          <Link
+            data-testid="login-back-home"
+            to="/"
+            className="inline-flex items-center gap-1.5 text-xs text-[var(--wz-text-secondary)] hover:text-[var(--wz-text)] transition-colors"
+          >
+            <ArrowLeft size={12} weight="bold" />
+            Back to home
+          </Link>
+        </div>
         <div className="absolute top-4 right-4 lg:top-6 lg:right-6">
           <ThemeToggle />
         </div>

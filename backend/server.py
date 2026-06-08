@@ -4802,6 +4802,157 @@ async def seed_demo_user():
     # Migrate any legacy analyst-role users to buyer
     await db.users.update_many({"role": "analyst"}, {"$set": {"role": "buyer"}})
 
+    # Seed an ACTIVE demo Vault between Alex (buyer) and Mira (seller) so the
+    # platform always demonstrates shared diligence + AI Co-pilot.
+    await _seed_demo_vault()
+
+
+async def _seed_demo_vault():
+    buyer = await db.users.find_one({"email": "alex@workz.example.com"}, {"_id": 0, "id": 1, "name": 1, "organization": 1})
+    seller = await db.users.find_one({"email": "mira@workz.example.com"}, {"_id": 0, "id": 1, "name": 1, "organization": 1})
+    if not buyer or not seller:
+        return
+    listing = await db.listings.find_one(
+        {"seller_id": seller["id"], "is_seed": True, "company_name": "Helios MedTech"},
+        {"_id": 0},
+    )
+    if not listing:
+        return
+
+    # Skip if seed vault already exists between these two on this listing
+    existing = await db.deal_rooms.find_one(
+        {"buyer_id": buyer["id"], "seller_id": seller["id"], "listing_id": listing["id"], "is_seed": True},
+        {"_id": 0, "id": 1},
+    )
+    if existing:
+        return
+
+    now_iso = now_utc().isoformat()
+    inquiry_id = str(uuid.uuid4())
+    room_id = str(uuid.uuid4())
+
+    await db.inquiries.insert_one({
+        "id": inquiry_id,
+        "listing_id": listing["id"],
+        "listing_name": listing.get("company_name"),
+        "buyer_id": buyer["id"],
+        "buyer_name": buyer["name"],
+        "buyer_org": buyer.get("organization"),
+        "seller_id": seller["id"],
+        "seller_name": seller["name"],
+        "seller_org": seller.get("organization"),
+        "status": "engaged",
+        "message": "Seed inquiry — institutional buyer evaluating Helios MedTech for platform demo.",
+        "deal_room_id": room_id,
+        "created_at": now_iso,
+        "is_seed": True,
+    })
+
+    await db.deal_rooms.insert_one({
+        "id": room_id,
+        "inquiry_id": inquiry_id,
+        "listing_id": listing["id"],
+        "listing_name": listing.get("company_name"),
+        "sector": listing.get("sector"),
+        "buyer_id": buyer["id"],
+        "buyer_name": buyer["name"],
+        "buyer_org": buyer.get("organization"),
+        "seller_id": seller["id"],
+        "seller_name": seller["name"],
+        "seller_org": seller.get("organization"),
+        "status": "active",
+        "nda_signed_name": buyer["name"],
+        "nda_accepted_by_buyer_at": now_iso,
+        "drl_template_id": None,
+        "created_at": now_iso,
+        "is_seed": True,
+    })
+
+    # Three lightweight, text-only files (no GridFS) so the Co-pilot has context
+    seed_files = [
+        {
+            "filename": "Helios_CIM_summary.md",
+            "folder": "Commercial",
+            "uploaded_by_role": "seller",
+            "uploaded_by": seller["id"],
+            "content": (
+                "# Helios MedTech — Confidential Information Memorandum (Summary)\n\n"
+                "**Sector:** Medical Devices · **HQ:** Munich, DE · **Founded:** 2018\n\n"
+                "## Business\n"
+                "Helios builds connected infusion pumps for ICU and surgical suites. "
+                "Recurring revenue is driven by a SaaS layer (Helios Connect) on top of the hardware.\n\n"
+                "## Financials (FY24)\n"
+                "- Revenue: €54.2M (+38% YoY)\n"
+                "- Gross margin: 64%\n"
+                "- ARR (Helios Connect): €18.1M (+72% YoY)\n"
+                "- Net retention: 119%\n"
+                "- EBITDA margin: 9% (target 18% by FY26)\n\n"
+                "## Customers\n"
+                "412 hospitals across DACH + Nordics. Top 10 = 23% of revenue. Mean tenure 4.1 yrs.\n\n"
+                "## Ask\n"
+                "Sale of 100% equity. Indicative range €280-360M. Management open to rollover."
+            ),
+        },
+        {
+            "filename": "Q4_2024_financial_snapshot.md",
+            "folder": "Financials",
+            "uploaded_by_role": "seller",
+            "uploaded_by": seller["id"],
+            "content": (
+                "# Helios MedTech — Q4 2024 Financial Snapshot\n\n"
+                "| Metric | Q4 2024 | Q4 2023 | YoY |\n"
+                "|---|---|---|---|\n"
+                "| Revenue | €15.8M | €11.2M | +41% |\n"
+                "| Gross Profit | €10.1M | €7.0M | +44% |\n"
+                "| Op Expenses | €8.7M | €6.9M | +26% |\n"
+                "| Adj. EBITDA | €1.4M | €0.1M | nm |\n"
+                "| Cash | €22.4M | €18.6M | — |\n\n"
+                "## Notes\n"
+                "- Q4 lifted by Klinikum-Stuttgart rollout (€2.1M one-time).\n"
+                "- Helios Connect ARR run-rate exit: €19.6M.\n"
+                "- DSO: 67 days (target <55).\n"
+                "- Inventory: €6.8M (built ahead of EU MDR Cl-IIb refresh)."
+            ),
+        },
+        {
+            "filename": "DD_Risks_register.md",
+            "folder": "Risk",
+            "uploaded_by_role": "buyer",
+            "uploaded_by": buyer["id"],
+            "content": (
+                "# Buyer-side DD Risk Register — Helios MedTech\n\n"
+                "## R1 — Regulatory (MDR)\n"
+                "EU MDR Class-IIb certification expires Q2 2026. Re-certification budget €0.8M, "
+                "notified body backlog ~9 months. Mitigation: parallel-file with TÜV Süd.\n\n"
+                "## R2 — Customer concentration\n"
+                "Top-10 hospitals = 23% revenue. Klinikum-Stuttgart alone = 6.2%. "
+                "Renewal due Mar 2025 — request seller share renewal correspondence.\n\n"
+                "## R3 — Hardware supply chain\n"
+                "Sole-sourced microcontroller (STM32H7). 14-week lead time, no qualified second source. "
+                "Mitigation plan: dual-source by Q3 2025."
+            ),
+        },
+    ]
+
+    docs = []
+    for sf in seed_files:
+        docs.append({
+            "id": str(uuid.uuid4()),
+            "room_id": room_id,
+            "filename": sf["filename"],
+            "folder": sf["folder"],
+            "content": sf["content"],
+            "char_count": len(sf["content"]),
+            "note": None,
+            "uploaded_by": sf["uploaded_by"],
+            "uploaded_by_role": sf["uploaded_by_role"],
+            "uploaded_at": now_iso,
+            "matched_request_id": None,
+            "is_seed": True,
+        })
+    if docs:
+        await db.deal_room_files.insert_many(docs)
+
 
 @app.on_event("startup")
 async def seed_demo():

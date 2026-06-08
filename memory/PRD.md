@@ -180,6 +180,13 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Demo cleanup**: `private_locker_files` collection added to the 48 h sweep with GridFS blob cascade.
 - Backend tests (iter-16): **5/5 pass** at `/app/backend/tests/test_private_locker.py` covering upload, listing-scoped + workspace-scoped, download round-trip, seller-blocked RBAC, cross-buyer isolation, delete idempotency.
 
+## What's been implemented (2026-06-08 — iter-17 Shared Vault demo + login UX)
+- **Q&A clarification.** Confirmed that the Vault model already grants symmetric access: `participant_check` (server.py L2712) returns `'buyer'|'seller'|'admin'` if `user.id in {room.buyer_id, room.seller_id}`. Both parties already could list rooms, view files, download, and ask the AI Co-pilot. The friction was that demo accounts had zero rooms to demonstrate it on.
+- **Seed Vault** between Alex (buyer) and Mira (seller) on Helios MedTech, status `active`, `is_seed: True`. Three text-only seed files (`Helios_CIM_summary.md`, `Q4_2024_financial_snapshot.md`, `DD_Risks_register.md`) — two seller-uploaded, one buyer-uploaded — so the Vault Co-pilot has real context. Verified Claude cites the correct source file when asked from either side.
+- **Seed Vault is purge-proof**: `is_seed: True` flag on the inquiry, deal_room, and deal_room_files makes the 48h demo cleanup skip them, ensuring demo evaluators always see a working Vault.
+- **Back-to-home link** added to top-left of `/login` (`data-testid="login-back-home"`). Visitors who arrive at login can return to the marketing landing page without using the browser back button.
+- Backend tests (iter-17): **5/5 pass** at `/app/backend/tests/test_shared_vault.py` covering seed-vault dual visibility, identical file set for both parties, 403 for outsiders, Co-pilot answers for both roles with citations, seed-vault survives the demo purge.
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)
