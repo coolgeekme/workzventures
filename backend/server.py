@@ -12,6 +12,7 @@ import asyncio
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import secrets
+from mailer import send_email, link as mail_link
 from typing import List, Optional, Literal, Dict, Any
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Header, Request
@@ -705,8 +706,13 @@ async def _record_login_attempt(email: str, ok: bool, ip: Optional[str] = None):
     })
 
 
-@api_router.post("/auth/register", response_model=TokenResponse)
-async def register(body: RegisterRequest):
+@api_router.post("/auth/register")
+async def register(body: RegisterRequest, request: Request):
+    """
+    Public access-request endpoint. Account is created in `pending` status
+    awaiting admin approval. The user CANNOT log in until status flips to
+    `active`. An email goes to REQUEST_NOTIFY_EMAIL on every new request.
+    """
     err = _password_complexity_ok(body.password)
     if err:
         raise HTTPException(status_code=400, detail=err)
@@ -724,11 +730,152 @@ async def register(body: RegisterRequest):
         "interests": [],
         "newsletter_opt_in": False,
         "created_at": now_utc().isoformat(),
+        "status": "pending",
     }
     await db.users.insert_one(doc)
-    token = create_token(user_id, body.role)
-    await log_audit(user_id, "auth.register", body.email)
-    return TokenResponse(token=token, user=UserPublic(**serialize_user(doc)))
+    await log_audit(user_id, "auth.register", body.email, {"status": "pending"})
+
+    # Notify operator
+    cfg_notify = os.environ.get("REQUEST_NOTIFY_EMAIL")
+    if cfg_notify:
+        ip = request.client.host if request.client else "unknown"
+        html = f"""
+        <p>New access request on NextCapOS.</p>
+        <ul>
+          <li><strong>Name:</strong> {body.name}</li>
+          <li><strong>Email:</strong> {body.email}</li>
+          <li><strong>Role requested:</strong> {body.role}</li>
+          <li><strong>Organization:</strong> {body.organization or '—'}</li>
+          <li><strong>IP:</strong> {ip}</li>
+        </ul>
+        <p><a href="{mail_link('/app/admin/users')}">Review &amp; approve in the admin console &rsaquo;</a></p>
+        """
+        asyncio.create_task(send_email(
+            cfg_notify,
+            f"NextCapOS · access request from {body.email}",
+            html,
+            reply_to=body.email,
+        ))
+    return {
+        "ok": True,
+        "status": "pending",
+        "message": "Request received. You'll get an email when an administrator approves your account.",
+    }
+
+
+@api_router.post("/admin/users/{uid}/approve")
+async def admin_approve_user(uid: str, user=Depends(get_current_user)):
+    _admin_only(user)
+    target = await db.users.find_one({"id": uid}, {"_id": 0, "email": 1, "name": 1, "status": 1, "role": 1})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.get("status") == "active":
+        return {"ok": True, "already_active": True}
+    await db.users.update_one(
+        {"id": uid},
+        {"$set": {"status": "active", "approved_at": now_utc().isoformat(),
+                  "approved_by_admin_id": user["id"]}},
+    )
+    await log_audit(user["id"], "admin.user.approve", uid, {"email": target["email"]})
+    html = f"""
+      <p>Hi {target.get('name') or 'there'},</p>
+      <p>Your NextCapOS access request has been <strong>approved</strong>. You can now sign in:</p>
+      <p><a href="{mail_link('/login')}">Sign in to NextCapOS &rsaquo;</a></p>
+    """
+    asyncio.create_task(send_email(target["email"], "NextCapOS · access approved", html))
+    return {"ok": True, "status": "active"}
+
+
+@api_router.post("/admin/users/{uid}/reject")
+async def admin_reject_user(uid: str, user=Depends(get_current_user)):
+    _admin_only(user)
+    target = await db.users.find_one({"id": uid}, {"_id": 0, "email": 1, "name": 1, "is_demo": 1})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.get("is_demo"):
+        raise HTTPException(status_code=400, detail="Cannot reject seeded demo accounts")
+    await db.users.update_one(
+        {"id": uid},
+        {"$set": {"status": "rejected", "rejected_at": now_utc().isoformat(),
+                  "rejected_by_admin_id": user["id"]}},
+    )
+    await log_audit(user["id"], "admin.user.reject", uid, {"email": target["email"]})
+    html = f"""
+      <p>Hi {target.get('name') or 'there'},</p>
+      <p>Thank you for your interest in NextCapOS. After review, we are not able
+      to approve your access request at this time.</p>
+    """
+    asyncio.create_task(send_email(target["email"], "NextCapOS · access request update", html))
+    return {"ok": True, "status": "rejected"}
+
+
+# -----------------------------------------------------------------------------
+# Forgot password
+# -----------------------------------------------------------------------------
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    password: str
+
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(body: ForgotPasswordRequest):
+    """Always returns 200 — never leaks whether the email exists."""
+    email_norm = body.email.lower()
+    user = await db.users.find_one({"email": email_norm}, {"_id": 0, "id": 1, "name": 1, "status": 1})
+    if user and user.get("status") != "deactivated":
+        token = secrets.token_urlsafe(32)
+        await db.password_resets.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user["id"],
+            "email": email_norm,
+            "token_hash": hash_password(token),
+            "created_at": now_utc().isoformat(),
+            "expires_at": (now_utc() + timedelta(hours=1)).isoformat(),
+            "status": "pending",
+        })
+        html = f"""
+          <p>Hi {user.get('name') or 'there'},</p>
+          <p>We received a request to reset your NextCapOS password.</p>
+          <p><a href="{mail_link(f'/reset-password?token={token}')}">Set a new password &rsaquo;</a></p>
+          <p>This link expires in one hour. If you didn't request this, you can ignore this email.</p>
+        """
+        asyncio.create_task(send_email(email_norm, "NextCapOS · reset your password", html))
+    return {"ok": True, "message": "If that email exists, a reset link has been sent."}
+
+
+@api_router.post("/auth/reset-password")
+async def reset_password(body: ResetPasswordRequest):
+    err = _password_complexity_ok(body.password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    now_iso = now_utc().isoformat()
+    candidates = await db.password_resets.find(
+        {"status": "pending", "expires_at": {"$gt": now_iso}},
+        {"_id": 0},
+    ).to_list(50)
+    matched = next((c for c in candidates if verify_password(body.token, c["token_hash"])), None)
+    if not matched:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+    await db.users.update_one(
+        {"id": matched["user_id"]},
+        {"$set": {"password_hash": hash_password(body.password),
+                  "password_reset_at": now_iso}},
+    )
+    await db.password_resets.update_one(
+        {"id": matched["id"]},
+        {"$set": {"status": "consumed", "consumed_at": now_iso}},
+    )
+    # Invalidate any other pending resets for this user
+    await db.password_resets.update_many(
+        {"user_id": matched["user_id"], "status": "pending"},
+        {"$set": {"status": "superseded"}},
+    )
+    await log_audit(matched["user_id"], "auth.password_reset", matched["email"])
+    return {"ok": True}
 
 
 @api_router.post("/auth/login", response_model=TokenResponse)
@@ -743,6 +890,12 @@ async def login(body: LoginRequest, request: Request):
     if user.get("status") == "deactivated":
         await _record_login_attempt(email_norm, ok=False, ip=ip)
         raise HTTPException(status_code=403, detail="Account deactivated. Contact your administrator.")
+    if user.get("status") == "pending":
+        await _record_login_attempt(email_norm, ok=False, ip=ip)
+        raise HTTPException(status_code=403, detail="Your access request is awaiting administrator approval. You'll get an email when it's approved.")
+    if user.get("status") == "rejected":
+        await _record_login_attempt(email_norm, ok=False, ip=ip)
+        raise HTTPException(status_code=403, detail="Your access request was not approved.")
     await _record_login_attempt(email_norm, ok=True, ip=ip)
     token = create_token(user["id"], user["role"])
     await log_audit(user["id"], "auth.login", body.email)

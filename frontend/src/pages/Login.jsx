@@ -121,6 +121,16 @@ export default function Login() {
             {loading ? "Authenticating…" : "Enter terminal"}
           </button>
 
+          <div className="mt-4 text-center text-xs">
+            <Link
+              data-testid="login-forgot-link"
+              to="/forgot-password"
+              className="text-[var(--wz-text-tertiary)] hover:text-[var(--wz-text)] transition-colors"
+            >
+              Forgot password?
+            </Link>
+          </div>
+
           {demoEmail && DEMO_ACCOUNT_PASSWORDS[demoEmail] && (
             <div
               data-testid="demo-login-notice"

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   UsersThree, PlusCircle, EnvelopeSimple, Pencil, Prohibit, Key, X,
-  CheckCircle, Copy, MagnifyingGlass,
+  CheckCircle, Copy, MagnifyingGlass, ThumbsUp, ThumbsDown,
 } from "@phosphor-icons/react";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -66,6 +66,27 @@ export default function AdminUsers() {
       load();
     } catch (err) {
       toast.error("Failed");
+    }
+  };
+
+  const approve = async (u) => {
+    try {
+      await api.post(`/admin/users/${u.id}/approve`);
+      toast.success(`Approved · ${u.email}`);
+      load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Failed");
+    }
+  };
+
+  const reject = async (u) => {
+    if (!window.confirm(`Reject access for ${u.email}?`)) return;
+    try {
+      await api.post(`/admin/users/${u.id}/reject`);
+      toast.success("Rejected");
+      load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Failed");
     }
   };
 
@@ -165,6 +186,10 @@ export default function AdminUsers() {
                   <td className="px-4 py-3">
                     {u.status === "deactivated" ? (
                       <span className="pill pill-negative">deactivated</span>
+                    ) : u.status === "rejected" ? (
+                      <span className="pill pill-negative">rejected</span>
+                    ) : u.status === "pending" ? (
+                      <span className="pill pill-amber">pending approval</span>
                     ) : u.is_demo ? (
                       <span className="pill pill-gold">demo (seed)</span>
                     ) : (
@@ -173,6 +198,26 @@ export default function AdminUsers() {
                   </td>
                   <td className="px-4 py-3 text-[var(--wz-text-tertiary)]">{relativeTime(u.created_at)}</td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
+                    {u.status === "pending" && (
+                      <>
+                        <button
+                          data-testid={`approve-${u.id}`}
+                          onClick={() => approve(u)}
+                          className="wz-btn wz-btn-ghost text-[11px] mr-1 text-[var(--wz-positive)]"
+                          title="Approve access"
+                        >
+                          <ThumbsUp size={11} /> Approve
+                        </button>
+                        <button
+                          data-testid={`reject-${u.id}`}
+                          onClick={() => reject(u)}
+                          className="wz-btn wz-btn-ghost text-[11px] mr-1 text-[var(--wz-negative)]"
+                          title="Reject"
+                        >
+                          <ThumbsDown size={11} />
+                        </button>
+                      </>
+                    )}
                     <button
                       data-testid={`edit-${u.id}`}
                       onClick={() => setEditing(u)}

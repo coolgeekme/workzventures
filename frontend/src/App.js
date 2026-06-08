@@ -35,6 +35,8 @@ import DetailedReport from "./pages/DetailedReport";
 import PrivateLocker from "./pages/PrivateLocker";
 import AdminUsers from "./pages/AdminUsers";
 import AcceptInvite from "./pages/AcceptInvite";
+import ForgotPassword from "./pages/ForgotPassword";
+import ResetPassword from "./pages/ResetPassword";
 
 function Protected({ children }) {
   const { user } = useAuth();
@@ -80,6 +82,8 @@ function AppRoutes() {
       <Route path="/app/private-locker" element={<Protected><PrivateLocker /></Protected>} />
       <Route path="/app/admin/users" element={<AdminOnly><AdminUsers /></AdminOnly>} />
       <Route path="/accept-invite" element={<AcceptInvite />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/apps" element={<ConnectableApps />} />
       <Route path="/app/audit" element={<AdminOnly><Audit /></AdminOnly>} />
       <Route path="*" element={<Navigate to="/" replace />} />

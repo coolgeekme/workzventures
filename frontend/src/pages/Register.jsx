@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "../lib/auth";
+import { api } from "../lib/api";
 import Logo from "../components/Logo";
 import ThemeToggle from "../components/ThemeToggle";
 
@@ -12,6 +13,7 @@ export default function Register() {
     name: "", email: "", password: "", organization: "", role: "buyer",
   });
   const [loading, setLoading] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
 
   const update = (k) => (e) => setForm({ ...form, [k]: e.target.value });
 
@@ -19,15 +21,37 @@ export default function Register() {
     e.preventDefault();
     setLoading(true);
     try {
-      await register(form);
-      toast.success("Account created");
-      nav("/app/dashboard");
+      const r = await api.post("/auth/register", form);
+      if (r.data?.status === "pending") {
+        setSubmitted(true);
+      } else {
+        toast.success("Account created");
+        nav("/app/dashboard");
+      }
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Registration failed");
     } finally {
       setLoading(false);
     }
   };
+
+  if (submitted) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-4 py-12 grain relative" data-testid="register-success">
+        <div className="absolute top-4 right-4"><ThemeToggle /></div>
+        <div className="w-full max-w-md wz-card p-8 text-center">
+          <div className="text-[var(--wz-positive)] text-4xl mb-3">✓</div>
+          <h1 className="font-display text-2xl tracking-tighter font-medium mb-3">Request received</h1>
+          <p className="text-sm text-[var(--wz-text-secondary)] mb-6 leading-relaxed">
+            Thanks {form.name}. Your access request is awaiting administrator approval.
+            We&apos;ll send <span className="text-[var(--wz-text)] font-medium">{form.email}</span> an email
+            the moment your account is approved.
+          </p>
+          <a href="/" className="wz-btn wz-btn-ghost text-xs">Back to home</a>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center px-4 sm:px-6 py-8 sm:py-12 grain relative" data-testid="register-page">
