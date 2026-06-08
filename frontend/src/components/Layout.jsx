@@ -5,7 +5,7 @@ import { api } from "../lib/api";
 import {
   House, MagnifyingGlass, NotePencil, PaperPlaneTilt, Kanban,
   EnvelopeSimple, Plugs, Terminal, ChartLineUp, ListChecks, SignOut,
-  Storefront, Tag, Question, ChartBar, Files, ShieldCheck, Crosshair, Bell, Lock,
+  Storefront, Tag, Question, ChartBar, Files, ShieldCheck, Crosshair, Bell, Lock, UsersThree,
 } from "@phosphor-icons/react";
 import Logo from "./Logo";
 import ThemeToggle from "./ThemeToggle";
@@ -57,6 +57,7 @@ const ADMIN_NAV = [
   { to: "/app/leads", label: "Leads", icon: Kanban, group: "Pipeline" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Pipeline" },
   { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
+  { to: "/app/admin/users", label: "Users", icon: UsersThree, group: "Platform (Admin)" },
   { to: "/app/security", label: "Security", icon: ShieldCheck, group: "Platform (Admin)" },
   { to: "/app/mcp", label: "MCP Console", icon: Terminal, group: "Platform (Admin)" },
   { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp, group: "Platform (Admin)" },

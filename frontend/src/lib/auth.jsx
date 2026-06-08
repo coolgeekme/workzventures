@@ -45,8 +45,14 @@ export function AuthProvider({ children }) {
     setUser(null);
   };
 
+  const setSession = (payload) => {
+    localStorage.setItem("wz_token", payload.token);
+    localStorage.setItem("wz_user", JSON.stringify(payload.user));
+    setUser(payload.user);
+  };
+
   return (
-    <AuthCtx.Provider value={{ user, loading, login, register, logout, setUser }}>
+    <AuthCtx.Provider value={{ user, loading, login, register, logout, setUser, setSession }}>
       {children}
     </AuthCtx.Provider>
   );

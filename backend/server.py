@@ -11,6 +11,7 @@ import logging
 import asyncio
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+import secrets
 from typing import List, Optional, Literal, Dict, Any
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Header, Request
@@ -101,7 +102,7 @@ class RegisterRequest(BaseModel):
     password: str
     name: str
     organization: Optional[str] = None
-    role: Literal["admin", "buyer", "seller"] = "buyer"
+    role: Literal["buyer", "seller"] = "buyer"
 
 
 class ListingCreate(BaseModel):
@@ -739,6 +740,9 @@ async def login(body: LoginRequest, request: Request):
     if not user or not verify_password(body.password, user["password_hash"]):
         await _record_login_attempt(email_norm, ok=False, ip=ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    if user.get("status") == "deactivated":
+        await _record_login_attempt(email_norm, ok=False, ip=ip)
+        raise HTTPException(status_code=403, detail="Account deactivated. Contact your administrator.")
     await _record_login_attempt(email_norm, ok=True, ip=ip)
     token = create_token(user["id"], user["role"])
     await log_audit(user["id"], "auth.login", body.email)
@@ -748,6 +752,274 @@ async def login(body: LoginRequest, request: Request):
 @api_router.get("/auth/me", response_model=UserPublic)
 async def me(user=Depends(get_current_user)):
     return UserPublic(**serialize_user(user))
+
+
+# -----------------------------------------------------------------------------
+# ADMIN · User management
+# -----------------------------------------------------------------------------
+def _admin_only(user):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+
+class AdminCreateUser(BaseModel):
+    email: EmailStr
+    password: str
+    name: str
+    role: Literal["admin", "buyer", "seller"] = "buyer"
+    organization: Optional[str] = None
+
+
+class AdminUpdateUser(BaseModel):
+    name: Optional[str] = None
+    role: Optional[Literal["admin", "buyer", "seller"]] = None
+    organization: Optional[str] = None
+    status: Optional[Literal["active", "deactivated"]] = None
+
+
+class AdminInviteRequest(BaseModel):
+    email: EmailStr
+    name: Optional[str] = None
+    role: Literal["admin", "buyer", "seller"] = "buyer"
+    organization: Optional[str] = None
+    expires_hours: int = 168  # 7 days
+
+
+class AcceptInviteRequest(BaseModel):
+    token: str
+    password: str
+    name: Optional[str] = None
+
+
+@api_router.get("/admin/users")
+async def admin_list_users(q: Optional[str] = None, user=Depends(get_current_user)):
+    _admin_only(user)
+    query: dict = {}
+    if q:
+        query["$or"] = [
+            {"email": {"$regex": q, "$options": "i"}},
+            {"name": {"$regex": q, "$options": "i"}},
+            {"organization": {"$regex": q, "$options": "i"}},
+        ]
+    items = await db.users.find(
+        query,
+        {"_id": 0, "password_hash": 0},
+    ).sort("created_at", -1).to_list(500)
+    return items
+
+
+@api_router.post("/admin/users")
+async def admin_create_user(body: AdminCreateUser, user=Depends(get_current_user)):
+    _admin_only(user)
+    err = _password_complexity_ok(body.password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    email_norm = body.email.lower()
+    if await db.users.find_one({"email": email_norm}, {"_id": 0, "id": 1}):
+        raise HTTPException(status_code=400, detail="Email already registered")
+    user_id = str(uuid.uuid4())
+    doc = {
+        "id": user_id,
+        "email": email_norm,
+        "name": body.name,
+        "role": body.role,
+        "organization": body.organization,
+        "password_hash": hash_password(body.password),
+        "interests": [],
+        "newsletter_opt_in": False,
+        "created_at": now_utc().isoformat(),
+        "created_by_admin_id": user["id"],
+        "status": "active",
+    }
+    await db.users.insert_one(doc)
+    await log_audit(user["id"], "admin.user.create", user_id,
+                    {"email": email_norm, "role": body.role})
+    doc.pop("_id", None)
+    doc.pop("password_hash", None)
+    return doc
+
+
+@api_router.patch("/admin/users/{uid}")
+async def admin_update_user(uid: str, body: AdminUpdateUser, user=Depends(get_current_user)):
+    _admin_only(user)
+    if uid == user["id"] and body.role and body.role != "admin":
+        raise HTTPException(status_code=400, detail="Cannot demote yourself")
+    target = await db.users.find_one({"id": uid}, {"_id": 0, "email": 1, "role": 1})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    patch = {k: v for k, v in body.model_dump(exclude_none=True).items()}
+    if not patch:
+        raise HTTPException(status_code=400, detail="No changes")
+    await db.users.update_one({"id": uid}, {"$set": patch})
+    await log_audit(user["id"], "admin.user.update", uid, patch)
+    fresh = await db.users.find_one({"id": uid}, {"_id": 0, "password_hash": 0})
+    return fresh
+
+
+@api_router.post("/admin/users/{uid}/password")
+async def admin_reset_password(uid: str, body: dict, user=Depends(get_current_user)):
+    _admin_only(user)
+    new_password = (body or {}).get("password")
+    if not new_password:
+        raise HTTPException(status_code=400, detail="password required")
+    err = _password_complexity_ok(new_password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    target = await db.users.find_one({"id": uid}, {"_id": 0, "email": 1})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    await db.users.update_one(
+        {"id": uid},
+        {"$set": {"password_hash": hash_password(new_password),
+                  "password_reset_by_admin_at": now_utc().isoformat()}},
+    )
+    await log_audit(user["id"], "admin.user.password_reset", uid, {"email": target["email"]})
+    return {"ok": True}
+
+
+@api_router.delete("/admin/users/{uid}")
+async def admin_deactivate_user(uid: str, user=Depends(get_current_user)):
+    _admin_only(user)
+    if uid == user["id"]:
+        raise HTTPException(status_code=400, detail="Cannot deactivate yourself")
+    target = await db.users.find_one({"id": uid}, {"_id": 0, "email": 1, "is_demo": 1})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.get("is_demo"):
+        raise HTTPException(status_code=400, detail="Cannot deactivate seeded demo accounts")
+    await db.users.update_one(
+        {"id": uid},
+        {"$set": {"status": "deactivated", "deactivated_at": now_utc().isoformat(),
+                  "deactivated_by_admin_id": user["id"]}},
+    )
+    await log_audit(user["id"], "admin.user.deactivate", uid, {"email": target["email"]})
+    return {"ok": True, "status": "deactivated"}
+
+
+@api_router.get("/admin/invites")
+async def admin_list_invites(user=Depends(get_current_user)):
+    _admin_only(user)
+    items = await db.user_invites.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return items
+
+
+@api_router.post("/admin/invites")
+async def admin_create_invite(body: AdminInviteRequest, request: Request, user=Depends(get_current_user)):
+    _admin_only(user)
+    email_norm = body.email.lower()
+    if await db.users.find_one({"email": email_norm}, {"_id": 0, "id": 1}):
+        raise HTTPException(status_code=400, detail="Email already has an account")
+
+    # Invalidate any previous pending invite for the same email
+    await db.user_invites.update_many(
+        {"email": email_norm, "status": "pending"},
+        {"$set": {"status": "superseded", "superseded_at": now_utc().isoformat()}},
+    )
+
+    token = secrets.token_urlsafe(32)
+    invite_id = str(uuid.uuid4())
+    now = now_utc()
+    expires = now + timedelta(hours=max(1, min(body.expires_hours, 24 * 30)))
+    doc = {
+        "id": invite_id,
+        "token": token,
+        "email": email_norm,
+        "name": body.name,
+        "role": body.role,
+        "organization": body.organization,
+        "invited_by_id": user["id"],
+        "invited_by_email": user.get("email"),
+        "status": "pending",
+        "created_at": now.isoformat(),
+        "expires_at": expires.isoformat(),
+    }
+    await db.user_invites.insert_one(doc)
+    await log_audit(user["id"], "admin.invite.create", invite_id,
+                    {"email": email_norm, "role": body.role})
+
+    # Build accept URL using the frontend host the admin is on
+    origin = request.headers.get("origin") or request.headers.get("referer") or ""
+    base = origin.rstrip("/").rsplit("/", 1)[0] if "/app/" in origin else origin.rstrip("/")
+    accept_url = f"{base}/accept-invite?token={token}" if base else f"/accept-invite?token={token}"
+
+    doc.pop("_id", None)
+    doc["accept_url"] = accept_url
+    return doc
+
+
+@api_router.delete("/admin/invites/{iid}")
+async def admin_revoke_invite(iid: str, user=Depends(get_current_user)):
+    _admin_only(user)
+    r = await db.user_invites.update_one(
+        {"id": iid, "status": "pending"},
+        {"$set": {"status": "revoked", "revoked_at": now_utc().isoformat()}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Invite not found or not pending")
+    await log_audit(user["id"], "admin.invite.revoke", iid)
+    return {"ok": True}
+
+
+@api_router.get("/auth/invite/{token}")
+async def public_get_invite(token: str):
+    """Public endpoint used by the accept-invite page to render a preview."""
+    inv = await db.user_invites.find_one({"token": token}, {"_id": 0, "token": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    if inv.get("status") != "pending":
+        raise HTTPException(status_code=410, detail=f"Invite {inv.get('status')}")
+    if inv.get("expires_at") and inv["expires_at"] < now_utc().isoformat():
+        await db.user_invites.update_one(
+            {"id": inv["id"]},
+            {"$set": {"status": "expired", "expired_at": now_utc().isoformat()}},
+        )
+        raise HTTPException(status_code=410, detail="Invite expired")
+    return inv
+
+
+@api_router.post("/auth/accept-invite", response_model=TokenResponse)
+async def accept_invite(body: AcceptInviteRequest):
+    inv = await db.user_invites.find_one({"token": body.token}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    if inv.get("status") != "pending":
+        raise HTTPException(status_code=410, detail=f"Invite {inv.get('status')}")
+    if inv.get("expires_at") and inv["expires_at"] < now_utc().isoformat():
+        await db.user_invites.update_one(
+            {"id": inv["id"]},
+            {"$set": {"status": "expired", "expired_at": now_utc().isoformat()}},
+        )
+        raise HTTPException(status_code=410, detail="Invite expired")
+    err = _password_complexity_ok(body.password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    if await db.users.find_one({"email": inv["email"]}, {"_id": 0, "id": 1}):
+        raise HTTPException(status_code=400, detail="Email already registered — sign in instead")
+
+    user_id = str(uuid.uuid4())
+    doc = {
+        "id": user_id,
+        "email": inv["email"],
+        "name": body.name or inv.get("name") or inv["email"].split("@")[0],
+        "role": inv["role"],
+        "organization": inv.get("organization"),
+        "password_hash": hash_password(body.password),
+        "interests": [],
+        "newsletter_opt_in": False,
+        "created_at": now_utc().isoformat(),
+        "created_via_invite_id": inv["id"],
+        "invited_by_id": inv.get("invited_by_id"),
+        "status": "active",
+    }
+    await db.users.insert_one(doc)
+    await db.user_invites.update_one(
+        {"id": inv["id"]},
+        {"$set": {"status": "accepted", "accepted_at": now_utc().isoformat(),
+                  "accepted_user_id": user_id}},
+    )
+    token = create_token(user_id, doc["role"])
+    await log_audit(user_id, "auth.accept_invite", inv["id"], {"email": inv["email"], "role": inv["role"]})
+    return TokenResponse(token=token, user=UserPublic(**serialize_user(doc)))
 
 
 # -----------------------------------------------------------------------------

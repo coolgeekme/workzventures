@@ -225,6 +225,29 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
   - `PrivateLocker.jsx` filter strip now shows 4 tabs: All / Workspace / Per-listing / Research targets, with research-target name decoration on rows (gold pill).
 - Backend tests (iter-21): **3/3 critical pytests pass** at `/app/backend/tests/test_research_companion.py` covering locker scope=research round-trip, seller RBAC block (403), companion citation-grounded on a locker doc. (A 4th test for cross-buyer 404 isolation passes individually but is flaky in parallel due to research-pipeline LLM latency.)
 
+## What's been implemented (2026-06-08 — iter-22 Admin user management + lock down public admin role)
+- **Public registration locked**: `Literal["buyer", "seller"]` on `RegisterRequest`. Frontend `Register.jsx` dropdown no longer lists Admin. Attempting `role: "admin"` from the API returns HTTP 422.
+- **Deactivated users blocked at login**: `/auth/login` checks `status == "deactivated"` and returns 403.
+- **Admin endpoints** (all admin-only via `_admin_only` guard):
+  - `GET /api/admin/users?q=` — paginated user list with optional search across email/name/org.
+  - `POST /api/admin/users` — direct create (admin sets initial password).
+  - `PATCH /api/admin/users/{uid}` — edit name/role/organization/status. Prevents self-demote.
+  - `POST /api/admin/users/{uid}/password` — admin sets a new password.
+  - `DELETE /api/admin/users/{uid}` — soft-deactivate (blocks self-deactivate + seed demo accounts).
+  - `GET /api/admin/invites` — list invites.
+  - `POST /api/admin/invites` — generate a one-time invite token (`secrets.token_urlsafe(32)`) with configurable expiry (1 h–30 d). Returns the shareable `accept_url`.
+  - `DELETE /api/admin/invites/{iid}` — revoke a pending invite.
+- **Public accept-invite flow**:
+  - `GET /api/auth/invite/{token}` — preview metadata (no auth, gates by status + expiry).
+  - `POST /api/auth/accept-invite` — consume token → create account → return JWT (one-time use, marked accepted in `user_invites`).
+- **Frontend**:
+  - New `pages/AdminUsers.jsx` with two tabs (Users / Pending invites), search, Add-user modal, Invite modal (shows the copy-able link), Edit modal, Deactivate / Revoke actions.
+  - New `pages/AcceptInvite.jsx` at `/accept-invite?token=…` — public, validates token, asks for password + name, auto-logs the user in.
+  - New `auth.jsx` helper `setSession(payload)`.
+  - Sidebar `Users` entry added to admin nav under "Platform (Admin)".
+- New collection `user_invites`.
+- Backend tests (iter-22): **7/7 pass** at `/app/backend/tests/test_admin_users.py`: public register rejects admin role, accepts buyer+seller, non-admin → 403 on admin endpoints, full create→edit→reset-password→deactivate→login-blocked lifecycle, cannot deactivate demo seed accounts, invite→accept→one-time-use→revoke=410.
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)

@@ -33,6 +33,8 @@ import BuyerAlerts from "./pages/BuyerAlerts";
 import ConnectableApps from "./pages/ConnectableApps";
 import DetailedReport from "./pages/DetailedReport";
 import PrivateLocker from "./pages/PrivateLocker";
+import AdminUsers from "./pages/AdminUsers";
+import AcceptInvite from "./pages/AcceptInvite";
 
 function Protected({ children }) {
   const { user } = useAuth();
@@ -76,6 +78,8 @@ function AppRoutes() {
       <Route path="/app/buyer-alerts" element={<Protected><BuyerAlerts /></Protected>} />
       <Route path="/app/research/detailed/:rid" element={<Protected><DetailedReport /></Protected>} />
       <Route path="/app/private-locker" element={<Protected><PrivateLocker /></Protected>} />
+      <Route path="/app/admin/users" element={<AdminOnly><AdminUsers /></AdminOnly>} />
+      <Route path="/accept-invite" element={<AcceptInvite />} />
       <Route path="/apps" element={<ConnectableApps />} />
       <Route path="/app/audit" element={<AdminOnly><Audit /></AdminOnly>} />
       <Route path="*" element={<Navigate to="/" replace />} />
