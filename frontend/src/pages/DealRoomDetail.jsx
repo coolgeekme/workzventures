@@ -8,6 +8,7 @@ import {
   CloudArrowUp, CheckCircle, Warning, ArrowLeft, ChatCircleDots, PaperPlaneTilt,
   Certificate,
 } from "@phosphor-icons/react";
+import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
 
 const FOLDERS = [
   { v: "financials", l: "Financials" },
@@ -229,8 +230,8 @@ export default function DealRoomDetail() {
             <div className="flex-1">
               <div className="font-display text-xl tracking-tight">Non-disclosure agreement required</div>
               <div className="mt-3 text-sm text-[var(--wz-text-secondary)] leading-relaxed border border-[var(--wz-border)] p-4 max-h-48 overflow-y-auto" data-testid="nda-terms">
-                <p className="mb-2">This Confidentiality Agreement (this <span className="text-white">"Agreement"</span>) is entered into between <span className="text-white">{room.seller_org || room.seller_name}</span> ("Disclosing Party") and <span className="text-white">{user.organization || user.name}</span> ("Receiving Party"), effective on the date of execution below.</p>
-                <p className="mb-2"><span className="text-white">1. Confidential Information.</span> All financial, legal, operational, technical, customer, and employee data shared in connection with the proposed transaction concerning <span className="text-white">{room.listing_name}</span> is "Confidential Information."</p>
+                <p className="mb-2">This Confidentiality Agreement (this <span className="text-white">&ldquo;Agreement&rdquo;</span>) is entered into between <span className="text-white">{room.seller_org || room.seller_name}</span> (&ldquo;Disclosing Party&rdquo;) and <span className="text-white">{user.organization || user.name}</span> (&ldquo;Receiving Party&rdquo;), effective on the date of execution below.</p>
+                <p className="mb-2"><span className="text-white">1. Confidential Information.</span> All financial, legal, operational, technical, customer, and employee data shared in connection with the proposed transaction concerning <span className="text-white">{room.listing_name}</span> is &ldquo;Confidential Information.&rdquo;</p>
                 <p className="mb-2"><span className="text-white">2. Use Restriction.</span> Receiving Party shall use Confidential Information solely to evaluate this opportunity, restrict access to personnel with a need-to-know, and not disclose to any third party for 24 months.</p>
                 <p className="mb-2"><span className="text-white">3. Return / Destruction.</span> Upon written request or termination of discussions, Receiving Party shall destroy or return all Confidential Information within 10 business days.</p>
                 <p className="mb-2"><span className="text-white">4. Non-solicitation.</span> Receiving Party shall not, for 12 months, solicit for hire any employee of Disclosing Party with whom it had contact under this Agreement.</p>
@@ -406,7 +407,7 @@ export default function DealRoomDetail() {
                   className={`flex-1 py-1.5 border ${uploadMode === "binary" ? "border-[var(--wz-gold)] text-[var(--wz-gold)]" : "border-[var(--wz-border)] text-[var(--wz-text-tertiary)]"}`}
                   data-testid="upload-mode-binary"
                 >
-                  File · PDF/DOCX/TXT
+                  File upload
                 </button>
                 <button
                   type="button"
@@ -420,12 +421,13 @@ export default function DealRoomDetail() {
 
               {uploadMode === "binary" ? (
                 <label className="block mb-3">
-                  <div className="overline mb-1">Select file (≤ 25 MB)</div>
+                  <div className="overline mb-1">Select file (≤ {UPLOAD_MAX_MB} MB)</div>
+                  <div className="text-[10px] text-[var(--wz-text-tertiary)] mb-1">{UPLOAD_HINT}</div>
                   <input
                     id="dealroom-file-input"
                     required
                     type="file"
-                    accept=".pdf,.docx,.txt,.md,.csv"
+                    accept={UPLOAD_ACCEPT}
                     onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
                     className="wz-input text-xs"
                     data-testid="upload-file-input"
@@ -568,7 +570,7 @@ export default function DealRoomDetail() {
                         <span className="font-mono-wz text-[var(--wz-gold)] not-italic">
                           {f.citation.filename}{f.citation.page ? ` · p.${f.citation.page}` : ""}
                         </span>
-                        {f.citation.excerpt && <> — "{f.citation.excerpt}"</>}
+                        {f.citation.excerpt && <> — &ldquo;{f.citation.excerpt}&rdquo;</>}
                       </blockquote>
                     )}
                   </div>

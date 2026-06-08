@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X } from "@phosphor-icons/react";
+import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
 
 const STATUSES = [
   { v: "draft", l: "Draft" },
@@ -322,10 +323,10 @@ function ListingDataRoom({ listingId, listingName }) {
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-[1fr_140px_auto] gap-2 items-end">
               <label className="block">
-                <div className="overline mb-1">File · PDF / DOCX / TXT · ≤ 25 MB</div>
+                <div className="overline mb-1">File · {UPLOAD_HINT} · ≤ {UPLOAD_MAX_MB} MB</div>
                 <input
                   type="file"
-                  accept=".pdf,.docx,.txt,.md,.csv"
+                  accept={UPLOAD_ACCEPT}
                   onChange={(e) => setChosen(e.target.files?.[0] || null)}
                   className="wz-input"
                   data-testid={`dataroom-file-${listingId}`}

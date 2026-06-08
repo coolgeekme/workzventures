@@ -204,6 +204,15 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Upload toast** now includes a descriptive subtitle so the seller immediately knows what happened: *"Stored in this listing's Data Room. It will auto-copy into a Vault the moment a buyer's inquiry is Accepted and you open one."* (7 s duration).
 - **Vault empty state inversion fixed**: the seller branch and buyer branch were swapped — sellers were being shown buyer copy. Seller empty state now reads: *"No active Vaults yet. A Vault opens when you mark a buyer's inquiry as Accepted on the Inquiries page and click Open Vault. Documents you upload to a listing's Data Room auto-copy into every Vault you open…"*
 
+## What's been implemented (2026-06-08 — iter-20 Multi-format file uploads)
+- **Broadened supported file types** across Listing Data Room, Vault, and Private Locker: PDF · DOCX · DOC · **XLSX/XLSM/XLS** · **PPTX/PPT** · TXT/MD/CSV/TSV/JSON · PNG/JPG/JPEG/GIF/WEBP/HEIC/SVG · MP4/MOV/WEBM · MP3/WAV/M4A · ZIP.
+- **Text extraction added** for XLSX (sheet-by-sheet, tab-separated, capped at 2 000 rows/sheet to bound token cost) and PPTX (slide-by-slide + speaker notes). Used by the AI Co-pilot for context-grounded answers + by Detailed Analysis pipeline.
+- **Binary media** (images, audio, video, archives) stored as-is with structured placeholder text so the Co-pilot can still reference them by filename.
+- **Upload cap raised** from 25 MB → **50 MB** across all three surfaces.
+- **Centralized frontend constants** at `frontend/src/lib/uploadConfig.js` (`UPLOAD_ACCEPT`, `UPLOAD_HINT`, `UPLOAD_MAX_MB`) — single source of truth for accept= attribute and helper copy used by `MyListings.jsx`, `DealRoomDetail.jsx`, `PrivateLockerUploadModal.jsx`.
+- New deps: `openpyxl==3.1.5`, `python-pptx==1.0.2`. Requirements frozen.
+- Backend tests (iter-20): **4/4 pass** at `/app/backend/tests/test_multiformat_uploads.py` covering XLSX text-extraction round-trip, PPTX slide-extraction, image upload without crash, and listing-data-room XLSX path.
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)

@@ -464,6 +464,17 @@ def safe_json_loads(raw: str) -> dict:
 # -----------------------------------------------------------------------------
 # File extraction helpers (PDF / DOCX / TXT → per-page text)
 # -----------------------------------------------------------------------------
+try:
+    from openpyxl import load_workbook  # type: ignore
+except Exception:
+    load_workbook = None  # type: ignore
+
+try:
+    from pptx import Presentation  # type: ignore
+except Exception:
+    Presentation = None  # type: ignore
+
+
 def extract_pages_from_bytes(filename: str, data: bytes) -> List[Dict[str, Any]]:
     """Return list of {page:int, text:str}. Page is 1-indexed. Falls back to single-page."""
     name = (filename or "").lower()
@@ -490,6 +501,43 @@ def extract_pages_from_bytes(filename: str, data: bytes) -> List[Dict[str, Any]]
             else:
                 for idx in range(0, len(buf), chunk_size):
                     pages.append({"page": idx // chunk_size + 1, "text": "\n".join(buf[idx:idx + chunk_size])})
+        elif name.endswith((".xlsx", ".xlsm")) and load_workbook is not None:
+            wb = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+            for i, sheet_name in enumerate(wb.sheetnames, start=1):
+                ws = wb[sheet_name]
+                lines: List[str] = [f"# Sheet: {sheet_name}"]
+                row_count = 0
+                for row in ws.iter_rows(values_only=True):
+                    cells = ["" if v is None else str(v) for v in row]
+                    if any(c.strip() for c in cells):
+                        lines.append("\t".join(cells))
+                        row_count += 1
+                        if row_count >= 2000:
+                            lines.append("… (truncated)")
+                            break
+                pages.append({"page": i, "text": "\n".join(lines)})
+            wb.close()
+        elif name.endswith((".pptx", ".ppt")) and Presentation is not None:
+            prs = Presentation(io.BytesIO(data))
+            for i, slide in enumerate(prs.slides, start=1):
+                parts: List[str] = [f"# Slide {i}"]
+                for shape in slide.shapes:
+                    if shape.has_text_frame:
+                        for para in shape.text_frame.paragraphs:
+                            txt = "".join(r.text for r in para.runs).strip()
+                            if txt:
+                                parts.append(txt)
+                if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
+                    notes = slide.notes_slide.notes_text_frame.text.strip()
+                    if notes:
+                        parts.append(f"\nSpeaker notes: {notes}")
+                pages.append({"page": i, "text": "\n".join(parts)})
+        elif name.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".heif",
+                            ".svg", ".mp4", ".mov", ".webm", ".mp3", ".wav", ".m4a",
+                            ".zip", ".rar", ".7z")):
+            # Binary media — we store the file but don't try to OCR/transcribe (heavy).
+            # Surface a structured placeholder so AI Co-pilot can still reference the doc.
+            pages.append({"page": 1, "text": f"[Non-text file: {filename} · {len(data)} bytes · stored as-is, no automatic text extraction]"})
         else:
             # Plain text / markdown / csv / unknown — treat as one page
             try:
@@ -872,8 +920,8 @@ async def upload_listing_staged_file(
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
-    if len(data) > 25 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File exceeds 25 MB limit")
+    if len(data) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File exceeds 50 MB limit")
 
     file_id = str(uuid.uuid4())
     filename = file.filename or f"upload-{file_id}"
@@ -1079,8 +1127,8 @@ async def upload_private_locker_file(
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
-    if len(data) > 25 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File exceeds 25 MB limit")
+    if len(data) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File exceeds 50 MB limit")
 
     file_id = str(uuid.uuid4())
     filename = file.filename or f"locker-{file_id}"
@@ -3023,8 +3071,8 @@ async def upload_file_binary(
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
     # Cap at 25 MB
-    if len(data) > 25 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File exceeds 25 MB limit")
+    if len(data) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File exceeds 50 MB limit")
 
     file_id = str(uuid.uuid4())
     filename = file.filename or f"upload-{file_id}"

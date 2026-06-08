@@ -2,6 +2,7 @@ import { useState, useRef } from "react";
 import { toast } from "sonner";
 import { Lock, X } from "@phosphor-icons/react";
 import { api } from "../lib/api";
+import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
 
 const FOLDERS = [
   { id: "notes", label: "Notes" },
@@ -63,11 +64,12 @@ export default function PrivateLockerUploadModal({ listings, defaultListingId, o
           Only you will be able to access this file. Encrypted at rest with AES-256-GCM.
         </div>
 
-        <label className="block text-xs text-[var(--wz-text-secondary)] mb-1.5">File</label>
+        <label className="block text-xs text-[var(--wz-text-secondary)] mb-1.5">File <span className="text-[var(--wz-text-tertiary)]">· {UPLOAD_HINT} · ≤ {UPLOAD_MAX_MB} MB</span></label>
         <input
           ref={inputRef}
           data-testid="locker-file-input"
           type="file"
+          accept={UPLOAD_ACCEPT}
           onChange={(e) => setFile(e.target.files?.[0] || null)}
           className="block w-full text-xs text-[var(--wz-text)] file:mr-3 file:py-1.5 file:px-3 file:border-0 file:bg-[var(--wz-surface-2)] file:text-[var(--wz-text)] file:text-xs file:cursor-pointer cursor-pointer mb-4"
         />
