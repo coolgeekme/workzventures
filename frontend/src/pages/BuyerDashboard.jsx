@@ -127,7 +127,7 @@ export default function BuyerDashboard() {
                 <div key={i.id} className="px-6 py-3">
                   <div className="flex justify-between items-start">
                     <div className="font-medium text-sm">{i.listing_name}</div>
-                    <span className={`pill ${i.status === "engaged" ? "pill-positive" : "pill-amber"}`}>{i.status}</span>
+                    <span className={`pill ${i.status === "engaged" ? "pill-positive" : "pill-amber"}`}>{({new: "New", reviewing: "Reviewing", engaged: "Accepted", passed: "Declined"}[i.status]) || i.status}</span>
                   </div>
                 </div>
               ))}

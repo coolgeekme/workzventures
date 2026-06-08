@@ -187,6 +187,17 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Back-to-home link** added to top-left of `/login` (`data-testid="login-back-home"`). Visitors who arrive at login can return to the marketing landing page without using the browser back button.
 - Backend tests (iter-17): **5/5 pass** at `/app/backend/tests/test_shared_vault.py` covering seed-vault dual visibility, identical file set for both parties, 403 for outsiders, Co-pilot answers for both roles with citations, seed-vault survives the demo purge.
 
+## What's been implemented (2026-06-08 — iter-18 Inquiry → Vault UX rewrite)
+- **Root issue identified.** User reported "as a buyer, I sent an inquiry and was passed by the seller. I still have no access to vault data." This is a terminology trap: in M&A `passed` = "we passed on it" = **declined**, so no Vault should open. Generic users misread it as "approved/passed-through."
+- **Renamed status labels in UI** (DB values unchanged for API stability): `new → New`, `reviewing → Reviewing`, `engaged → Accepted`, `passed → Declined`. New shared helper at `/app/frontend/src/lib/inquiryStatus.js` providing `INQUIRY_STATUS_LABEL`, `INQUIRY_STATUS_DESCRIPTION`, `INQUIRY_TRIAGE_LABEL`, `INQUIRY_TRIAGE_CONFIRM`.
+- **Confirm dialog** on the seller side when declining: "This will decline the inquiry. The buyer will NOT get access to the Vault for this listing. They will be notified that you passed. Continue?"
+- **Buyer-side contextual notes** under each inquiry:
+  - `Declined` → red note: "The seller declined this inquiry… 'Passed' is M&A shorthand for 'we're passing on this'. No Vault will be opened…"
+  - `Accepted` (Vault not yet opened) → green note: "Seller accepted your inquiry. Waiting for them to open the Vault…"
+  - `Vault open` → gold note: "Vault open. Accept the NDA inside the Vault to unlock files and the AI Co-pilot."
+- **Empty-state copy** on the Vault list page now explains the full lifecycle and what `Declined` means.
+- Backend tests (iter-18): **2/2 pass** at `/app/backend/tests/test_inquiry_to_vault.py` — verifying `passed` does NOT create a Vault (buyer's rooms list stays empty, force-open returns 400) and the full `engaged → open-room → buyer accepts NDA → active` lifecycle works end-to-end.
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)

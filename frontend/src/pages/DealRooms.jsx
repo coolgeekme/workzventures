@@ -87,7 +87,7 @@ export default function DealRooms() {
           <div className="wz-card p-10 text-center text-sm text-[var(--wz-text-tertiary)] lg:col-span-2">
             <FileText size={28} className="mx-auto mb-3 text-[var(--wz-text-tertiary)]" />
             {isSeller ? (
-              <>No vaults yet. Open one from an engaged inquiry on the <Link to="/app/inquiries" className="text-[var(--wz-amber)] hover:underline">Inquiries page</Link>.</>
+              <>No Vaults yet. A Vault opens after the seller <span className="text-[var(--wz-positive)] font-medium">accepts</span> your inquiry on the <Link to="/app/inquiries" className="text-[var(--wz-amber)] hover:underline">Inquiries page</Link>, then opens the room. If your inquiry shows <span className="text-[var(--wz-negative)] font-medium">Declined</span>, the seller passed on it — no Vault will open for that listing.</>
             ) : (
               <>No vaults yet. Sellers open these when they engage with your inquiry.</>
             )}

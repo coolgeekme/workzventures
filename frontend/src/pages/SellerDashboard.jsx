@@ -125,9 +125,9 @@ export default function SellerDashboard() {
                   <div className="flex-1">
                     <div className="font-medium text-sm">{i.buyer_name}</div>
                     <div className="text-xs text-[var(--wz-text-secondary)] mt-1">{i.buyer_org} · re: <span className="text-[var(--wz-amber)]">{i.listing_name}</span></div>
-                    <div className="text-xs text-[var(--wz-text-secondary)] mt-2 line-clamp-2 italic">"{i.message}"</div>
+                    <div className="text-xs text-[var(--wz-text-secondary)] mt-2 line-clamp-2 italic">&quot;{i.message}&quot;</div>
                   </div>
-                  <span className={`pill ${i.status === "engaged" ? "pill-positive" : i.status === "passed" ? "pill-negative" : "pill-amber"}`}>{i.status}</span>
+                  <span className={`pill ${i.status === "engaged" ? "pill-positive" : i.status === "passed" ? "pill-negative" : "pill-amber"}`}>{({new: "New", reviewing: "Reviewing", engaged: "Accepted", passed: "Declined"}[i.status]) || i.status}</span>
                 </div>
               </div>
             ))}

@@ -5,8 +5,15 @@ import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import {
   Buildings, FileText, Trash, CaretDown, CaretUp, ChatCircleDots,
-  PaperPlaneTilt, Paperclip,
+  PaperPlaneTilt, Paperclip, Info,
 } from "@phosphor-icons/react";
+import {
+  INQUIRY_STATUS_LABEL,
+  INQUIRY_STATUS_DESCRIPTION,
+  INQUIRY_TRIAGE_LABEL,
+  INQUIRY_TRIAGE_CONFIRM,
+  inquiryStatusLabel,
+} from "../lib/inquiryStatus";
 
 const STATUSES = ["new", "reviewing", "engaged", "passed"];
 
@@ -21,9 +28,12 @@ export default function Inquiries() {
   useEffect(() => { load(); }, []);
 
   const setStatus = async (i, status) => {
+    if (INQUIRY_TRIAGE_CONFIRM[status]) {
+      if (!window.confirm(INQUIRY_TRIAGE_CONFIRM[status])) return;
+    }
     try {
       await api.patch(`/inquiries/${i.id}/status`, { status });
-      toast.success(`${i.buyer_name} → ${status}`);
+      toast.success(`${i.buyer_name} → ${inquiryStatusLabel(status)}`);
       load();
     } catch (err) {
       toast.error("Update failed");
@@ -85,7 +95,12 @@ export default function Inquiries() {
             <div className="flex items-start justify-between gap-4 flex-wrap">
               <div className="flex-1 min-w-[260px]">
                 <div className="flex items-center gap-2 mb-2 flex-wrap">
-                  <span className={`pill ${i.status === "engaged" ? "pill-positive" : i.status === "passed" ? "pill-negative" : i.status === "reviewing" ? "pill-gold" : "pill-amber"}`}>{i.status}</span>
+                  <span
+                    className={`pill ${i.status === "engaged" ? "pill-positive" : i.status === "passed" ? "pill-negative" : i.status === "reviewing" ? "pill-gold" : "pill-amber"}`}
+                    title={INQUIRY_STATUS_DESCRIPTION[i.status] || ""}
+                  >
+                    {INQUIRY_STATUS_LABEL[i.status] || i.status}
+                  </span>
                   <span className="text-xs font-mono-wz text-[var(--wz-text-tertiary)]">{new Date(i.created_at).toLocaleString()}</span>
                   {i.message_count > 0 && (
                     <span className="pill pill-gold flex items-center gap-1" data-testid={`thread-count-${i.id}`}>
@@ -101,8 +116,45 @@ export default function Inquiries() {
                   {!isSeller && i.listing_name && <> · re: <span className="text-[var(--wz-gold)]">{i.listing_name}</span></>}
                 </div>
                 <blockquote className="mt-4 border-l-2 border-[var(--wz-gold)] pl-4 text-sm italic text-[var(--wz-text-secondary)] leading-relaxed">
-                  "{i.message}"
+                  &quot;{i.message}&quot;
                 </blockquote>
+                {!isSeller && i.status === "passed" && (
+                  <div
+                    data-testid={`buyer-declined-note-${i.id}`}
+                    className="mt-3 flex items-start gap-2 border border-[var(--wz-negative)]/40 bg-[var(--wz-negative)]/5 px-3 py-2 text-xs text-[var(--wz-text-secondary)] leading-relaxed"
+                  >
+                    <Info size={14} className="text-[var(--wz-negative)] mt-0.5 shrink-0" weight="fill" />
+                    <span>
+                      <span className="text-[var(--wz-text)] font-medium">The seller declined this inquiry.</span>{" "}
+                      &ldquo;Passed&rdquo; is M&amp;A shorthand for &ldquo;we&apos;re passing on this&rdquo;. No Vault
+                      will be opened for this listing. You can withdraw the inquiry or browse other listings.
+                    </span>
+                  </div>
+                )}
+                {!isSeller && i.status === "engaged" && !i.deal_room_id && (
+                  <div
+                    data-testid={`buyer-engaged-note-${i.id}`}
+                    className="mt-3 flex items-start gap-2 border border-[var(--wz-positive)]/40 bg-[var(--wz-positive)]/5 px-3 py-2 text-xs text-[var(--wz-text-secondary)] leading-relaxed"
+                  >
+                    <Info size={14} className="text-[var(--wz-positive)] mt-0.5 shrink-0" weight="fill" />
+                    <span>
+                      <span className="text-[var(--wz-text)] font-medium">Seller accepted your inquiry.</span>{" "}
+                      Waiting for them to open the Vault. You&apos;ll be able to accept the NDA and see documents as soon as they do.
+                    </span>
+                  </div>
+                )}
+                {!isSeller && i.deal_room_id && (
+                  <div
+                    data-testid={`buyer-vault-ready-note-${i.id}`}
+                    className="mt-3 flex items-start gap-2 border border-[var(--wz-gold)]/50 bg-[var(--wz-gold)]/5 px-3 py-2 text-xs text-[var(--wz-text-secondary)] leading-relaxed"
+                  >
+                    <Info size={14} className="text-[var(--wz-gold)] mt-0.5 shrink-0" weight="fill" />
+                    <span>
+                      <span className="text-[var(--wz-text)] font-medium">Vault open.</span>{" "}
+                      Accept the NDA inside the Vault to unlock files and the AI Co-pilot.
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div className="flex flex-col gap-2 shrink-0" data-testid={`triage-${i.id}`}>
@@ -113,10 +165,11 @@ export default function Inquiries() {
                       <button
                         key={s}
                         onClick={() => setStatus(i, s)}
-                        className="text-[10px] font-mono-wz uppercase tracking-widest border border-[var(--wz-border)] px-3 py-1 hover:border-[var(--wz-amber)] hover:text-[var(--wz-amber)] transition-colors"
+                        className={`text-[10px] font-mono-wz uppercase tracking-widest border px-3 py-1 transition-colors ${s === "passed" ? "border-[var(--wz-border)] hover:border-[var(--wz-negative)] hover:text-[var(--wz-negative)]" : s === "engaged" ? "border-[var(--wz-border)] hover:border-[var(--wz-positive)] hover:text-[var(--wz-positive)]" : "border-[var(--wz-border)] hover:border-[var(--wz-amber)] hover:text-[var(--wz-amber)]"}`}
                         data-testid={`set-${i.id}-${s}`}
+                        title={INQUIRY_TRIAGE_LABEL[s]}
                       >
-                        → {s}
+                        → {INQUIRY_STATUS_LABEL[s] || s}
                       </button>
                     ))}
                     <button
@@ -190,7 +243,7 @@ function ThreadPanel({ inquiryId, myRole, onChange }) {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [inquiryId]);
+  useEffect(() => { load(); }, [inquiryId]); // eslint-disable-line
 
   const send = async (e) => {
     e.preventDefault();
