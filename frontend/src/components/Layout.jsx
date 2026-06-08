@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
+import { splitHostingEnabled } from "../lib/hostRouting";
 import {
   House, MagnifyingGlass, NotePencil, PaperPlaneTilt, Kanban,
   EnvelopeSimple, Plugs, Terminal, ChartLineUp, ListChecks, SignOut,
@@ -167,7 +168,16 @@ export default function Layout({ children }) {
           </div>
           <button
             data-testid="logout-btn"
-            onClick={() => { logout(); navigate("/login"); }}
+            onClick={() => {
+              logout();
+              // Marketing site lives on the apex; bounce visitors back to it
+              // once we run on app.* — otherwise stay on the app for /login.
+              if (splitHostingEnabled() && process.env.REACT_APP_MARKETING_URL) {
+                window.location.href = process.env.REACT_APP_MARKETING_URL;
+              } else {
+                navigate("/login");
+              }
+            }}
             className="mt-3 w-full flex items-center justify-between text-xs text-[var(--wz-text-secondary)] hover:text-[var(--wz-text)] border border-[var(--wz-border)] hover:border-[var(--wz-text-tertiary)] px-3 py-2 rounded-sm transition-colors"
           >
             <span>Sign out</span>

@@ -259,6 +259,15 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - Regression tests still 19/19 across iter-15 / 16 / 18 / 22 suites.
 - **Remaining**: the right-panel hero illustration is a PNG asset that literally renders "WORKZ VENTURES" — needs a new image asset to fully retire the old wordmark.
 
+## What's been implemented (2026-06-08 — iter-24 Subdomain split scaffolding)
+- **Emergent Support confirmed**: a single deployment can serve both `nextcapos.com` (apex marketing) and `app.nextcapos.com` (authenticated platform). User adds a CNAME `app` → `nextcapos.com` at their registrar; Emergent's ingress + auto-issued SAN cert handle both hostnames on the same project. Both hosts share one MongoDB.
+- **New `frontend/src/lib/hostRouting.js`** — `splitHostingEnabled()` / `appUrl(path)` / `onAppHostname()`. All driven by new env var `REACT_APP_APP_URL`. When empty (preview/dev) every CTA stays relative and the app keeps working on a single hostname.
+- **`Landing.jsx`** — four CTAs (`Sign in`, `Request access`, `Open the terminal`, demo `Sign in as …` buttons) routed through a new `AppLink` wrapper that renders `<a href={appUrl(...)}>` in production or `<Link>` in dev.
+- **`Layout.jsx`** — logout button uses `window.location.href = REACT_APP_MARKETING_URL` when the split is on, so users bounce back to the marketing apex on sign-out.
+- **Backend CORS** — already env-driven via `CORS_ORIGINS`; no code change. Runbook tells the user to set `https://nextcapos.com,https://app.nextcapos.com` on production.
+- **Deployment runbook** committed to `/app/memory/SUBDOMAIN_RUNBOOK.md` — DNS record, three frontend env vars (`REACT_APP_BACKEND_URL`, `REACT_APP_APP_URL`, `REACT_APP_MARKETING_URL`), one backend env var (`CORS_ORIGINS`), redeploy, verify.
+- No new pytests — the split is a deployment / env-var change, not a backend feature. All 19 regression tests still pass.
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)

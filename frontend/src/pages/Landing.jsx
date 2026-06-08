@@ -2,8 +2,18 @@ import { Link } from "react-router-dom";
 import { ArrowUpRight, ChartLineUp, Terminal, Compass, Copy, MagnifyingGlass, Storefront } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import Logo, { WORKZ_HERO_URL } from "../components/Logo";
+import { appUrl, splitHostingEnabled } from "../lib/hostRouting";
 
 const HERO_IMG = WORKZ_HERO_URL;
+
+// Choose <a> on the apex (cross-origin to the app subdomain) vs <Link> in
+// preview/single-host mode so React Router still handles the in-app routes.
+const AppLink = ({ to, children, ...props }) => {
+  if (splitHostingEnabled()) {
+    return <a href={appUrl(to)} {...props}>{children}</a>;
+  }
+  return <Link to={to} {...props}>{children}</Link>;
+};
 
 export default function Landing() {
   return (
@@ -35,12 +45,12 @@ export default function Landing() {
           </p>
 
           <div className="mt-8 sm:mt-10 flex flex-wrap gap-3">
-            <Link to="/register" className="wz-btn flex items-center gap-2" data-testid="hero-register">
+            <AppLink to="/register" className="wz-btn flex items-center gap-2" data-testid="hero-register">
               Open the terminal <ArrowUpRight size={16} />
-            </Link>
-            <Link to="/login" className="wz-btn-ghost wz-btn flex items-center gap-2" data-testid="hero-login">
+            </AppLink>
+            <AppLink to="/login" className="wz-btn-ghost wz-btn flex items-center gap-2" data-testid="hero-login">
               Sign in
-            </Link>
+            </AppLink>
           </div>
 
           <DemoAccounts />
@@ -162,13 +172,13 @@ function DemoAccounts() {
               <span className="truncate">{password}</span>
               <Copy size={11} className="text-[var(--wz-text-tertiary)] shrink-0" />
             </button>
-            <Link
+            <AppLink
               to={`/login?demo=${encodeURIComponent(email)}`}
               data-testid={`demo-${role.toLowerCase()}-login`}
               className="wz-btn wz-btn-gold w-full text-xs flex items-center justify-center gap-2"
             >
               Sign in as {role} <ArrowUpRight size={11} />
-            </Link>
+            </AppLink>
           </div>
         ))}
       </div>
