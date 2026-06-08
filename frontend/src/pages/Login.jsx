@@ -3,6 +3,7 @@ import { Link, useNavigate, useLocation, useSearchParams } from "react-router-do
 import { toast } from "sonner";
 import { ArrowLeft } from "@phosphor-icons/react";
 import { useAuth } from "../lib/auth";
+import { splitHostingEnabled, appUrl } from "../lib/hostRouting";
 import Logo, { WORKZ_HERO_URL } from "../components/Logo";
 import ThemeToggle from "../components/ThemeToggle";
 
@@ -37,6 +38,14 @@ export default function Login() {
     try {
       await login(email, password);
       const to = loc.state?.from?.pathname || "/app/dashboard";
+      // When marketing (nextcapos.com) and app (app.nextcapos.com) are split,
+      // hand the just-authenticated user off to the app subdomain. The session
+      // cookie is already scoped to `.nextcapos.com`, so the subdomain picks
+      // up the JWT seamlessly on load.
+      if (splitHostingEnabled()) {
+        window.location.href = appUrl(to);
+        return;
+      }
       nav(to);
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Login failed");

@@ -7,6 +7,7 @@ import { AuthProvider, useAuth } from "./lib/auth";
 import { ThemeProvider, useTheme } from "./lib/theme";
 import { installMCP } from "./lib/mcp";
 
+import HostGuard from "./components/HostGuard";
 import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
@@ -56,7 +57,9 @@ function AdminOnly({ children }) {
 function AppRoutes() {
   useEffect(() => { installMCP(); }, []);
   return (
-    <Routes>
+    <>
+      <HostGuard />
+      <Routes>
       <Route path="/" element={<Landing />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
@@ -87,7 +90,8 @@ function AppRoutes() {
       <Route path="/apps" element={<ConnectableApps />} />
       <Route path="/app/audit" element={<AdminOnly><Audit /></AdminOnly>} />
       <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+      </Routes>
+    </>
   );
 }
 

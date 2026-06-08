@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
-import { splitHostingEnabled } from "../lib/hostRouting";
+import { splitHostingEnabled, marketingUrl } from "../lib/hostRouting";
 import {
   House, MagnifyingGlass, NotePencil, PaperPlaneTilt, Kanban,
   EnvelopeSimple, Plugs, Terminal, ChartLineUp, ListChecks, SignOut,
@@ -172,8 +172,8 @@ export default function Layout({ children }) {
               logout();
               // Marketing site lives on the apex; bounce visitors back to it
               // once we run on app.* — otherwise stay on the app for /login.
-              if (splitHostingEnabled() && process.env.REACT_APP_MARKETING_URL) {
-                window.location.href = process.env.REACT_APP_MARKETING_URL;
+              if (splitHostingEnabled()) {
+                window.location.href = marketingUrl("/");
               } else {
                 navigate("/login");
               }

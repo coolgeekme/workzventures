@@ -259,6 +259,18 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - Regression tests still 19/19 across iter-15 / 16 / 18 / 22 suites.
 - **Remaining**: the right-panel hero illustration is a PNG asset that literally renders "WORKZ VENTURES" — needs a new image asset to fully retire the old wordmark.
 
+## What's been implemented (2026-06-08 — iter-25 Cross-subdomain auth handoff)
+- **Reversed the marketing/app split**: Login + register + forgot/reset password now live on the marketing apex (`nextcapos.com/login` etc.), and ONLY `/app/*` lives on `app.nextcapos.com`. This was the user's explicit preference — landing/auth on apex, authenticated workspace on subdomain.
+- **`src/lib/sessionCookie.js`** (new) — writes/reads/clears the `wz_token` + `wz_user` cookies with `Domain=.nextcapos.com; Secure; SameSite=Lax; Path=/; Max-Age=30d`. Domain derived from `REACT_APP_APP_URL` automatically, override via `REACT_APP_COOKIE_DOMAIN`.
+- **`src/lib/auth.jsx`** — `login`, `register`, `setSession` now write to BOTH `localStorage` (so axios interceptor keeps working) AND the cookie. `logout` clears both. Module-level `hydrateFromCookie()` runs once on app boot — this is how `app.nextcapos.com` picks up a session that was set on `nextcapos.com`. The api.js 401 interceptor also clears the cookie and bounces to the marketing-host login.
+- **`src/lib/hostRouting.js`** — added `marketingUrl(path)`, `onMarketingHostname()`, `cookieDomain()`.
+- **`src/components/HostGuard.jsx`** (new) — declarative router-mounted guard that enforces: `/app/*` only on subdomain, marketing/auth paths only on apex, and auto-forwards authenticated users from apex root → `/app/dashboard` on subdomain.
+- **`src/pages/Login.jsx`** — after successful login on the apex, hard-redirects to `appUrl('/app/dashboard')`. Browser sends the freshly-set cookie and the subdomain instantly recognises the user.
+- **`src/pages/Landing.jsx`** — `AppLink` collapsed to a plain `<Link>` since login/register live on the apex. Demo accounts and CTAs all stay on `nextcapos.com`.
+- **`src/components/Layout.jsx`** — logout button uses `marketingUrl('/')` for the bounce.
+- **Smoke-tested in preview** (single-host fallback): Landing → demo login → /app/dashboard → logout → /login. Cookies set with `Secure; SameSite=Lax`, cleared on logout.
+- **Runbook updated**: `/app/memory/SUBDOMAIN_RUNBOOK.md` rewritten with the new flow + the new env var `REACT_APP_COOKIE_DOMAIN` (optional).
+
 ## What's been implemented (2026-06-08 — iter-24 Subdomain split scaffolding)
 - **Emergent Support confirmed**: a single deployment can serve both `nextcapos.com` (apex marketing) and `app.nextcapos.com` (authenticated platform). User adds a CNAME `app` → `nextcapos.com` at their registrar; Emergent's ingress + auto-issued SAN cert handle both hostnames on the same project. Both hosts share one MongoDB.
 - **New `frontend/src/lib/hostRouting.js`** — `splitHostingEnabled()` / `appUrl(path)` / `onAppHostname()`. All driven by new env var `REACT_APP_APP_URL`. When empty (preview/dev) every CTA stays relative and the app keeps working on a single hostname.

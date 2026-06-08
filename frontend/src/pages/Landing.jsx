@@ -2,18 +2,13 @@ import { Link } from "react-router-dom";
 import { ArrowUpRight, ChartLineUp, Terminal, Compass, Copy, MagnifyingGlass, Storefront } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import Logo, { WORKZ_HERO_URL } from "../components/Logo";
-import { appUrl, splitHostingEnabled } from "../lib/hostRouting";
 
 const HERO_IMG = WORKZ_HERO_URL;
 
-// Choose <a> on the apex (cross-origin to the app subdomain) vs <Link> in
-// preview/single-host mode so React Router still handles the in-app routes.
-const AppLink = ({ to, children, ...props }) => {
-  if (splitHostingEnabled()) {
-    return <a href={appUrl(to)} {...props}>{children}</a>;
-  }
-  return <Link to={to} {...props}>{children}</Link>;
-};
+// Login/register/demo CTAs all stay on the marketing apex — the post-login
+// redirect (handled in Login.jsx) is what hops the user over to the app
+// subdomain. Use a plain React Router <Link> everywhere.
+const AppLink = Link;
 
 export default function Landing() {
   return (
