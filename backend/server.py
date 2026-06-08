@@ -1072,6 +1072,7 @@ async def _private_locker_guard(user) -> None:
 @api_router.get("/private-locker/files")
 async def list_private_locker_files(
     listing_id: Optional[str] = None,
+    research_id: Optional[str] = None,
     scope: Optional[str] = None,
     user=Depends(get_current_user),
 ):
@@ -1083,9 +1084,16 @@ async def list_private_locker_files(
         q["scope"] = "listing"
         if listing_id:
             q["listing_id"] = listing_id
+    elif scope == "research":
+        q["scope"] = "research"
+        if research_id:
+            q["research_id"] = research_id
     elif listing_id:
         q["scope"] = "listing"
         q["listing_id"] = listing_id
+    elif research_id:
+        q["scope"] = "research"
+        q["research_id"] = research_id
     items = await db.private_locker_files.find(
         q, {"_id": 0, "content": 0, "pages": 0}
     ).sort("uploaded_at", -1).to_list(500)
@@ -1098,9 +1106,20 @@ async def list_private_locker_files(
             {"id": {"$in": lids}}, {"_id": 0, "id": 1, "company_name": 1, "name": 1}
         ):
             name_map[li["id"]] = li.get("company_name") or li.get("name") or li["id"]
+    # Decorate research-scope files with research target company name
+    rids = list({i["research_id"] for i in items if i.get("research_id")})
+    research_name_map: dict = {}
+    if rids:
+        async for rr in db.research.find(
+            {"id": {"$in": rids}, "user_id": user["id"]},
+            {"_id": 0, "id": 1, "company_name": 1},
+        ):
+            research_name_map[rr["id"]] = rr.get("company_name") or rr["id"]
     for i in items:
         if i.get("listing_id"):
             i["listing_name"] = name_map.get(i["listing_id"])
+        if i.get("research_id"):
+            i["research_company_name"] = research_name_map.get(i["research_id"])
     return items
 
 
@@ -1108,6 +1127,7 @@ async def list_private_locker_files(
 async def upload_private_locker_file(
     file: UploadFile = File(...),
     listing_id: Optional[str] = Form(None),
+    research_id: Optional[str] = Form(None),
     folder: str = Form("other"),
     note: Optional[str] = Form(None),
     user=Depends(get_current_user),
@@ -1116,13 +1136,21 @@ async def upload_private_locker_file(
     if folder not in PRIVATE_LOCKER_FOLDERS:
         folder = "other"
 
-    scope = "listing" if listing_id else "workspace"
-    if scope == "listing":
-        # Soft-validate: the listing should exist. We don't require ownership /
-        # inquiry status — buyers can self-organize any listing they're tracking.
+    # Determine scope (research takes precedence if both somehow set)
+    if research_id:
+        scope = "research"
+        research_doc = await db.research.find_one(
+            {"id": research_id, "user_id": user["id"]}, {"_id": 0, "id": 1, "company_name": 1}
+        )
+        if not research_doc:
+            raise HTTPException(status_code=404, detail="Research target not found")
+    elif listing_id:
+        scope = "listing"
         exists = await db.listings.find_one({"id": listing_id}, {"_id": 0, "id": 1})
         if not exists:
             raise HTTPException(status_code=404, detail="Listing not found")
+    else:
+        scope = "workspace"
 
     data = await file.read()
     if not data:
@@ -1168,7 +1196,8 @@ async def upload_private_locker_file(
         "id": file_id,
         "user_id": user["id"],
         "scope": scope,
-        "listing_id": listing_id,
+        "listing_id": listing_id if scope == "listing" else None,
+        "research_id": research_id if scope == "research" else None,
         "filename": filename,
         "folder": folder,
         "content_type": file.content_type or "application/octet-stream",
@@ -1189,7 +1218,8 @@ async def upload_private_locker_file(
     await db.private_locker_files.insert_one(doc)
     await log_audit(
         user["id"], "locker.file.upload", file_id,
-        {"filename": filename, "scope": scope, "listing_id": listing_id, "bytes": len(data),
+        {"filename": filename, "scope": scope, "listing_id": listing_id,
+         "research_id": research_id, "bytes": len(data),
          "sha256": plaintext_sha256_hex, "encrypted": encrypted},
     )
     asyncio.create_task(notarize_bytes(
@@ -1198,7 +1228,8 @@ async def upload_private_locker_file(
         data=data,
         owner_user_id=user["id"],
         label=f"Private locker file: {filename}",
-        extra={"scope": scope, "listing_id": listing_id, "filename": filename, "size_bytes": len(data)},
+        extra={"scope": scope, "listing_id": listing_id, "research_id": research_id,
+               "filename": filename, "size_bytes": len(data)},
     ))
     doc.pop("_id", None)
     doc.pop("content", None)
@@ -2041,6 +2072,217 @@ async def attach_detailed_report(rid: str, body: AttachDetailedReportRequest, us
     await log_audit(user["id"], "detailed_report.attach.listing", rid,
                     {"listing_id": body.listing_id, "file_id": file_id, "listing": listing.get("company_name")})
     return {"ok": True, "listing_id": body.listing_id, "file_id": file_id, "filename": filename}
+
+
+# -----------------------------------------------------------------------------
+# RESEARCH COMPANION (Buyer-only AI chat over their own Research Hub findings)
+#
+# Combines:
+#   - the buyer's brief (research_company)
+#   - any detailed analysis (detailed_reports) tied to the research_id
+#   - any Private Locker files tagged with scope="research" + research_id
+#
+# Strictly buyer-only. Sellers cannot access. Lives entirely outside the Vault.
+# -----------------------------------------------------------------------------
+RESEARCH_COPILOT_SYS = """You are the Workz Ventures Research Companion — a senior buy-side analyst
+helping an institutional investor go deeper on a company they are researching.
+
+You answer ONLY from the supplied source materials: (a) the buyer's research brief,
+(b) any detailed analysis report, and (c) any private notes / documents the buyer has uploaded.
+Cite sources inline as [brief], [detailed-analysis], or [filename]. If the answer is not
+in the provided context, say so explicitly and suggest what to research next.
+
+Keep answers under 260 words. Tone: institutional, terse, analytical. Never invent
+financials, customer names, or sources. When the buyer asks for opinions ("should I
+proceed?"), structure the answer as: signal, risk, recommended next diligence step."""
+
+
+class ResearchCopilotAsk(BaseModel):
+    message: str
+
+
+async def _load_research_target(rid: str, user) -> dict:
+    rec = await db.research.find_one(
+        {"id": rid, "user_id": user["id"], "deleted_at": {"$exists": False}},
+        {"_id": 0},
+    )
+    if not rec:
+        raise HTTPException(status_code=404, detail="Research target not found")
+    return rec
+
+
+@api_router.get("/research/{rid}/locker")
+async def list_research_locker(rid: str, user=Depends(get_current_user)):
+    await _private_locker_guard(user)
+    await _load_research_target(rid, user)  # ownership check
+    items = await db.private_locker_files.find(
+        {"user_id": user["id"], "scope": "research", "research_id": rid,
+         "deleted_at": {"$exists": False}},
+        {"_id": 0, "content": 0, "pages": 0},
+    ).sort("uploaded_at", -1).to_list(200)
+    return items
+
+
+@api_router.get("/research/{rid}/copilot")
+async def get_research_copilot_history(rid: str, user=Depends(get_current_user)):
+    await _private_locker_guard(user)
+    await _load_research_target(rid, user)  # ownership check covers visibility
+    msgs = await db.research_copilot_messages.find(
+        {"research_id": rid},
+        {"_id": 0},
+    ).sort("created_at", 1).to_list(200)
+    return msgs
+
+
+@api_router.post("/research/{rid}/copilot")
+async def ask_research_copilot(rid: str, body: ResearchCopilotAsk, user=Depends(get_current_user)):
+    await _private_locker_guard(user)
+    research = await _load_research_target(rid, user)
+
+    user_msg = {
+        "id": str(uuid.uuid4()),
+        "research_id": rid,
+        "role": "user",
+        "user_id": user["id"],
+        "user_name": user.get("name"),
+        "content": (body.message or "")[:2000],
+        "citations": [],
+        "created_at": now_utc().isoformat(),
+    }
+    await db.research_copilot_messages.insert_one(user_msg)
+
+    # Assemble grounded context
+    sections: List[str] = []
+
+    brief_text = (research.get("content") or "").strip()
+    if brief_text:
+        sections.append(f"=== [brief] Research brief on {research.get('company_name')} ===\n{brief_text[:6000]}")
+        srcs = research.get("sources") or []
+        if srcs:
+            src_lines = [f"- {s.get('title') or s.get('url')}: {s.get('url')}" for s in srcs[:12] if isinstance(s, dict)]
+            if src_lines:
+                sections.append("Brief sources:\n" + "\n".join(src_lines))
+
+    detailed = await db.detailed_reports.find_one(
+        {"research_id": rid, "user_id": user["id"], "deleted_at": {"$exists": False},
+         "status": "completed"},
+        {"_id": 0, "data": 1, "company_name": 1, "id": 1},
+    )
+    if detailed and isinstance(detailed.get("data"), dict):
+        summary = detailed["data"].get("executive_summary") or detailed["data"].get("summary") or ""
+        thesis = detailed["data"].get("investment_thesis") or ""
+        risks = detailed["data"].get("risks") or detailed["data"].get("risk_register") or ""
+        chunk = []
+        if summary:
+            chunk.append(f"Executive summary: {summary}")
+        if thesis:
+            chunk.append(f"Investment thesis: {thesis}")
+        if risks:
+            chunk.append(f"Risks: {risks}")
+        if chunk:
+            sections.append(f"=== [detailed-analysis] Detailed analysis report ===\n" + "\n\n".join(chunk[:3])[:6000])
+
+    locker_files = await db.private_locker_files.find(
+        {"user_id": user["id"], "scope": "research", "research_id": rid,
+         "deleted_at": {"$exists": False}},
+        {"_id": 0, "filename": 1, "content": 1, "note": 1},
+    ).sort("uploaded_at", 1).to_list(20)
+    locker_citations: List[dict] = []
+    for f in locker_files:
+        snippet = (f.get("content") or "")[:2500]
+        note = (f.get("note") or "")
+        body_lines = []
+        if note:
+            body_lines.append(f"(Buyer note: {note})")
+        body_lines.append(snippet)
+        sections.append(f"=== [{f['filename']}] Private locker file ===\n" + "\n".join(body_lines))
+        locker_citations.append({"filename": f["filename"]})
+
+    if not sections:
+        empty_reply = (
+            "I don't have any source material to answer from yet. Generate the brief or "
+            "Detailed Analysis on this company in the Research Hub, or attach a document "
+            "to this research target in your Private Locker — then re-ask."
+        )
+        asst_msg = {
+            "id": str(uuid.uuid4()),
+            "research_id": rid,
+            "role": "assistant",
+            "user_id": "copilot",
+            "user_name": "Research Companion",
+            "content": empty_reply,
+            "citations": [],
+            "created_at": now_utc().isoformat(),
+        }
+        await db.research_copilot_messages.insert_one(asst_msg)
+        user_msg.pop("_id", None)
+        asst_msg.pop("_id", None)
+        return {"user_message": user_msg, "assistant_message": asst_msg}
+
+    # Recent conversation
+    history = await db.research_copilot_messages.find(
+        {"research_id": rid, "id": {"$ne": user_msg["id"]}},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(8)
+    history.reverse()
+    transcript = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in history)
+
+    prompt = (
+        f"COMPANY: {research.get('company_name')}\n\n"
+        f"SOURCE MATERIAL (only basis for citation):\n\n" + "\n\n".join(sections)
+        + (f"\n\nPRIOR CONVERSATION:\n{transcript}" if transcript else "")
+        + f"\n\nBUYER QUESTION: {body.message}\n\nAnswer now."
+    )
+
+    started = now_utc()
+    try:
+        answer = await call_claude(
+            RESEARCH_COPILOT_SYS, prompt,
+            session_id=f"research-copilot-{rid}-{user['id']}",
+        )
+    except Exception as e:
+        logger.exception("Research companion call failed")
+        raise HTTPException(status_code=502, detail=f"Companion failed: {e}")
+
+    # Resolve citations: [brief], [detailed-analysis], [filename]
+    import re
+    cited = set(re.findall(r"\[([^\[\]]+)\]", answer or ""))
+    citations: List[dict] = []
+    if "brief" in cited and brief_text:
+        citations.append({"kind": "brief", "label": "Research brief"})
+    if "detailed-analysis" in cited and detailed:
+        citations.append({"kind": "detailed", "label": "Detailed Analysis",
+                          "detailed_report_id": detailed["id"]})
+    for f in locker_citations:
+        if f["filename"] in cited:
+            citations.append({"kind": "locker", "label": f["filename"]})
+
+    asst_msg = {
+        "id": str(uuid.uuid4()),
+        "research_id": rid,
+        "role": "assistant",
+        "user_id": "copilot",
+        "user_name": "Research Companion",
+        "content": (answer or "").strip(),
+        "citations": citations,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.research_copilot_messages.insert_one(asst_msg)
+    duration = int((now_utc() - started).total_seconds() * 1000)
+    await log_agent_activity(
+        "research-companion",
+        f"ask:{body.message[:60]}",
+        "completed",
+        user_id=user["id"],
+        duration_ms=duration,
+        meta={"citations": len(citations), "locker_files": len(locker_files)},
+    )
+    await log_audit(user["id"], "research.companion.ask", rid,
+                    {"locker_files": len(locker_files), "had_detailed": bool(detailed)})
+
+    user_msg.pop("_id", None)
+    asst_msg.pop("_id", None)
+    return {"user_message": user_msg, "assistant_message": asst_msg}
 
 
 # -----------------------------------------------------------------------------

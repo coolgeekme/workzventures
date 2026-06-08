@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   Lock, Upload, Trash, DownloadSimple, Buildings, FolderSimple,
-  ShieldCheck, Files, FileText,
+  ShieldCheck, Files, FileText, MagnifyingGlass,
 } from "@phosphor-icons/react";
 import { api, API } from "../lib/api";
 import PrivateLockerUploadModal from "../components/PrivateLockerUploadModal";
@@ -17,7 +17,7 @@ function bytesFmt(n) {
 export default function PrivateLocker() {
   const [files, setFiles] = useState([]);
   const [listings, setListings] = useState([]);
-  const [scope, setScope] = useState("all"); // all | workspace | listing
+  const [scope, setScope] = useState("all"); // all | workspace | listing | research
   const [listingFilter, setListingFilter] = useState("");
   const [uploadOpen, setUploadOpen] = useState(false);
 
@@ -27,6 +27,7 @@ export default function PrivateLocker() {
       if (scope === "workspace") params.scope = "workspace";
       else if (scope === "listing" && listingFilter) params.listing_id = listingFilter;
       else if (scope === "listing") params.scope = "listing";
+      else if (scope === "research") params.scope = "research";
       const r = await api.get("/private-locker/files", { params });
       setFiles(r.data || []);
     } catch (err) {
@@ -74,6 +75,7 @@ export default function PrivateLocker() {
 
   const workspaceCount = useMemo(() => files.filter(f => f.scope === "workspace").length, [files]);
   const listingCount = useMemo(() => files.filter(f => f.scope === "listing").length, [files]);
+  const researchCount = useMemo(() => files.filter(f => f.scope === "research").length, [files]);
 
   return (
     <div data-testid="private-locker-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8 max-w-[1600px] mx-auto w-full">
@@ -135,6 +137,13 @@ export default function PrivateLocker() {
         >
           <Buildings size={12} /> Per-listing ({listingCount})
         </button>
+        <button
+          data-testid="filter-research"
+          onClick={() => { setScope("research"); setListingFilter(""); }}
+          className={`text-xs px-3 py-1.5 border flex items-center gap-1.5 ${scope === "research" ? "border-[var(--wz-gold)] bg-[var(--wz-surface-hover)]" : "border-[var(--wz-border)]"}`}
+        >
+          <MagnifyingGlass size={12} /> Research targets ({researchCount})
+        </button>
         {scope === "listing" && (
           <select
             data-testid="listing-filter-select"
@@ -194,6 +203,10 @@ export default function PrivateLocker() {
                     {f.scope === "listing" ? (
                       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-[var(--wz-border)] text-[10px]">
                         <Buildings size={10} /> {f.listing_name || f.listing_id?.slice(0, 8)}
+                      </span>
+                    ) : f.scope === "research" ? (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-[var(--wz-gold)]/50 text-[10px] text-[var(--wz-gold)]">
+                        <MagnifyingGlass size={10} /> {f.research_company_name || "Research target"}
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-[var(--wz-border)] text-[10px]">

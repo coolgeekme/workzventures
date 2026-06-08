@@ -213,6 +213,18 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - New deps: `openpyxl==3.1.5`, `python-pptx==1.0.2`. Requirements frozen.
 - Backend tests (iter-20): **4/4 pass** at `/app/backend/tests/test_multiformat_uploads.py` covering XLSX text-extraction round-trip, PPTX slide-extraction, image upload without crash, and listing-data-room XLSX path.
 
+## What's been implemented (2026-06-08 — iter-21 Research Companion)
+- **New feature: buyer-only AI Companion for any company in the Research Hub.** Combines (a) the buyer's research brief (b) detailed-analysis report if generated (c) any Private Locker docs the buyer tagged to that research target. Strictly buyer-only — sellers cannot access at the API or UI layer.
+- **Private Locker new scope `research`**. `POST /api/private-locker/files` now accepts `research_id` form field; new helper endpoint `GET /api/research/{rid}/locker` lists files tagged to a research target.
+- **New endpoints**: `POST /api/research/{rid}/copilot` (Claude-grounded chat with citation extraction for `[brief]`, `[detailed-analysis]`, `[filename]`), `GET /api/research/{rid}/copilot` (history).
+- **New collection** `research_copilot_messages` — wired into the 48 h demo cleanup sweep.
+- **Frontend**:
+  - New `components/ResearchCompanion.jsx` two-column layout: chat (left) with suggestions, citations pills, message history; sidebar (right) showing locker files tied to this research with Add / Download / Delete.
+  - Embedded inside `ResearchHub.jsx` brief view once a brief is `completed`.
+  - `PrivateLockerUploadModal.jsx` gained a third attach tab "Research Hub company" with research-history dropdown. Auto-loads buyer's research list when the tab is selected.
+  - `PrivateLocker.jsx` filter strip now shows 4 tabs: All / Workspace / Per-listing / Research targets, with research-target name decoration on rows (gold pill).
+- Backend tests (iter-21): **3/3 critical pytests pass** at `/app/backend/tests/test_research_companion.py` covering locker scope=research round-trip, seller RBAC block (403), companion citation-grounded on a locker doc. (A 4th test for cross-buyer 404 isolation passes individually but is flaky in parallel due to research-pipeline LLM latency.)
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)

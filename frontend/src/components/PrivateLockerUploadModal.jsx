@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import { toast } from "sonner";
 import { Lock, X } from "@phosphor-icons/react";
 import { api } from "../lib/api";
@@ -12,13 +12,37 @@ const FOLDERS = [
   { id: "other", label: "Other" },
 ];
 
-export default function PrivateLockerUploadModal({ listings, defaultListingId, onClose, onUploaded }) {
+const ATTACH_OPTIONS = [
+  { id: "workspace", label: "Workspace — not tied to anything" },
+  { id: "listing", label: "Marketplace listing" },
+  { id: "research", label: "Research Hub company" },
+];
+
+export default function PrivateLockerUploadModal({
+  listings,
+  defaultListingId,
+  defaultResearchId,
+  defaultAttach,
+  onClose,
+  onUploaded,
+}) {
   const [file, setFile] = useState(null);
+  const [attach, setAttach] = useState(defaultAttach || (defaultResearchId ? "research" : defaultListingId ? "listing" : "workspace"));
   const [listingId, setListingId] = useState(defaultListingId || "");
+  const [researchId, setResearchId] = useState(defaultResearchId || "");
+  const [researchOptions, setResearchOptions] = useState([]);
   const [folder, setFolder] = useState("memos");
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (attach === "research" && researchOptions.length === 0) {
+      api.get("/research/history")
+        .then((r) => setResearchOptions(r.data || []))
+        .catch(() => {});
+    }
+  }, [attach, researchOptions.length]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -27,7 +51,8 @@ export default function PrivateLockerUploadModal({ listings, defaultListingId, o
     try {
       const fd = new FormData();
       fd.append("file", file);
-      if (listingId) fd.append("listing_id", listingId);
+      if (attach === "listing" && listingId) fd.append("listing_id", listingId);
+      if (attach === "research" && researchId) fd.append("research_id", researchId);
       fd.append("folder", folder);
       if (note) fd.append("note", note);
       const r = await api.post("/private-locker/files", fd, {
@@ -74,18 +99,48 @@ export default function PrivateLockerUploadModal({ listings, defaultListingId, o
           className="block w-full text-xs text-[var(--wz-text)] file:mr-3 file:py-1.5 file:px-3 file:border-0 file:bg-[var(--wz-surface-2)] file:text-[var(--wz-text)] file:text-xs file:cursor-pointer cursor-pointer mb-4"
         />
 
-        <label className="block text-xs text-[var(--wz-text-secondary)] mb-1.5">Attach to listing (optional)</label>
-        <select
-          data-testid="locker-listing-select"
-          value={listingId}
-          onChange={(e) => setListingId(e.target.value)}
-          className="wz-input w-full text-xs mb-4"
-        >
-          <option value="">Workspace — not tied to any listing</option>
-          {listings.map((li) => (
-            <option key={li.id} value={li.id}>{li.company_name || li.name || li.id}</option>
+        <label className="block text-xs text-[var(--wz-text-secondary)] mb-1.5">Attach to</label>
+        <div className="flex items-center gap-2 mb-3" data-testid="locker-attach-tabs">
+          {ATTACH_OPTIONS.map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              data-testid={`attach-${opt.id}`}
+              onClick={() => setAttach(opt.id)}
+              className={`text-[11px] px-2.5 py-1 border ${attach === opt.id ? "border-[var(--wz-gold)] bg-[var(--wz-surface-hover)] text-[var(--wz-text)]" : "border-[var(--wz-border)] text-[var(--wz-text-tertiary)]"}`}
+            >
+              {opt.label.split(" — ")[0]}
+            </button>
           ))}
-        </select>
+        </div>
+
+        {attach === "listing" && (
+          <select
+            data-testid="locker-listing-select"
+            value={listingId}
+            onChange={(e) => setListingId(e.target.value)}
+            className="wz-input w-full text-xs mb-4"
+          >
+            <option value="">Pick a marketplace listing…</option>
+            {listings.map((li) => (
+              <option key={li.id} value={li.id}>{li.company_name || li.name || li.id}</option>
+            ))}
+          </select>
+        )}
+
+        {attach === "research" && (
+          <select
+            data-testid="locker-research-select"
+            value={researchId}
+            onChange={(e) => setResearchId(e.target.value)}
+            className="wz-input w-full text-xs mb-4"
+          >
+            <option value="">Pick a researched company…</option>
+            {researchOptions.map((r) => (
+              <option key={r.id} value={r.id}>{r.company_name}</option>
+            ))}
+          </select>
+        )}
 
         <label className="block text-xs text-[var(--wz-text-secondary)] mb-1.5">Folder</label>
         <select
@@ -112,7 +167,7 @@ export default function PrivateLockerUploadModal({ listings, defaultListingId, o
           <button
             data-testid="locker-submit-btn"
             type="submit"
-            disabled={submitting || !file}
+            disabled={submitting || !file || (attach === "listing" && !listingId) || (attach === "research" && !researchId)}
             className="wz-btn wz-btn-gold text-xs disabled:opacity-50"
           >
             {submitting ? "Encrypting…" : "Upload"}

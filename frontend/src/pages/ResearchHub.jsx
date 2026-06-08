@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 import { MagnifyingGlass, Trash, FileMagnifyingGlass } from "@phosphor-icons/react";
 import SocialStrip from "../components/SocialStrip";
+import ResearchCompanion from "../components/ResearchCompanion";
 
 export default function ResearchHub() {
   const navigate = useNavigate();
@@ -246,6 +247,13 @@ export default function ResearchHub() {
                   </li>
                 ))}
               </ol>
+            </div>
+          )}
+
+          {current.status === "completed" && current.id && (
+            <div className="px-6 py-5 border-t border-[var(--wz-border)]">
+              <div className="overline mb-3">Companion · go deeper</div>
+              <ResearchCompanion researchId={current.id} companyName={current.company_name} />
             </div>
           )}
         </div>

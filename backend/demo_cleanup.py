@@ -29,6 +29,7 @@ SCHEDULER_INTERVAL_SECONDS = 60 * 60  # hourly sweep
 USER_OWNED_COLLECTIONS: List[str] = [
     "research",
     "detailed_reports",
+    "research_copilot_messages",
     "collateral",
     "outreach",
     "newsletters",
