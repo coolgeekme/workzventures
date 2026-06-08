@@ -171,6 +171,15 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Recoverable error screen**: new amber warning UI with a `Retry` button (re-fetches the doc) and a `Back to Research Hub` button. No more "refresh the whole page" dead-end. `data-testid="detailed-error"`, `data-testid="retry-load-btn"`.
 - File: `frontend/src/pages/DetailedReport.jsx` (load callback hardened, error block restyled).
 
+## What's been implemented (2026-06-07 — iter-16 Buyer Private Locker)
+- **New buyer-only document drawer.** Sellers cannot see, list, or download anything in here — server-side RBAC on `_private_locker_guard` blocks role≠buyer at the API. Other buyers can't see each other's files either (scoped by `user_id`).
+- **Two scopes**: `workspace` (cross-deal templates, partner memos, internal scoring rubrics) and `listing` (attached to a specific listing being evaluated, surfaces with the listing's display name).
+- **Storage**: dedicated GridFS bucket `private_locker_fs`, AES-256-GCM at-rest encryption with AAD bound to `user_id:file_id`, plaintext sha256 stored, OpenTimestamps notarization fired async, 25 MB cap.
+- **API**: `GET /api/private-locker/files?listing_id=&scope=`, `POST /api/private-locker/files` (multipart: file, optional listing_id, folder, note), `GET /api/private-locker/files/{fid}/download`, `DELETE /api/private-locker/files/{fid}`.
+- **UI**: new `/app/private-locker` page wired into BUYER + ADMIN sidebars under Diligence. Includes privacy assurance banner ("Strictly private. AES-256-GCM. Sellers, other buyers, and Workz operators cannot view this drawer."), All / Workspace / Per-listing filter tabs, listing dropdown, upload modal with optional listing attachment.
+- **Demo cleanup**: `private_locker_files` collection added to the 48 h sweep with GridFS blob cascade.
+- Backend tests (iter-16): **5/5 pass** at `/app/backend/tests/test_private_locker.py` covering upload, listing-scoped + workspace-scoped, download round-trip, seller-blocked RBAC, cross-buyer isolation, delete idempotency.
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)

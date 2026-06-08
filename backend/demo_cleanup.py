@@ -177,7 +177,29 @@ async def _purge_seller_alerts(db, demo_ids: Iterable[str], cutoff: str) -> int:
     return total
 
 
-async def purge_demo_data(db, gridfs_bucket, listing_files_bucket) -> dict:
+async def _purge_private_locker(db, demo_ids: Iterable[str], cutoff: str,
+                                private_locker_bucket) -> Tuple[int, int]:
+    demo_ids = list(demo_ids)
+    rows = await db.private_locker_files.find(
+        {
+            "user_id": {"$in": demo_ids},
+            "created_at": {"$lt": cutoff},
+            "is_seed": {"$ne": True},
+        },
+        {"_id": 0, "id": 1, "gridfs_id": 1},
+    ).to_list(None)
+    if not rows:
+        return 0, 0
+    blobs_deleted = 0
+    for r in rows:
+        if r.get("gridfs_id"):
+            await _delete_gridfs(private_locker_bucket, r["gridfs_id"])
+            blobs_deleted += 1
+    res = await db.private_locker_files.delete_many({"id": {"$in": [r["id"] for r in rows]}})
+    return res.deleted_count, blobs_deleted
+
+
+async def purge_demo_data(db, gridfs_bucket, listing_files_bucket, private_locker_bucket=None) -> dict:
     """One pass: returns counts per category."""
     demo_ids = await get_demo_user_ids(db)
     if not demo_ids:
@@ -191,6 +213,11 @@ async def purge_demo_data(db, gridfs_bucket, listing_files_bucket) -> dict:
     listings, staged_files = await _purge_listings(db, demo_ids, cutoff, listing_files_bucket)
     user_owned = await _purge_user_owned(db, demo_ids, cutoff)
     seller_alerts = await _purge_seller_alerts(db, demo_ids, cutoff)
+    locker_rows, locker_blobs = (0, 0)
+    if private_locker_bucket is not None:
+        locker_rows, locker_blobs = await _purge_private_locker(
+            db, demo_ids, cutoff, private_locker_bucket
+        )
 
     summary = {
         "cutoff": cutoff,
@@ -203,6 +230,8 @@ async def purge_demo_data(db, gridfs_bucket, listing_files_bucket) -> dict:
             "listing_staged_files": staged_files,
             "user_owned_rows": user_owned,
             "seller_buyer_discovery_rows": seller_alerts,
+            "private_locker_files": locker_rows,
+            "private_locker_blobs": locker_blobs,
         },
         "at": _now_utc().isoformat(),
     }
@@ -210,13 +239,14 @@ async def purge_demo_data(db, gridfs_bucket, listing_files_bucket) -> dict:
     return summary
 
 
-async def demo_cleanup_scheduler(db, gridfs_bucket, listing_files_bucket) -> None:
+async def demo_cleanup_scheduler(db, gridfs_bucket, listing_files_bucket,
+                                 private_locker_bucket=None) -> None:
     """Hourly sweep. Started from server.py on_event('startup')."""
     # Initial pass shortly after boot so stale data is gone before the user logs in
     await asyncio.sleep(30)
     while True:
         try:
-            await purge_demo_data(db, gridfs_bucket, listing_files_bucket)
+            await purge_demo_data(db, gridfs_bucket, listing_files_bucket, private_locker_bucket)
         except Exception as e:
             logger.warning(f"demo cleanup loop error: {e}")
         await asyncio.sleep(SCHEDULER_INTERVAL_SECONDS)

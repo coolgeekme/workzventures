@@ -72,6 +72,7 @@ client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 gridfs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="deal_room_files_fs")
 listing_files_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="listing_staged_files_fs")
+private_locker_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="private_locker_fs")
 
 app = FastAPI(title="Workz Ventures AI Platform", version="1.0.0")
 api_router = APIRouter(prefix="/api")
@@ -999,6 +1000,224 @@ async def delete_listing_staged_file(lid: str, file_id: str, user=Depends(get_cu
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="File not found")
     await log_audit(user["id"], "listing.stagedfile.delete", lid, {"file_id": file_id})
+    return {"ok": True}
+
+
+# -----------------------------------------------------------------------------
+# Buyer Private Locker
+#
+# A buyer-only document drawer. Files are NEVER visible to sellers or other
+# buyers — only to the uploader themselves. Two scopes:
+#   - scope="workspace"  → not tied to any listing (cross-deal notes, templates)
+#   - scope="listing"    → attached to a specific listing the buyer is
+#                          evaluating (board memo drafts, partner scoring, etc.)
+# Encryption + OpenTimestamps notarization mirror the shared Vault.
+# -----------------------------------------------------------------------------
+PRIVATE_LOCKER_FOLDERS = ("notes", "modeling", "memos", "external", "other")
+
+
+async def _private_locker_guard(user) -> None:
+    if user.get("role") not in ("buyer", "admin"):
+        raise HTTPException(status_code=403, detail="Private Locker is buyer-only")
+
+
+@api_router.get("/private-locker/files")
+async def list_private_locker_files(
+    listing_id: Optional[str] = None,
+    scope: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    await _private_locker_guard(user)
+    q: dict = {"user_id": user["id"], "deleted_at": {"$exists": False}}
+    if scope == "workspace":
+        q["scope"] = "workspace"
+    elif scope == "listing":
+        q["scope"] = "listing"
+        if listing_id:
+            q["listing_id"] = listing_id
+    elif listing_id:
+        q["scope"] = "listing"
+        q["listing_id"] = listing_id
+    items = await db.private_locker_files.find(
+        q, {"_id": 0, "content": 0, "pages": 0}
+    ).sort("uploaded_at", -1).to_list(500)
+
+    # Decorate listing-scope files with listing display name (cheap, 1 query)
+    lids = list({i["listing_id"] for i in items if i.get("listing_id")})
+    name_map: dict = {}
+    if lids:
+        async for li in db.listings.find(
+            {"id": {"$in": lids}}, {"_id": 0, "id": 1, "company_name": 1, "name": 1}
+        ):
+            name_map[li["id"]] = li.get("company_name") or li.get("name") or li["id"]
+    for i in items:
+        if i.get("listing_id"):
+            i["listing_name"] = name_map.get(i["listing_id"])
+    return items
+
+
+@api_router.post("/private-locker/files")
+async def upload_private_locker_file(
+    file: UploadFile = File(...),
+    listing_id: Optional[str] = Form(None),
+    folder: str = Form("other"),
+    note: Optional[str] = Form(None),
+    user=Depends(get_current_user),
+):
+    await _private_locker_guard(user)
+    if folder not in PRIVATE_LOCKER_FOLDERS:
+        folder = "other"
+
+    scope = "listing" if listing_id else "workspace"
+    if scope == "listing":
+        # Soft-validate: the listing should exist. We don't require ownership /
+        # inquiry status — buyers can self-organize any listing they're tracking.
+        exists = await db.listings.find_one({"id": listing_id}, {"_id": 0, "id": 1})
+        if not exists:
+            raise HTTPException(status_code=404, detail="Listing not found")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File exceeds 25 MB limit")
+
+    file_id = str(uuid.uuid4())
+    filename = file.filename or f"locker-{file_id}"
+    plaintext_sha256_hex = sha256_hex(data)
+
+    storage_bytes = data
+    encrypted = False
+    encryption_alg = None
+    if encryption_configured():
+        try:
+            aad = f"locker:{user['id']}:{file_id}".encode("utf-8")
+            enc = encrypt_bytes(data, associated_data=aad)
+            storage_bytes = enc["envelope"]
+            encrypted = True
+            encryption_alg = enc["alg"]
+        except Exception as e:
+            logger.warning(f"Private Locker at-rest encryption failed, storing plaintext: {e}")
+
+    gridfs_id = await private_locker_bucket.upload_from_stream(
+        filename,
+        io.BytesIO(storage_bytes),
+        metadata={
+            "user_id": user["id"],
+            "file_id": file_id,
+            "scope": scope,
+            "listing_id": listing_id,
+            "content_type": file.content_type or "application/octet-stream",
+            "encrypted": encrypted,
+            "encryption_alg": encryption_alg,
+        },
+    )
+
+    pages = extract_pages_from_bytes(filename, data)
+    flat = pages_to_flat_text(pages)
+
+    doc = {
+        "id": file_id,
+        "user_id": user["id"],
+        "scope": scope,
+        "listing_id": listing_id,
+        "filename": filename,
+        "folder": folder,
+        "content_type": file.content_type or "application/octet-stream",
+        "size_bytes": len(data),
+        "page_count": len(pages),
+        "pages": pages,
+        "content": flat,
+        "char_count": len(flat),
+        "gridfs_id": str(gridfs_id),
+        "storage": "private_locker_gridfs",
+        "encrypted": encrypted,
+        "encryption_alg": encryption_alg,
+        "sha256_hex": plaintext_sha256_hex,
+        "note": note,
+        "uploaded_at": now_utc().isoformat(),
+        "created_at": now_utc().isoformat(),  # demo cleanup uses created_at
+    }
+    await db.private_locker_files.insert_one(doc)
+    await log_audit(
+        user["id"], "locker.file.upload", file_id,
+        {"filename": filename, "scope": scope, "listing_id": listing_id, "bytes": len(data),
+         "sha256": plaintext_sha256_hex, "encrypted": encrypted},
+    )
+    asyncio.create_task(notarize_bytes(
+        kind="private_locker.file",
+        target_id=file_id,
+        data=data,
+        owner_user_id=user["id"],
+        label=f"Private locker file: {filename}",
+        extra={"scope": scope, "listing_id": listing_id, "filename": filename, "size_bytes": len(data)},
+    ))
+    doc.pop("_id", None)
+    doc.pop("content", None)
+    doc.pop("pages", None)
+    return doc
+
+
+@api_router.get("/private-locker/files/{fid}/download")
+async def download_private_locker_file(fid: str, user=Depends(get_current_user)):
+    await _private_locker_guard(user)
+    f = await db.private_locker_files.find_one(
+        {"id": fid, "user_id": user["id"], "deleted_at": {"$exists": False}},
+        {"_id": 0},
+    )
+    if not f or not f.get("gridfs_id"):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        grid_out = await private_locker_bucket.open_download_stream(ObjectId(f["gridfs_id"]))
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Binary not found: {e}")
+    if f.get("encrypted"):
+        envelope = await grid_out.read()
+        try:
+            aad = f"locker:{user['id']}:{fid}".encode("utf-8")
+            plaintext = decrypt_envelope(envelope, associated_data=aad)
+        except Exception as e:
+            logger.exception("Private Locker decryption failed")
+            raise HTTPException(status_code=500, detail=f"Decryption failed: {e}")
+        await log_audit(user["id"], "locker.file.download", fid, {"filename": f["filename"]})
+        return StreamingResponse(
+            io.BytesIO(plaintext),
+            media_type=f.get("content_type") or "application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{f["filename"]}"'},
+        )
+
+    async def streamer():
+        while True:
+            chunk = await grid_out.readchunk()
+            if not chunk:
+                break
+            yield chunk
+
+    await log_audit(user["id"], "locker.file.download", fid, {"filename": f["filename"]})
+    return StreamingResponse(
+        streamer(),
+        media_type=f.get("content_type") or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{f["filename"]}"'},
+    )
+
+
+@api_router.delete("/private-locker/files/{fid}")
+async def delete_private_locker_file(fid: str, user=Depends(get_current_user)):
+    await _private_locker_guard(user)
+    f = await db.private_locker_files.find_one(
+        {"id": fid, "user_id": user["id"], "deleted_at": {"$exists": False}},
+        {"_id": 0, "gridfs_id": 1, "filename": 1},
+    )
+    if not f:
+        raise HTTPException(status_code=404, detail="File not found")
+    # Hard delete: this is private user-owned data, no shared audit trail to preserve.
+    if f.get("gridfs_id"):
+        try:
+            await private_locker_bucket.delete(ObjectId(f["gridfs_id"]))
+        except Exception as e:
+            logger.warning(f"locker gridfs delete failed {fid}: {e}")
+    await db.private_locker_files.delete_one({"id": fid, "user_id": user["id"]})
+    await log_audit(user["id"], "locker.file.delete", fid, {"filename": f.get("filename")})
     return {"ok": True}
 
 
@@ -4604,7 +4823,7 @@ async def seed_demo():
     global _demo_cleanup_task
     if _demo_cleanup_task is None or _demo_cleanup_task.done():
         _demo_cleanup_task = asyncio.create_task(
-            demo_cleanup_scheduler(db, gridfs_bucket, listing_files_bucket)
+            demo_cleanup_scheduler(db, gridfs_bucket, listing_files_bucket, private_locker_bucket)
         )
         logger.info("demo-cleanup scheduler started (48h retention)")
     logger.info("Workz Ventures backend ready")
@@ -4637,7 +4856,7 @@ async def demo_retention_info(user=Depends(get_current_user)):
 async def admin_demo_purge(user=Depends(get_current_user)):
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
-    summary = await purge_demo_data(db, gridfs_bucket, listing_files_bucket)
+    summary = await purge_demo_data(db, gridfs_bucket, listing_files_bucket, private_locker_bucket)
     await log_audit(user["id"], "admin.demo.purge", "manual_trigger", summary)
     return summary
 
