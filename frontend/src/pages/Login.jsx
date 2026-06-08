@@ -48,13 +48,13 @@ export default function Login() {
   return (
     <div className="min-h-screen grid lg:grid-cols-2 grain" data-testid="login-page">
       <div className="relative hidden lg:block border-r border-[var(--wz-border)]">
-        <img src={BG} alt="Workz" className="absolute inset-0 w-full h-full object-cover opacity-70" />
+        <img src={BG} alt="NextCapOS" className="absolute inset-0 w-full h-full object-cover opacity-70" />
         <div className="absolute inset-0 bg-gradient-to-br from-[var(--wz-bg)]/30 via-transparent to-[var(--wz-bg)]/40" />
         <div className="absolute top-10 left-10 right-10">
           <div className="flex items-center gap-3">
             <Logo size="lg" testid="login-logo" />
             <div>
-              <div className="font-display tracking-tighter text-xl leading-none">Workz Ventures</div>
+              <div className="font-display tracking-tighter text-xl leading-none">NextCapOS</div>
               <div className="overline mt-1.5">institutional buy & sell-side</div>
             </div>
           </div>
@@ -82,7 +82,7 @@ export default function Login() {
           <div className="flex items-center gap-3 mb-8 lg:hidden">
             <Logo size="md" />
             <div>
-              <div className="font-display tracking-tighter text-lg leading-none">Workz Ventures</div>
+              <div className="font-display tracking-tighter text-lg leading-none">NextCapOS</div>
               <div className="overline mt-1">institutional buy & sell-side</div>
             </div>
           </div>

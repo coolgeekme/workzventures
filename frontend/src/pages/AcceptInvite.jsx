@@ -41,7 +41,7 @@ export default function AcceptInvite() {
         localStorage.setItem("wz_token", r.data.token);
         localStorage.setItem("wz_user", JSON.stringify(r.data.user));
       }
-      toast.success("Welcome to Workz");
+      toast.success("Welcome to NextCapOS");
       nav("/app/dashboard");
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Could not accept invite");
@@ -71,7 +71,7 @@ export default function AcceptInvite() {
               <CheckCircle size={14} weight="fill" /> Invite valid for <span className="font-medium text-[var(--wz-text)]">{invite.email}</span>
             </div>
             <p className="text-sm text-[var(--wz-text-secondary)] mb-5 leading-relaxed">
-              You&apos;ve been invited to join Workz Ventures as a <span className="capitalize text-[var(--wz-text)] font-medium">{invite.role}</span>{invite.organization ? <> on behalf of <span className="text-[var(--wz-text)]">{invite.organization}</span></> : null}. Set a password to activate your account.
+              You&apos;ve been invited to join NextCapOS as a <span className="capitalize text-[var(--wz-text)] font-medium">{invite.role}</span>{invite.organization ? <> on behalf of <span className="text-[var(--wz-text)]">{invite.organization}</span></> : null}. Set a password to activate your account.
             </p>
             <form onSubmit={submit}>
               <label className="block mb-3">

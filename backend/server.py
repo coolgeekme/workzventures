@@ -1,5 +1,5 @@
 """
-Workz Ventures - Enhanced AI-Driven Buyer & Marketing Agency
+NextCapOS - Enhanced AI-Driven Buyer & Marketing Agency
 FastAPI backend with JWT auth, Claude Sonnet 4.5 research/newsletter generation,
 Composio LinkedIn OAuth integration, WebMCP action registry.
 """
@@ -75,7 +75,7 @@ gridfs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="deal_room_files_fs")
 listing_files_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="listing_staged_files_fs")
 private_locker_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="private_locker_fs")
 
-app = FastAPI(title="Workz Ventures AI Platform", version="1.0.0")
+app = FastAPI(title="NextCapOS AI Platform", version="1.0.0")
 api_router = APIRouter(prefix="/api")
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -1771,7 +1771,7 @@ async def remove_watch(lid: str, user=Depends(get_current_user)):
 # -----------------------------------------------------------------------------
 # RESEARCH HUB
 # -----------------------------------------------------------------------------
-RESEARCH_SYS = """You are a senior M&A analyst at Workz Ventures. Write a concise institutional research brief.
+RESEARCH_SYS = """You are a senior M&A analyst at NextCapOS. Write a concise institutional research brief.
 Return STRICT JSON only (no markdown). Keep arrays to MAX 3 items. Keep each text field under 240 chars.
 You are given an indexed list of LIVE web SOURCES. Cite them inline as [1], [2], ... inside text fields where you make a claim derived from the source. Do not invent citations beyond the list provided.
 Schema:
@@ -2296,7 +2296,7 @@ async def attach_detailed_report(rid: str, body: AttachDetailedReportRequest, us
             "pages": [], "content": "", "char_count": 0,
             "gridfs_id": str(grid_id), "storage": "gridfs",
             "encrypted": encrypted, "encryption_alg": encryption_alg,
-            "sha256_hex": plain_sha, "note": f"Workz Detailed Analysis · auto-attached from research ({rid[:8]})",
+            "sha256_hex": plain_sha, "note": f"NextCapOS Detailed Analysis · auto-attached from research ({rid[:8]})",
             "uploaded_by": user["id"],
             "uploaded_by_role": role or user.get("role"),
             "uploaded_at": now_utc().isoformat(),
@@ -2336,7 +2336,7 @@ async def attach_detailed_report(rid: str, body: AttachDetailedReportRequest, us
         "gridfs_id": str(grid_id), "storage": "listing_gridfs",
         "encrypted": encrypted, "encryption_alg": encryption_alg,
         "sha256_hex": plain_sha,
-        "note": f"Workz Detailed Analysis · auto-attached from research ({rid[:8]})",
+        "note": f"NextCapOS Detailed Analysis · auto-attached from research ({rid[:8]})",
         "uploaded_by": user["id"],
         "uploaded_at": now_utc().isoformat(),
         "detailed_report_id": rid,
@@ -2356,7 +2356,7 @@ async def attach_detailed_report(rid: str, body: AttachDetailedReportRequest, us
 #
 # Strictly buyer-only. Sellers cannot access. Lives entirely outside the Vault.
 # -----------------------------------------------------------------------------
-RESEARCH_COPILOT_SYS = """You are the Workz Ventures Research Companion — a senior buy-side analyst
+RESEARCH_COPILOT_SYS = """You are the NextCapOS Research Companion — a senior buy-side analyst
 helping an institutional investor go deeper on a company they are researching.
 
 You answer ONLY from the supplied source materials: (a) the buyer's research brief,
@@ -2560,7 +2560,7 @@ async def ask_research_copilot(rid: str, body: ResearchCopilotAsk, user=Depends(
 # -----------------------------------------------------------------------------
 # COLLATERAL
 # -----------------------------------------------------------------------------
-COLLATERAL_SYS = """You are a senior marketing copywriter for a top-tier private equity firm, Workz Ventures.
+COLLATERAL_SYS = """You are a senior marketing copywriter for a top-tier private equity firm, NextCapOS.
 You write polished, institutional-grade marketing collateral.
 ALWAYS return STRICT JSON (no markdown fences):
 {
@@ -2728,7 +2728,7 @@ async def update_lead_stage(lead_id: str, body: LeadStageUpdate, user=Depends(ge
 # -----------------------------------------------------------------------------
 # NEWSLETTER
 # -----------------------------------------------------------------------------
-NEWSLETTER_SYS = """You are an editor for Workz Ventures' institutional buyer newsletter.
+NEWSLETTER_SYS = """You are an editor for NextCapOS' institutional buyer newsletter.
 Compile a concise, sharp newsletter tailored to a buyer's interests.
 Return STRICT JSON:
 {
@@ -2815,7 +2815,7 @@ async def personal_newsletter(body: NewsletterDraftRequest, user=Depends(get_cur
             f"at {user.get('organization') or 'an institutional fund'}. "
             f"Their stated interests: {interests}. "
             f"Topic focus: {topic}. "
-            "Tailor every section to THIS reader. Speak as Workz Ventures. Produce JSON."
+            "Tailor every section to THIS reader. Speak as NextCapOS. Produce JSON."
         ),
         session_id=f"newsletter-personal-{user['id']}",
     )
@@ -2824,8 +2824,8 @@ async def personal_newsletter(body: NewsletterDraftRequest, user=Depends(get_cur
         "id": str(uuid.uuid4()),
         "user_id": user["id"],
         "kind": "personal",
-        "sender_name": "Workz Ventures",
-        "sender_org": "Workz Ventures",
+        "sender_name": "NextCapOS",
+        "sender_org": "NextCapOS",
         "recipient_email": user["email"],
         "recipient_name": user.get("name"),
         "data": data,
@@ -2910,7 +2910,7 @@ async def mcp_actions(user=Depends(get_current_user)):
 async def mcp_manifest():
     """Public manifest of WebMCP actions for AI-agent discovery."""
     return {
-        "name": "Workz Ventures MCP",
+        "name": "NextCapOS MCP",
         "version": "1.0.0",
         "gateway": "composio",
         "actions": [{"id": a["id"], "type": a["type"], "description": a["description"]} for a in MCP_ACTIONS],
@@ -3099,7 +3099,7 @@ async def push_inquiry_to_zoho(inquiry_id: str, user=Depends(get_current_user)):
         "First_Name": first_name,
         "Company": inquiry.get("buyer_org") or "Unknown",
         "Email": inquiry.get("buyer_email"),
-        "Lead_Source": "Workz Ventures",
+        "Lead_Source": "NextCapOS",
         "Description": (
             f"Inquiry re: {inquiry.get('listing_name')}\n\n"
             f"{inquiry.get('message', '')}"
@@ -3923,7 +3923,7 @@ Cap to 10 findings. Each excerpt MUST be a verbatim short quote (≤200 chars) d
 
 
 # --- Co-pilot (chat against the file corpus, with citations) ---
-COPILOT_SYS = """You are the Workz Ventures Vault Co-pilot — a senior M&A diligence analyst assisting a buyer.
+COPILOT_SYS = """You are the NextCapOS Vault Co-pilot — a senior M&A diligence analyst assisting a buyer.
 You answer questions strictly from the provided file inventory. Cite the file you draw from inline as [filename].
 If the answer is not in the files, say so explicitly. Keep answers under 220 words. Tone: institutional, terse, analytical."""
 
@@ -4558,8 +4558,8 @@ def _collateral_to_pdf_bytes(coll: dict, user: dict) -> bytes:
     doc = SimpleDocTemplate(
         buf, pagesize=LETTER, leftMargin=0.8 * inch, rightMargin=0.8 * inch,
         topMargin=0.85 * inch, bottomMargin=0.85 * inch,
-        title=f"Workz · {d.get('title') or coll.get('asset_type','Collateral')}",
-        author=user.get("name") or "Workz Ventures",
+        title=f"NextCapOS · {d.get('title') or coll.get('asset_type','Collateral')}",
+        author=user.get("name") or "NextCapOS",
     )
     s_overline = ParagraphStyle("o", fontName="Helvetica-Bold", fontSize=7, textColor=_c.HexColor("#9E7B45"), leading=9, spaceAfter=4)
     s_h1 = ParagraphStyle("h1", fontName="Helvetica-Bold", fontSize=22, textColor=_c.HexColor("#1A1A19"), leading=26, spaceAfter=6)
@@ -5288,9 +5288,9 @@ async def seed_demo_user():
         await db.users.insert_one({
             "id": str(uuid.uuid4()),
             "email": admin_email,
-            "name": "Workz Admin",
+            "name": "NextCapOS Admin",
             "role": "admin",
-            "organization": "Workz Ventures",
+            "organization": "NextCapOS",
             "password_hash": hash_password("WorkzAdmin123!"),
             "interests": [],
             "newsletter_opt_in": False,
@@ -5539,7 +5539,7 @@ async def seed_demo():
             demo_cleanup_scheduler(db, gridfs_bucket, listing_files_bucket, private_locker_bucket)
         )
         logger.info("demo-cleanup scheduler started (48h retention)")
-    logger.info("Workz Ventures backend ready")
+    logger.info("NextCapOS backend ready")
 
 
 # -----------------------------------------------------------------------------

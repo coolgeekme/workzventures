@@ -1,5 +1,5 @@
 """
-Workz Ventures · Security Service
+NextCapOS · Security Service
 - OpenTimestamps: Bitcoin-anchored proof-of-existence for events & files
 - AES-256-GCM at-rest encryption for Vault binaries
 - Hash-chained audit-log helpers

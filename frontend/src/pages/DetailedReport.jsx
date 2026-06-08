@@ -188,7 +188,7 @@ export default function DetailedReport() {
         </div>
       </div>
 
-      <div className="overline mb-2" style={{ color: "var(--wz-amber)" }}>Workz Detailed Analysis</div>
+      <div className="overline mb-2" style={{ color: "var(--wz-amber)" }}>NextCapOS Detailed Analysis</div>
       <div className="flex items-baseline gap-4 flex-wrap">
         <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium">{report.company_name}</h1>
         <span className={`pill ${REC_PILL[rec] || "pill"} uppercase tracking-widest`}>

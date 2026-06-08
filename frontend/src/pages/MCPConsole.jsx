@@ -42,7 +42,7 @@ export default function MCPConsole() {
         MCP Actions surface
       </h1>
       <p className="text-sm text-[var(--wz-text-secondary)] mt-3 max-w-2xl">
-        Every workflow on Workz is registered as a WebMCP action via <code className="font-mono-wz text-[var(--wz-gold)]">data-mcp-action</code> attributes and <code className="font-mono-wz text-[var(--wz-gold)]">navigator.mcpActions.register()</code>. AI browsing agents (such as LangChain, Hermes, and chrome-based assistants) discover and invoke them directly.
+        Every workflow on NextCapOS is registered as a WebMCP action via <code className="font-mono-wz text-[var(--wz-gold)]">data-mcp-action</code> attributes and <code className="font-mono-wz text-[var(--wz-gold)]">navigator.mcpActions.register()</code>. AI browsing agents (such as LangChain, Hermes, and chrome-based assistants) discover and invoke them directly.
       </p>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] gap-6 mt-8">

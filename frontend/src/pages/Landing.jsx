@@ -12,8 +12,8 @@ export default function Landing() {
         <div className="flex items-center gap-3 lg:gap-4 min-w-0">
           <Logo size="lg" testid="landing-logo" />
           <div className="min-w-0">
-            <div className="font-display font-medium tracking-tighter text-base sm:text-xl leading-none truncate">Workz Ventures</div>
-            <div className="overline mt-1.5 hidden sm:block">AI-Augmented Marketing Agency</div>
+            <div className="font-display font-medium tracking-tighter text-base sm:text-xl leading-none truncate">NextCapOS</div>
+            <div className="overline mt-1.5 hidden sm:block">Institutional Buy &amp; Sell-Side OS</div>
           </div>
         </div>
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
@@ -24,14 +24,14 @@ export default function Landing() {
 
       <section className="px-4 sm:px-6 lg:px-8 pt-10 sm:pt-16 lg:pt-20 pb-12 lg:pb-24 grid lg:grid-cols-[1.1fr_1fr] gap-10 lg:gap-12 items-center max-w-[1400px] mx-auto">
         <div>
-          <div className="overline mb-4 sm:mb-6">Workz Ventures · 2026 platform</div>
+          <div className="overline mb-4 sm:mb-6">NextCapOS · 2026 platform</div>
           <h1 className="font-display text-4xl sm:text-5xl lg:text-6xl tracking-tighter font-medium leading-[1.02]">
             Where institutional<br />
             <span className="text-[var(--wz-gold)]">buyers</span> meet<br />
             <span className="italic">AI Agents.</span>
           </h1>
           <p className="mt-6 sm:mt-8 text-[var(--wz-text-secondary)] max-w-xl leading-relaxed text-sm sm:text-base">
-            Workz pairs an institutional-grade Buyer Research Hub with AI Agents that handle prospecting, outreach, and marketing collateral end-to-end. Buyers get curated research and personalized newsletters tailored to their interests.
+            NextCapOS pairs an institutional-grade Buyer Research Hub with AI Agents that handle prospecting, outreach, and marketing collateral end-to-end. Buyers get curated research and personalized newsletters tailored to their interests.
           </p>
 
           <div className="mt-8 sm:mt-10 flex flex-wrap gap-3">
@@ -60,7 +60,7 @@ export default function Landing() {
         </div>
 
         <div className="relative h-[280px] sm:h-[400px] lg:h-[520px] wz-card overflow-hidden">
-          <img src={HERO_IMG} alt="Workz" className="absolute inset-0 w-full h-full object-cover" />
+          <img src={HERO_IMG} alt="NextCapOS" className="absolute inset-0 w-full h-full object-cover" />
           <div className="absolute top-3 right-3 sm:top-5 sm:right-5 flex items-center gap-2 px-3 py-1.5 bg-[var(--wz-bg)]/70 backdrop-blur border border-[var(--wz-border)]">
             <div className="dot-blink" />
             <span className="overline text-[var(--wz-text)]">live · online</span>

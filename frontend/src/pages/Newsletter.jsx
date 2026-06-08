@@ -15,7 +15,7 @@ export default function Newsletter() {
 }
 
 /* ============================================================================
- * BUYER VIEW — personal digest (self-delivery, Workz Ventures-branded)
+ * BUYER VIEW — personal digest (self-delivery, NextCapOS-branded)
  * ========================================================================== */
 function BuyerDigest() {
   const { user, setUser } = useAuth();
@@ -69,7 +69,7 @@ function BuyerDigest() {
     <div data-testid="newsletter-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
       <div className="overline mb-3">Your personal digest</div>
       <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium">
-        Workz Ventures, curated for you.
+        NextCapOS, curated for you.
       </h1>
       <p className="text-sm text-[var(--wz-text-secondary)] mt-2 max-w-2xl">
         Tell us what you care about. Tap the button — our AI compiles a private digest of deal spotlights, market analyses, and portfolio updates against your interest profile and delivers it to <span className="font-mono-wz text-[var(--wz-gold)]">{user?.email}</span>. No one else sees it.
@@ -82,7 +82,7 @@ function BuyerDigest() {
             <div className="overline mb-2">Subscription</div>
             <div className="font-display text-xl tracking-tight">My personal newsletter</div>
             <p className="text-sm text-[var(--wz-text-secondary)] mt-1 max-w-lg">
-              Opt in to receive a Workz-branded digest tailored to <em>your</em> interest profile. Cadence and interests are saved to your account and used the next time you generate a digest.
+              Opt in to receive a NextCapOS-branded digest tailored to <em>your</em> interest profile. Cadence and interests are saved to your account and used the next time you generate a digest.
             </p>
           </div>
           <label className="flex items-center gap-3 cursor-pointer" data-testid="opt-toggle">
@@ -169,7 +169,7 @@ function BuyerDigest() {
                     <img src={COVER} alt="" className="absolute inset-0 w-full h-full object-cover" />
                     <div className="absolute inset-0 bg-gradient-to-t from-[var(--wz-bg)] to-transparent" />
                     <div className="absolute bottom-3 left-3 right-3">
-                      <div className="overline text-white">Workz Ventures</div>
+                      <div className="overline text-white">NextCapOS</div>
                     </div>
                   </div>
                   <div className="p-6">
@@ -308,7 +308,7 @@ function SellerBroadcast() {
         Reach the entire buyer base.
       </h1>
       <p className="text-sm text-[var(--wz-text-secondary)] mt-2 max-w-2xl">
-        Draft a broadcast about your portfolio. AI handles the prose; you approve and ship. Delivers to every buyer who has opted in via Workz, branded with your sender name and Workz Ventures.
+        Draft a broadcast about your portfolio. AI handles the prose; you approve and ship. Delivers to every buyer who has opted in via NextCapOS, branded with your sender name and NextCapOS.
       </p>
 
       {/* Draft */}
@@ -345,7 +345,7 @@ function SellerBroadcast() {
                   <img src={COVER} alt="cover" className="absolute inset-0 w-full h-full object-cover" />
                   <div className="absolute inset-0 bg-gradient-to-t from-[var(--wz-bg)] to-transparent" />
                   <div className="absolute bottom-3 left-3 right-3">
-                    <div className="overline">Workz Ventures · Broadcast</div>
+                    <div className="overline">NextCapOS · Broadcast</div>
                   </div>
                 </div>
                 <div className="p-6">

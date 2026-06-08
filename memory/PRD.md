@@ -248,6 +248,17 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - New collection `user_invites`.
 - Backend tests (iter-22): **7/7 pass** at `/app/backend/tests/test_admin_users.py`: public register rejects admin role, accepts buyer+seller, non-admin → 403 on admin endpoints, full create→edit→reset-password→deactivate→login-blocked lifecycle, cannot deactivate demo seed accounts, invite→accept→one-time-use→revoke=410.
 
+## What's been implemented (2026-06-08 — iter-23 Rebrand → NextCapOS)
+- **Global rebrand from "Workz Ventures" → "NextCapOS"** across user-facing strings in frontend (`.jsx`/`.js`) and backend (AI prompts, CIM/PDF metadata, MCP server name, Zoho `Lead_Source`, CoPilot system prompts, log messages, FastAPI title, HTML `<title>`).
+- **Landing page Logo subtitle** changed from "AI-Augmented Marketing Agency" → "Institutional Buy & Sell-Side OS".
+- **Deliberately preserved (technical identifiers)**:
+  - Seed demo email domain `*@workz.example.com` (any change would invalidate seeded credentials).
+  - Seeded password literals `WorkzPass123!` / `WorkzAdmin123!` (stored hashed in DB).
+  - Internal CSS variables `--wz-*`, localStorage keys `wz_token`/`wz_user`, font class `font-mono-wz`, asset constants `WORKZ_HERO_URL`.
+  - Logger name `workz.demo_cleanup` and machine-readable service id `"workz-ventures"` in `/api/` health check.
+- Regression tests still 19/19 across iter-15 / 16 / 18 / 22 suites.
+- **Remaining**: the right-panel hero illustration is a PNG asset that literally renders "WORKZ VENTURES" — needs a new image asset to fully retire the old wordmark.
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)

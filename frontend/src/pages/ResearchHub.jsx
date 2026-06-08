@@ -91,7 +91,7 @@ export default function ResearchHub() {
         Synthesize any company on demand.
       </h1>
       <p className="text-sm text-[var(--wz-text-secondary)] mt-3 max-w-2xl">
-        Our AI researcher aggregates public web + market signals into an institutional research brief — profile, leadership, growth drivers, risks, and a Workz-style investor take.
+        Our AI researcher aggregates public web + market signals into an institutional research brief — profile, leadership, growth drivers, risks, and a NextCapOS-style investor take.
       </p>
 
       <form onSubmit={submit} data-mcp-action="research.company.summarize" className="wz-card p-6 mt-8 grid grid-cols-1 md:grid-cols-4 gap-4" data-testid="research-form">

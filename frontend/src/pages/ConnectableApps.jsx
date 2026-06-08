@@ -38,7 +38,7 @@ export default function ConnectableApps() {
         Connectable apps
       </h1>
       <p className="text-sm text-[var(--wz-text-secondary)] mt-2 max-w-2xl">
-        Every third-party app you can connect to Workz via Composio using a username + password
+        Every third-party app you can connect to NextCapOS via Composio using a username + password
         (and where applicable, an API key). <strong>{COMPOSIO_APPS.length.toLocaleString()}</strong> apps total.
       </p>
 
@@ -154,13 +154,13 @@ export default function ConnectableApps() {
           <Link to="/" className="flex items-center gap-3 min-w-0" data-testid="apps-public-brand">
             <Logo size="sm" testid="apps-public-logo" />
             <div className="min-w-0">
-              <div className="font-display font-medium tracking-tighter text-base leading-none">Workz Ventures</div>
+              <div className="font-display font-medium tracking-tighter text-base leading-none">NextCapOS</div>
               <div className="overline mt-1 truncate">Composio app catalog · public</div>
             </div>
           </Link>
           <div className="flex items-center gap-3 shrink-0">
             <Link to="/" className="hidden sm:inline-flex text-xs text-[var(--wz-text-secondary)] hover:text-[var(--wz-text)] items-center gap-1.5">
-              <ArrowLeft size={12} /> Workz home
+              <ArrowLeft size={12} /> NextCapOS home
             </Link>
             <Link to="/login" data-testid="apps-public-signin" className="wz-btn wz-btn-gold text-xs px-3 py-1.5">
               Sign in

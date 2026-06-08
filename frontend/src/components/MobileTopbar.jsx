@@ -20,7 +20,7 @@ export default function MobileTopbar() {
         <Link to="/app/dashboard" className="flex items-center gap-2" data-testid="mobile-topbar-logo">
           <Logo size="sm" />
           <div className="leading-none">
-            <div className="font-display font-medium tracking-tighter text-base">Workz</div>
+            <div className="font-display font-medium tracking-tighter text-base">NextCapOS</div>
             <div className="text-[9px] font-mono-wz tracking-widest uppercase text-[var(--wz-text-tertiary)]">
               {isSeller ? "sell-side" : isAdmin ? "admin" : "buy-side"}
             </div>

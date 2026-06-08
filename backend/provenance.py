@@ -1,5 +1,5 @@
 """
-Workz Ventures · Cryptographic Provenance Certificate
+NextCapOS · Cryptographic Provenance Certificate
 Generates a single-document audit artifact for a Vault deal:
   • Every notarized event (NDA / file upload / AI findings / inquiry status)
   • Per-event SHA-256 digest + creation time
@@ -26,7 +26,7 @@ from reportlab.platypus import (
 
 # -----------------------------------------------------------------------------
 # Brand palette — institutional "warm paper" with dark gold accent, fits the
-# Workz Ventures identity (works on print).
+# NextCapOS identity (works on print).
 # -----------------------------------------------------------------------------
 PAPER = colors.HexColor("#FAFAF7")
 INK = colors.HexColor("#1A1A19")
@@ -178,8 +178,8 @@ def build_provenance_pdf(
         rightMargin=0.7 * inch,
         topMargin=0.85 * inch,
         bottomMargin=0.85 * inch,
-        title=f"Workz Provenance Certificate · {listing.get('name','')}",
-        author="Workz Ventures",
+        title=f"NextCapOS Provenance Certificate · {listing.get('name','')}",
+        author="NextCapOS",
     )
 
     story: List[Any] = []
@@ -382,7 +382,7 @@ def build_provenance_pdf(
             st["small"],
         ))
         story.append(Paragraph(
-            "Workz publishes the audit chain head to Bitcoin every 25 entries via OpenTimestamps. "
+            "NextCapOS publishes the audit chain head to Bitcoin every 25 entries via OpenTimestamps. "
             "Combined with each entry's SHA-256 + prev-hash continuity, no historical event can be "
             "altered without detection.",
             st["body_soft"],
@@ -395,7 +395,7 @@ def build_provenance_pdf(
         HRFlowable(width="100%", thickness=0.5, color=BORDER, spaceAfter=4),
         Paragraph(
             "Every SHA-256 digest above corresponds to a downloadable <font face='Courier'>.ots</font> "
-            "OpenTimestamps proof retrievable from the Workz Security Console. Anyone — including a "
+            "OpenTimestamps proof retrievable from the NextCapOS Security Console. Anyone — including a "
             "court, regulator, or counterparty — can independently verify each anchored event using:",
             st["body"],
         ),

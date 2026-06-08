@@ -36,7 +36,7 @@ export default function BuyerDashboard() {
             Welcome back, {user?.name?.split(" ")[0]}.
           </h1>
           <p className="text-sm text-[var(--wz-text-secondary)] mt-2 max-w-xl">
-            Browse the marketplace, generate research, and signal intent. Workz pairs your interests with curated deal flow.
+            Browse the marketplace, generate research, and signal intent. NextCapOS pairs your interests with curated deal flow.
           </p>
         </div>
         <div className="text-xs text-[var(--wz-text-secondary)] flex items-center gap-2">

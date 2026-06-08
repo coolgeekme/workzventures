@@ -1,5 +1,5 @@
 /**
- * Workz Ventures official logo (lion + wordmark, on black).
+ * NextCapOS official logo (lion + wordmark, on black).
  * Use this everywhere the brand mark appears.
  */
 import React from "react";
@@ -30,7 +30,7 @@ export default function Logo({
   return (
     <img
       src={WORKZ_LOGO_URL}
-      alt="Workz Ventures"
+      alt="NextCapOS"
       width={px}
       height={square ? px : undefined}
       data-testid={testid}

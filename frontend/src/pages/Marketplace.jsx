@@ -58,7 +58,7 @@ export default function Marketplace() {
         Live companies for sale.
       </h1>
       <p className="text-sm text-[var(--wz-text-secondary)] mt-2 max-w-2xl">
-        Curated by Workz analysts and continuously refreshed by AI agents. Express interest to open a private channel with the seller.
+        Curated by NextCapOS analysts and continuously refreshed by AI agents. Express interest to open a private channel with the seller.
       </p>
 
       <div className="mt-8 wz-card p-4 flex items-center gap-3" data-testid="filter-bar">

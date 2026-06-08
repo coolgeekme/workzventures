@@ -7,7 +7,7 @@ const APPS = [
   {
     id: "linkedin",
     name: "LinkedIn",
-    description: "Connect your LinkedIn account so AI agents can publish outreach posts and DMs from the Workz platform.",
+    description: "Connect your LinkedIn account so AI agents can publish outreach posts and DMs from the NextCapOS platform.",
     icon: LinkedinLogo,
     connectPath: "/composio/connect/linkedin",
     iconColor: "var(--wz-gold)",

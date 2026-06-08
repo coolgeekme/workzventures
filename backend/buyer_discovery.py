@@ -1,5 +1,5 @@
 """
-Workz Ventures · Buyer Discovery
+NextCapOS · Buyer Discovery
 - SEC EDGAR full-text search → recent acquirers in the target sector
 - UK Companies House search → strategic + PE acquirers (requires COMPANIES_HOUSE_API_KEY)
 - Brave + Perplexity (already in stack) → live press signals
@@ -16,7 +16,7 @@ import httpx
 
 logger = logging.getLogger("workz.buyer_discovery")
 
-UA = os.environ.get("SEC_USER_AGENT", "Workz Ventures discovery@workz.example.com")
+UA = os.environ.get("SEC_USER_AGENT", "NextCapOS discovery@workz.example.com")
 EDGAR_SEARCH = "https://efts.sec.gov/LATEST/search-index"
 EDGAR_ARCHIVE = "https://www.sec.gov/cgi-bin/browse-edgar"
 CH_API_KEY = os.environ.get("COMPANIES_HOUSE_API_KEY")

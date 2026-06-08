@@ -40,7 +40,7 @@ export default function Register() {
           <div className="overline">Request access</div>
         </div>
         <h1 className="font-display text-3xl tracking-tighter font-medium mb-2">
-          Open a Workz account.
+          Open a NextCapOS account.
         </h1>
         <p className="text-sm text-[var(--wz-text-secondary)] mb-7">
           Institutional buyers and sellers only.

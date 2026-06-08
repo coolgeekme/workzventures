@@ -112,7 +112,7 @@ export default function Layout({ children }) {
           <Link to="/app/dashboard" className="flex items-center gap-3" data-testid="brand-link">
             <Logo size="md" testid="sidebar-logo" />
             <div>
-              <div className="font-display font-medium tracking-tighter text-lg leading-none">Workz</div>
+              <div className="font-display font-medium tracking-tighter text-lg leading-none">NextCapOS</div>
               <div className="overline mt-1">{isSeller ? "Sell-side console" : user?.role === "admin" ? "Admin · platform" : "Buy-side console"}</div>
             </div>
           </Link>
@@ -190,7 +190,7 @@ export default function Layout({ children }) {
             <span className="font-mono-wz text-[var(--wz-text-secondary)]">
               UTC {time.toISOString().substring(11, 19)}
             </span>
-            <span className={`pill ${rolePillClass}`}>{isSeller ? "Workz · Sell-side" : user?.role === "admin" ? "Workz · Admin" : "Workz · Buy-side"}</span>
+            <span className={`pill ${rolePillClass}`}>{isSeller ? "NextCapOS · Sell-side" : user?.role === "admin" ? "NextCapOS · Admin" : "NextCapOS · Buy-side"}</span>
             <ThemeToggle testId="theme-toggle-btn-desktop" />
           </div>
         </header>

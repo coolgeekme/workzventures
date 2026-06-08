@@ -109,7 +109,7 @@ export default function PrivateLocker() {
         <div className="text-xs text-[var(--wz-text-secondary)] leading-relaxed">
           <span className="text-[var(--wz-text)] font-medium">Strictly private.</span>{" "}
           Files are AES-256-GCM encrypted at rest and OpenTimestamps-anchored. Only you can list,
-          download, or delete them. Sellers, other buyers, and Workz operators cannot view this
+          download, or delete them. Sellers, other buyers, and NextCapOS operators cannot view this
           drawer. Server-side RBAC blocks all non-owner access at the API layer.
         </div>
       </div>
