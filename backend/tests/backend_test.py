@@ -9,7 +9,7 @@ import uuid
 import pytest
 import requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://buyer-intel-lab.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://capos-replica.preview.emergentagent.com").rstrip("/")
 API = f"{BASE_URL}/api"
 
 # Unique fresh user per test run (avoid collisions with prior runs)
