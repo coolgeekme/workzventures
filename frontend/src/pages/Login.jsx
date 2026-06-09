@@ -3,9 +3,10 @@ import { Link, useNavigate, useLocation, useSearchParams } from "react-router-do
 import { toast } from "sonner";
 import { ArrowLeft } from "@phosphor-icons/react";
 import { useAuth } from "../lib/auth";
-import { splitHostingEnabled, appUrl } from "../lib/hostRouting";
+import { splitHostingEnabled, appUrl, marketingUrl } from "../lib/hostRouting";
 import Logo, { WORKZ_HERO_URL } from "../components/Logo";
 import ThemeToggle from "../components/ThemeToggle";
+import DemoAccounts from "../components/DemoAccounts";
 
 const BG = WORKZ_HERO_URL;
 
@@ -75,14 +76,14 @@ export default function Login() {
 
       <div className="flex items-center justify-center px-4 sm:px-6 py-8 sm:py-12 relative">
         <div className="absolute top-4 left-4 lg:top-6 lg:left-6">
-          <Link
+          <a
             data-testid="login-back-home"
-            to="/"
+            href={marketingUrl("/")}
             className="inline-flex items-center gap-1.5 text-xs text-[var(--wz-text-secondary)] hover:text-[var(--wz-text)] transition-colors"
           >
             <ArrowLeft size={12} weight="bold" />
             Back to home
-          </Link>
+          </a>
         </div>
         <div className="absolute top-4 right-4 lg:top-6 lg:right-6">
           <ThemeToggle />
@@ -157,6 +158,10 @@ export default function Login() {
             <Link to="/register" className="text-[var(--wz-gold)] hover:underline" data-testid="goto-register">
               Request access
             </Link>
+          </div>
+
+          <div className="mt-10 pt-6 border-t border-[var(--wz-border)]">
+            <DemoAccounts compact />
           </div>
         </form>
       </div>

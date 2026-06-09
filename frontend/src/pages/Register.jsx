@@ -1,10 +1,13 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import { ArrowLeft } from "@phosphor-icons/react";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
+import { marketingUrl } from "../lib/hostRouting";
 import Logo from "../components/Logo";
 import ThemeToggle from "../components/ThemeToggle";
+import DemoAccounts from "../components/DemoAccounts";
 
 export default function Register() {
   const { register } = useAuth();
@@ -47,7 +50,7 @@ export default function Register() {
             We&apos;ll send <span className="text-[var(--wz-text)] font-medium">{form.email}</span> an email
             the moment your account is approved.
           </p>
-          <a href="/" className="wz-btn wz-btn-ghost text-xs">Back to home</a>
+          <a href={marketingUrl("/")} className="wz-btn wz-btn-ghost text-xs" data-testid="register-success-back-home">Back to home</a>
         </div>
       </div>
     );
@@ -55,10 +58,21 @@ export default function Register() {
 
   return (
     <div className="min-h-screen flex items-center justify-center px-4 sm:px-6 py-8 sm:py-12 grain relative" data-testid="register-page">
+      <div className="absolute top-4 left-4 lg:top-6 lg:left-6">
+        <a
+          data-testid="register-back-home"
+          href={marketingUrl("/")}
+          className="inline-flex items-center gap-1.5 text-xs text-[var(--wz-text-secondary)] hover:text-[var(--wz-text)] transition-colors"
+        >
+          <ArrowLeft size={12} weight="bold" />
+          Back to home
+        </a>
+      </div>
       <div className="absolute top-4 right-4">
         <ThemeToggle />
       </div>
-      <form onSubmit={submit} className="w-full max-w-md wz-card p-6 sm:p-8" data-testid="register-form">
+      <div className="w-full max-w-md">
+        <form onSubmit={submit} className="wz-card p-6 sm:p-8" data-testid="register-form">
         <div className="flex items-center gap-3 mb-6">
           <Logo size="md" testid="register-logo" />
           <div className="overline">Request access</div>
@@ -105,6 +119,11 @@ export default function Register() {
           <Link to="/login" className="text-[var(--wz-gold)] hover:underline" data-testid="goto-login">Sign in</Link>
         </div>
       </form>
+
+      <div className="mt-8 wz-card p-6 sm:p-8">
+        <DemoAccounts />
+      </div>
+      </div>
     </div>
   );
 }
