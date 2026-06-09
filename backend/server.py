@@ -735,11 +735,11 @@ async def register(body: RegisterRequest, request: Request):
     await db.users.insert_one(doc)
     await log_audit(user_id, "auth.register", body.email, {"status": "pending"})
 
-    # Notify operator
+    # 1) Notify the operator/admin inbox that a new request landed
     cfg_notify = os.environ.get("REQUEST_NOTIFY_EMAIL")
     if cfg_notify:
         ip = request.client.host if request.client else "unknown"
-        html = f"""
+        admin_html = f"""
         <p>New access request on NextCapOS.</p>
         <ul>
           <li><strong>Name:</strong> {body.name}</li>
@@ -753,9 +753,33 @@ async def register(body: RegisterRequest, request: Request):
         asyncio.create_task(send_email(
             cfg_notify,
             f"NextCapOS · access request from {body.email}",
-            html,
+            admin_html,
             reply_to=body.email,
         ))
+
+    # 2) Confirm to the requester that we received it
+    requester_html = f"""
+    <p>Hi {body.name},</p>
+    <p>Thanks for requesting access to <strong>NextCapOS</strong>.</p>
+    <p>Your request has been received and is now in the queue for administrator review.
+    We'll email you the moment your account is approved — typically within one business day.</p>
+    <p style="margin-top:24px;font-size:13px;color:#666;">
+      <strong>Request details</strong><br>
+      Name: {body.name}<br>
+      Email: {body.email}<br>
+      Role: {body.role}<br>
+      Organization: {body.organization or '—'}
+    </p>
+    <p style="margin-top:24px;font-size:12px;color:#999;">
+      Didn't request access? You can safely ignore this email.
+    </p>
+    """
+    asyncio.create_task(send_email(
+        body.email,
+        "NextCapOS · access request received",
+        requester_html,
+    ))
+
     return {
         "ok": True,
         "status": "pending",
