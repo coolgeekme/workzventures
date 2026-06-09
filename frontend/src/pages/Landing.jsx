@@ -1,14 +1,14 @@
-import { Link } from "react-router-dom";
 import { ArrowUpRight, ChartLineUp, Terminal, Compass, Copy, MagnifyingGlass, Storefront } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import Logo, { WORKZ_HERO_URL } from "../components/Logo";
 
 const HERO_IMG = WORKZ_HERO_URL;
 
-// Login/register/demo CTAs all stay on the marketing apex — the post-login
-// redirect (handled in Login.jsx) is what hops the user over to the app
-// subdomain. Use a plain React Router <Link> everywhere.
-const AppLink = Link;
+// The landing page lives on the marketing apex (nextcapos.com). All auth CTAs
+// (sign in, register, demo sign-ins) must route the visitor over to the
+// authenticated platform that lives on the app subdomain.
+const APP_HOST = "https://app.nextcapos.com";
+const appHref = (path = "/") => `${APP_HOST}${path.startsWith("/") ? path : `/${path}`}`;
 
 export default function Landing() {
   return (
@@ -22,8 +22,8 @@ export default function Landing() {
           </div>
         </div>
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-          <Link to="/login" data-testid="cta-signin" className="wz-btn-ghost wz-btn text-xs sm:text-sm">Sign in</Link>
-          <Link to="/register" data-testid="cta-getstarted" className="wz-btn wz-btn-gold text-xs sm:text-sm">Request access</Link>
+          <a href={appHref("/login")} data-testid="cta-signin" className="wz-btn-ghost wz-btn text-xs sm:text-sm">Sign in</a>
+          <a href={appHref("/register")} data-testid="cta-getstarted" className="wz-btn wz-btn-gold text-xs sm:text-sm">Request access</a>
         </div>
       </header>
 
@@ -40,12 +40,12 @@ export default function Landing() {
           </p>
 
           <div className="mt-8 sm:mt-10 flex flex-wrap gap-3">
-            <AppLink to="/register" className="wz-btn flex items-center gap-2" data-testid="hero-register">
+            <a href={appHref("/register")} className="wz-btn flex items-center gap-2" data-testid="hero-register">
               Open the terminal <ArrowUpRight size={16} />
-            </AppLink>
-            <AppLink to="/login" className="wz-btn-ghost wz-btn flex items-center gap-2" data-testid="hero-login">
+            </a>
+            <a href={appHref("/login")} className="wz-btn-ghost wz-btn flex items-center gap-2" data-testid="hero-login">
               Sign in
-            </AppLink>
+            </a>
           </div>
 
           <DemoAccounts />
@@ -167,13 +167,13 @@ function DemoAccounts() {
               <span className="truncate">{password}</span>
               <Copy size={11} className="text-[var(--wz-text-tertiary)] shrink-0" />
             </button>
-            <AppLink
-              to={`/login?demo=${encodeURIComponent(email)}`}
+            <a
+              href={appHref(`/login?demo=${encodeURIComponent(email)}`)}
               data-testid={`demo-${role.toLowerCase()}-login`}
               className="wz-btn wz-btn-gold w-full text-xs flex items-center justify-center gap-2"
             >
               Sign in as {role} <ArrowUpRight size={11} />
-            </AppLink>
+            </a>
           </div>
         ))}
       </div>
