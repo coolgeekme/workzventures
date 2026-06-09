@@ -1,12 +1,11 @@
-import { ArrowUpRight, ChartLineUp, Terminal, Compass, Copy, MagnifyingGlass, Storefront } from "@phosphor-icons/react";
-import { toast } from "sonner";
+import { ArrowUpRight, ChartLineUp, Terminal, Compass } from "@phosphor-icons/react";
 import Logo, { WORKZ_HERO_URL } from "../components/Logo";
 
 const HERO_IMG = WORKZ_HERO_URL;
 
 // The landing page lives on the marketing apex (nextcapos.com). All auth CTAs
-// (sign in, register, demo sign-ins) must route the visitor over to the
-// authenticated platform that lives on the app subdomain.
+// (sign in, register) must route the visitor over to the authenticated
+// platform that lives on the app subdomain.
 const APP_HOST = "https://app.nextcapos.com";
 const appHref = (path = "/") => `${APP_HOST}${path.startsWith("/") ? path : `/${path}`}`;
 
@@ -47,8 +46,6 @@ export default function Landing() {
               Sign in
             </a>
           </div>
-
-          <DemoAccounts />
 
           <div className="mt-10 sm:mt-14 grid grid-cols-3 gap-4 sm:gap-6 max-w-lg">
             {[
@@ -101,85 +98,6 @@ export default function Landing() {
         <span className="font-mono-wz">WORKZ // 2026</span>
         <span>Designed for today. Built for tomorrow. Focused on forever.</span>
       </footer>
-    </div>
-  );
-}
-
-/* ============================================================================
- * DemoAccounts — surfaces the two seed accounts so visitors can poke around
- * without signing up. Copy-on-click. Each row routes to /login with email
- * prefilled via query param.
- * ========================================================================== */
-const DEMOS = [
-  {
-    role: "Buyer",
-    email: "alex@workz.example.com",
-    password: "WorkzPass123!",
-    Icon: MagnifyingGlass,
-    tagline: "Research Hub · Detailed Analysis · The Vault",
-  },
-  {
-    role: "Seller",
-    email: "mira@workz.example.com",
-    password: "WorkzPass123!",
-    Icon: Storefront,
-    tagline: "Listings · Buyer Discovery · Outreach · Newsletter",
-  },
-];
-
-function DemoAccounts() {
-  const copy = (text, label) => {
-    if (!navigator.clipboard) return;
-    navigator.clipboard.writeText(text).then(() => toast.success(`${label} copied`)).catch(() => {});
-  };
-  return (
-    <div className="mt-10 max-w-2xl" data-testid="demo-accounts">
-      <div className="overline mb-3" style={{ color: "var(--wz-amber)" }}>
-        Try it now · demo accounts
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {DEMOS.map(({ role, email, password, Icon, tagline }) => (
-          <div
-            key={role}
-            data-testid={`demo-${role.toLowerCase()}`}
-            className="border border-[var(--wz-border)] p-4 hover:border-[var(--wz-amber)] transition-colors"
-          >
-            <div className="flex items-center gap-2 mb-2">
-              <Icon size={14} className="text-[var(--wz-amber)]" />
-              <span className="text-sm font-medium">{role}</span>
-            </div>
-            <p className="text-xs text-[var(--wz-text-secondary)] mb-3 leading-relaxed">{tagline}</p>
-            <button
-              onClick={() => copy(email, "Email")}
-              data-testid={`demo-${role.toLowerCase()}-email`}
-              title="Click to copy"
-              className="w-full text-left flex items-center justify-between gap-2 text-xs font-mono-wz py-1.5 px-2 border border-[var(--wz-border)] hover:border-[var(--wz-text-tertiary)] mb-1.5"
-            >
-              <span className="truncate">{email}</span>
-              <Copy size={11} className="text-[var(--wz-text-tertiary)] shrink-0" />
-            </button>
-            <button
-              onClick={() => copy(password, "Password")}
-              data-testid={`demo-${role.toLowerCase()}-password`}
-              title="Click to copy"
-              className="w-full text-left flex items-center justify-between gap-2 text-xs font-mono-wz py-1.5 px-2 border border-[var(--wz-border)] hover:border-[var(--wz-text-tertiary)] mb-2"
-            >
-              <span className="truncate">{password}</span>
-              <Copy size={11} className="text-[var(--wz-text-tertiary)] shrink-0" />
-            </button>
-            <a
-              href={appHref(`/login?demo=${encodeURIComponent(email)}`)}
-              data-testid={`demo-${role.toLowerCase()}-login`}
-              className="wz-btn wz-btn-gold w-full text-xs flex items-center justify-center gap-2"
-            >
-              Sign in as {role} <ArrowUpRight size={11} />
-            </a>
-          </div>
-        ))}
-      </div>
-      <p className="text-[10px] font-mono-wz text-[var(--wz-text-tertiary)] mt-3">
-        Shared sandbox · do not store real data
-      </p>
     </div>
   );
 }
