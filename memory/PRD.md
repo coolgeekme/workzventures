@@ -259,6 +259,13 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - Regression tests still 19/19 across iter-15 / 16 / 18 / 22 suites.
 - **Remaining**: the right-panel hero illustration is a PNG asset that literally renders "WORKZ VENTURES" — needs a new image asset to fully retire the old wordmark.
 
+## What's been implemented (2026-06-16 — iter-28 Agent workspace mode switcher)
+- **Header workspace switcher** (`AgentModeSwitcher` in `Layout.jsx` + `MobileTopbar.jsx`) — segmented `[ Buyer | Seller ]` toggle visible only when `user.role === "agent"`. Persists choice to localStorage via `useAgentMode()` (`/app/frontend/src/lib/agentMode.js`), cross-tab synced via `storage` event and a custom `wz-agent-mode-change` event.
+- **Layout uses `effectiveRole`** — when role is agent, derives the active role from `agentMode` so sidebar nav, chrome accent colors (gold/amber), sidebar title, role-pill text and topbar pill all switch atomically with the toggle. Buyer mode → BUYER_NAV, Seller mode → SELLER_NAV. Organization link is included in both navs so it's always reachable.
+- **Side effect**: removed the merged AGENT_NAV behavior — agents now see a focused buy-side OR sell-side console instead of every nav item at once. This matches actual M&A advisor workflow where they think in deal-side mental modes.
+- **Backend fix**: `UserPublic.role` Literal now includes `"agent"` (was missing — caused 500 on agent login).
+- **Test agent account created**: `agent@workz.example.com` / `WorkzPass123!` (role=agent, org="Smith Advisory") — documented in `test_credentials.md`.
+
 ## What's been implemented (2026-06-16 — iter-27 Share preview links)
 - **Public preview links** — agents mint signed, no-auth URLs to share a listing preview with the principal before they accept their collaborator invite.
 - **Backend** (`/app/backend/server.py`, new `listing_preview_links` collection):

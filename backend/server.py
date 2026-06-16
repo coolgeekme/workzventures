@@ -89,7 +89,7 @@ class UserPublic(BaseModel):
     id: str
     email: EmailStr
     name: str
-    role: Literal["admin", "buyer", "seller"] = "buyer"
+    role: Literal["admin", "buyer", "seller", "agent"] = "buyer"
     organization: Optional[str] = None
     interests: List[str] = Field(default_factory=list)
     newsletter_opt_in: bool = False

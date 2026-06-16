@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
+import { useAgentMode } from "../lib/agentMode";
 import { api } from "../lib/api";
 import { splitHostingEnabled, marketingUrl } from "../lib/hostRouting";
 import {
@@ -85,8 +86,43 @@ const AGENT_NAV = (() => {
 function navFor(role) {
   if (role === "seller") return SELLER_NAV;
   if (role === "admin") return ADMIN_NAV;
+  // For "agent", caller should pass the agent's current workspace mode
+  // ("buyer" | "seller") instead of "agent" — this is handled below in
+  // Layout via `effectiveRole`. Falling through to AGENT_NAV keeps the
+  // function safe if it's ever called with role="agent" directly.
   if (role === "agent") return AGENT_NAV;
   return BUYER_NAV;
+}
+
+/**
+ * Segmented toggle that lets agents swap their workspace between Buyer and
+ * Seller mode. Rendered in the desktop topbar and mobile topbar.
+ */
+function AgentModeSwitcher({ mode, onChange, dense = false }) {
+  const btn = (label, value, activeCls) => (
+    <button
+      key={value}
+      onClick={() => onChange(value)}
+      data-testid={`agent-mode-${value}`}
+      className={`${dense ? "px-2 py-1" : "px-3 py-1"} text-[10px] font-mono-wz uppercase tracking-widest transition-colors ${
+        mode === value
+          ? `${activeCls} text-[var(--wz-text)] bg-[var(--wz-surface-hover)]`
+          : "text-[var(--wz-text-tertiary)] hover:text-[var(--wz-text)]"
+      }`}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div
+      data-testid="agent-mode-switcher"
+      className="flex items-center border border-[var(--wz-border)]"
+      title={`You're acting as ${mode === "buyer" ? "a buyer" : "a seller"}. Switch mode to see the other workspace.`}
+    >
+      {btn("Buyer", "buyer", "border-l-2 border-[var(--wz-gold)]")}
+      {btn("Seller", "seller", "border-l-2 border-[var(--wz-amber)]")}
+    </div>
+  );
 }
 
 export default function Layout({ children }) {
@@ -115,10 +151,15 @@ export default function Layout({ children }) {
     return () => { cancelled = true; clearInterval(id); };
   }, [user, location.pathname]);
 
-  const NAV = navFor(user?.role);
+  const [agentMode, setAgentMode] = useAgentMode();
+  // For role="agent" the nav, chrome accents and pills follow whichever
+  // workspace mode the agent is currently in. Other roles are unaffected.
+  const effectiveRole = user?.role === "agent" ? agentMode : user?.role;
+  const NAV = navFor(effectiveRole);
   const groups = [...new Set(NAV.map((n) => n.group))];
-  const isSeller = user?.role === "seller";
-  const rolePillClass = user?.role === "seller" ? "pill-amber" : user?.role === "admin" ? "pill-positive" : "pill-gold";
+  const isSeller = effectiveRole === "seller";
+  const isAgent = user?.role === "agent";
+  const rolePillClass = effectiveRole === "seller" ? "pill-amber" : effectiveRole === "admin" ? "pill-positive" : "pill-gold";
 
   return (
     <div className="min-h-screen lg:grid lg:grid-cols-[260px_1fr] grain" data-testid="app-shell">
@@ -132,7 +173,15 @@ export default function Layout({ children }) {
             <Logo size="md" testid="sidebar-logo" />
             <div>
               <div className="font-display font-medium tracking-tighter text-lg leading-none">NextCapOS</div>
-              <div className="overline mt-1">{isSeller ? "Sell-side console" : user?.role === "admin" ? "Admin · platform" : "Buy-side console"}</div>
+              <div className="overline mt-1">
+                {isAgent
+                  ? `Agent · ${isSeller ? "Sell-side" : "Buy-side"} mode`
+                  : isSeller
+                    ? "Sell-side console"
+                    : user?.role === "admin"
+                      ? "Admin · platform"
+                      : "Buy-side console"}
+              </div>
             </div>
           </Link>
         </div>
@@ -215,10 +264,19 @@ export default function Layout({ children }) {
             <div className="overline truncate">live · {location.pathname}</div>
           </div>
           <div className="flex items-center gap-4 text-xs">
+            {isAgent && <AgentModeSwitcher mode={agentMode} onChange={setAgentMode} />}
             <span className="font-mono-wz text-[var(--wz-text-secondary)]">
               UTC {time.toISOString().substring(11, 19)}
             </span>
-            <span className={`pill ${rolePillClass}`}>{isSeller ? "NextCapOS · Sell-side" : user?.role === "admin" ? "NextCapOS · Admin" : "NextCapOS · Buy-side"}</span>
+            <span className={`pill ${rolePillClass}`}>
+              {isAgent
+                ? `Agent · ${isSeller ? "Sell-side" : "Buy-side"}`
+                : isSeller
+                  ? "NextCapOS · Sell-side"
+                  : user?.role === "admin"
+                    ? "NextCapOS · Admin"
+                    : "NextCapOS · Buy-side"}
+            </span>
             <ThemeToggle testId="theme-toggle-btn-desktop" />
           </div>
         </header>
