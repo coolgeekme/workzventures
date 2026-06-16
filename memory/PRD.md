@@ -259,6 +259,13 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - Regression tests still 19/19 across iter-15 / 16 / 18 / 22 suites.
 - **Remaining**: the right-panel hero illustration is a PNG asset that literally renders "WORKZ VENTURES" — needs a new image asset to fully retire the old wordmark.
 
+## What's been implemented (2026-06-16 — iter-26 View-as-principal preview mode)
+- **`ListingCard` extracted** (in `MyListings.jsx`) — owns per-card `viewAsPrincipal` state, threads `viewAsPrincipal` down to `ListingDataRoom` and `ListingCollabPanel`.
+- **`ListingCollaborators` accepts `readOnly` prop** — hides invite form, per-collaborator remove buttons, and the "Save access policy" button when in preview mode. Shows a gold "Read-only · agent management controls are hidden in principal preview" notice at the top of the panel.
+- **`ListingDataRoom` accepts `viewAsPrincipal` prop** — hides the upload form and per-file delete buttons. Download stays available since principals legitimately need to read the data room.
+- **Card chrome in preview mode** — gold dashed accent border, top banner ("Principal preview. This is what your client sees when they accept the listing invite. Agent-only management controls are hidden. Exit preview to manage."), trash button hidden, workflow status-change buttons (`→ DRAFT`/`→ LIVE`/`→ UNDER LOI`/`→ CLOSED`) hidden. Toggle button switches between "View as principal" and "Exit preview".
+- **Smoke tested**: agent mode and preview mode side-by-side on the listings page, plus a per-card flip test confirming chrome reappears on exit.
+
 ## What's been implemented (2026-06-16 — iter-25 Agent role + Organizations + Per-listing Collaborators)
 - **New `agent` platform role**: combined buyer+seller workspace nav (Layout.jsx AGENT_NAV de-dupes BUYER_NAV ∪ SELLER_NAV). Surfaced in Register page role dropdown.
 - **Organizations (multi-org, self-serve)**: `organizations` + `org_memberships` collections. Roles within: `org_admin`, `org_member`. One user can belong to many orgs. Listings auto-attach to the user's single org on create (or take explicit `?org_id=` query when user has multiple).

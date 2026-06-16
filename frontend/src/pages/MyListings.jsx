@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
-import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X, UsersThree } from "@phosphor-icons/react";
+import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X, UsersThree, Eye, EyeSlash } from "@phosphor-icons/react";
 import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
 import ListingCollaborators from "../components/ListingCollaborators";
 
@@ -117,61 +117,7 @@ export default function MyListings() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6" data-testid="listing-grid">
         {listings.map((l) => (
-          <div key={l.id} className="wz-card p-6">
-            <div className="flex justify-between items-start gap-3">
-              <div className="flex-1">
-                <div className="flex items-center gap-2 mb-2">
-                  <Tag size={14} className="text-[var(--wz-amber)]" />
-                  <span className={`pill ${l.status === "live" ? "pill-positive" : l.status === "under_loi" ? "pill-amber" : "pill-gold"}`}>{l.status}</span>
-                  <span className="pill pill-gold">{l.sector}</span>
-                </div>
-                <div className="font-display text-2xl tracking-tight">{l.company_name}</div>
-                <div className="text-sm text-[var(--wz-text-secondary)] mt-1">{l.headline}</div>
-              </div>
-              <button onClick={() => remove(l.id)} className="text-[var(--wz-text-tertiary)] hover:text-[var(--wz-negative)]" data-testid={`del-${l.id}`}>
-                <Trash size={16} />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-3 gap-3 mt-5">
-              <Metric label="Asking" value={`$${l.asking_price_usd_m}M`} />
-              <Metric label="Revenue" value={l.revenue_usd_m ? `$${l.revenue_usd_m}M` : "—"} />
-              <Metric label="EBITDA" value={l.ebitda_usd_m ? `$${l.ebitda_usd_m}M` : "—"} />
-            </div>
-
-            <p className="text-sm text-[var(--wz-text-secondary)] mt-4 leading-relaxed">{l.summary}</p>
-
-            {(l.highlights || []).length > 0 && (
-              <ul className="mt-4 space-y-1 text-xs">
-                {l.highlights.map((h, i) => (
-                  <li key={i} className="flex gap-2 text-[var(--wz-text-secondary)]">
-                    <span className="text-[var(--wz-amber)]">▸</span>{h}
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            <ListingDataRoom listingId={l.id} listingName={l.company_name} />
-            <ListingCollabPanel listing={l} />
-
-            <div className="mt-5 pt-4 border-t border-[var(--wz-border)] flex items-center justify-between flex-wrap gap-3">
-              <div className="text-xs font-mono-wz text-[var(--wz-text-secondary)]">
-                {l.view_count} views · {l.inquiry_count} inquiries
-              </div>
-              <div className="flex flex-wrap gap-2" data-testid={`status-buttons-${l.id}`}>
-                {STATUSES.filter((s) => s.v !== l.status).map((s) => (
-                  <button
-                    key={s.v}
-                    onClick={() => setStatus(l, s.v)}
-                    className="text-[10px] font-mono-wz uppercase tracking-widest border border-[var(--wz-border)] px-2 py-1 hover:border-[var(--wz-amber)] hover:text-[var(--wz-amber)] transition-colors"
-                    data-testid={`set-${l.id}-${s.v}`}
-                  >
-                    → {s.l}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
+          <ListingCard key={l.id} listing={l} onRemove={remove} onSetStatus={setStatus} />
         ))}
         {listings.length === 0 && (
           <div className="wz-card p-10 text-center text-sm text-[var(--wz-text-tertiary)] md:col-span-2">
@@ -209,9 +155,125 @@ function Metric({ label, value }) {
 }
 
 /* ============================================================================
+ * ListingCard — single listing tile with the "View as principal" preview mode.
+ *
+ * When viewAsPrincipal=true the agent's management chrome is hidden so the
+ * agent can sanity-check what the principal owner experiences when they
+ * accept the listing-collaborator invite:
+ *   - Delete (trash) button hidden
+ *   - Workflow status-change buttons hidden
+ *   - Data Room upload form + per-file delete hidden
+ *   - Collaborators: invite form, remove buttons, and access-policy save hidden
+ *   - A gold dashed accent + sticky banner make the preview state obvious.
+ * ========================================================================== */
+function ListingCard({ listing: l, onRemove, onSetStatus }) {
+  const [viewAsPrincipal, setViewAsPrincipal] = useState(false);
+  const cardBorder = viewAsPrincipal
+    ? "wz-card p-6 border-dashed border-2 border-[var(--wz-gold)]"
+    : "wz-card p-6";
+
+  return (
+    <div className={cardBorder} data-testid={`listing-card-${l.id}`} data-view-as-principal={viewAsPrincipal}>
+      {viewAsPrincipal && (
+        <div
+          data-testid={`principal-preview-banner-${l.id}`}
+          className="mb-4 px-3 py-2 border border-[var(--wz-gold)] bg-[var(--wz-gold)]/10 text-xs flex items-start gap-2"
+        >
+          <Eye size={14} className="text-[var(--wz-gold)] shrink-0 mt-0.5" />
+          <span className="leading-relaxed">
+            <strong>Principal preview.</strong> This is what your client sees when they accept the
+            listing invite. Agent-only management controls are hidden. Exit preview to manage.
+          </span>
+        </div>
+      )}
+
+      <div className="flex justify-between items-start gap-3">
+        <div className="flex-1">
+          <div className="flex items-center gap-2 mb-2">
+            <Tag size={14} className="text-[var(--wz-amber)]" />
+            <span className={`pill ${l.status === "live" ? "pill-positive" : l.status === "under_loi" ? "pill-amber" : "pill-gold"}`}>{l.status}</span>
+            <span className="pill pill-gold">{l.sector}</span>
+          </div>
+          <div className="font-display text-2xl tracking-tight">{l.company_name}</div>
+          <div className="text-sm text-[var(--wz-text-secondary)] mt-1">{l.headline}</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setViewAsPrincipal((v) => !v)}
+            data-testid={`view-as-principal-${l.id}`}
+            title={viewAsPrincipal ? "Exit principal preview" : "Preview as the principal owner"}
+            className={`text-[10px] font-mono-wz uppercase tracking-widest border px-2 py-1 transition-colors ${
+              viewAsPrincipal
+                ? "border-[var(--wz-gold)] text-[var(--wz-gold)] bg-[var(--wz-gold)]/10"
+                : "border-[var(--wz-border)] text-[var(--wz-text-secondary)] hover:border-[var(--wz-amber)] hover:text-[var(--wz-amber)]"
+            }`}
+          >
+            {viewAsPrincipal ? (
+              <span className="inline-flex items-center gap-1"><EyeSlash size={11} /> Exit preview</span>
+            ) : (
+              <span className="inline-flex items-center gap-1"><Eye size={11} /> View as principal</span>
+            )}
+          </button>
+          {!viewAsPrincipal && (
+            <button
+              onClick={() => onRemove(l.id)}
+              className="text-[var(--wz-text-tertiary)] hover:text-[var(--wz-negative)]"
+              data-testid={`del-${l.id}`}
+            >
+              <Trash size={16} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3 mt-5">
+        <Metric label="Asking" value={`$${l.asking_price_usd_m}M`} />
+        <Metric label="Revenue" value={l.revenue_usd_m ? `$${l.revenue_usd_m}M` : "—"} />
+        <Metric label="EBITDA" value={l.ebitda_usd_m ? `$${l.ebitda_usd_m}M` : "—"} />
+      </div>
+
+      <p className="text-sm text-[var(--wz-text-secondary)] mt-4 leading-relaxed">{l.summary}</p>
+
+      {(l.highlights || []).length > 0 && (
+        <ul className="mt-4 space-y-1 text-xs">
+          {l.highlights.map((h, i) => (
+            <li key={i} className="flex gap-2 text-[var(--wz-text-secondary)]">
+              <span className="text-[var(--wz-amber)]">▸</span>{h}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <ListingDataRoom listingId={l.id} listingName={l.company_name} viewAsPrincipal={viewAsPrincipal} />
+      <ListingCollabPanel listing={l} viewAsPrincipal={viewAsPrincipal} />
+
+      <div className="mt-5 pt-4 border-t border-[var(--wz-border)] flex items-center justify-between flex-wrap gap-3">
+        <div className="text-xs font-mono-wz text-[var(--wz-text-secondary)]">
+          {l.view_count} views · {l.inquiry_count} inquiries
+        </div>
+        {!viewAsPrincipal && (
+          <div className="flex flex-wrap gap-2" data-testid={`status-buttons-${l.id}`}>
+            {STATUSES.filter((s) => s.v !== l.status).map((s) => (
+              <button
+                key={s.v}
+                onClick={() => onSetStatus(l, s.v)}
+                className="text-[10px] font-mono-wz uppercase tracking-widest border border-[var(--wz-border)] px-2 py-1 hover:border-[var(--wz-amber)] hover:text-[var(--wz-amber)] transition-colors"
+                data-testid={`set-${l.id}-${s.v}`}
+              >
+                → {s.l}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
  * ListingCollabPanel — collapsible wrapper around the collaborators editor
  * ========================================================================== */
-function ListingCollabPanel({ listing }) {
+function ListingCollabPanel({ listing, viewAsPrincipal = false }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="mt-3 border border-[var(--wz-border)]" data-testid={`listing-collab-${listing.id}`}>
@@ -233,6 +295,7 @@ function ListingCollabPanel({ listing }) {
             listingId={listing.id}
             sellerId={listing.seller_id}
             currentAccessPolicy={listing.access_policy}
+            readOnly={viewAsPrincipal}
           />
         </div>
       )}
@@ -243,7 +306,7 @@ function ListingCollabPanel({ listing }) {
 /* ============================================================================
  * ListingDataRoom — per-listing pre-stage area; auto-clones into vaults on open
  * ========================================================================== */
-function ListingDataRoom({ listingId, listingName }) {
+function ListingDataRoom({ listingId, listingName, viewAsPrincipal = false }) {
   const [open, setOpen] = useState(false);
   const [files, setFiles] = useState([]);
   const [loaded, setLoaded] = useState(false);
@@ -349,7 +412,8 @@ function ListingDataRoom({ listingId, listingName }) {
             already populated. Stage your CIM, financials, customer cohort, contracts here.
           </p>
 
-          {/* Upload form */}
+          {/* Upload form — hidden in principal preview */}
+          {!viewAsPrincipal && (
           <form onSubmit={upload} className="border border-[var(--wz-border)] p-3" data-testid={`dataroom-upload-${listingId}`}>
             <div className="flex items-center gap-2 mb-3">
               <CloudArrowUp size={14} className="text-[var(--wz-amber)]" />
@@ -396,6 +460,7 @@ function ListingDataRoom({ listingId, listingName }) {
               data-testid={`dataroom-note-${listingId}`}
             />
           </form>
+          )}
 
           {/* File list */}
           <div className="divide-y divide-[var(--wz-border)]" data-testid={`dataroom-files-${listingId}`}>
@@ -427,14 +492,16 @@ function ListingDataRoom({ listingId, listingName }) {
                     >
                       <DownloadSimple size={12} /> Download
                     </button>
-                    <button
-                      onClick={() => removeFile(f.id)}
-                      className="text-[var(--wz-text-tertiary)] hover:text-[var(--wz-negative)]"
-                      title="Remove"
-                      data-testid={`dataroom-delete-${f.id}`}
-                    >
-                      <X size={14} />
-                    </button>
+                    {!viewAsPrincipal && (
+                      <button
+                        onClick={() => removeFile(f.id)}
+                        className="text-[var(--wz-text-tertiary)] hover:text-[var(--wz-negative)]"
+                        title="Remove"
+                        data-testid={`dataroom-delete-${f.id}`}
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
                   </div>
                 </div>
               ))

@@ -12,7 +12,7 @@ import { useAuth } from "../lib/auth";
  *   - currentAccessPolicy: { require_principal_approval, competitor_blocklist }
  *   - onChange: optional callback fired after a successful mutation
  */
-export default function ListingCollaborators({ listingId, sellerId, currentAccessPolicy, onChange }) {
+export default function ListingCollaborators({ listingId, sellerId, currentAccessPolicy, onChange, readOnly = false }) {
   const { user } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -96,7 +96,12 @@ export default function ListingCollaborators({ listingId, sellerId, currentAcces
   const isPrincipal = sellerId === user?.id;
 
   return (
-    <div className="space-y-6" data-testid="listing-collaborators">
+    <div className="space-y-6" data-testid="listing-collaborators" data-read-only={readOnly}>
+      {readOnly && (
+        <div className="text-[11px] text-[var(--wz-gold)] border border-[var(--wz-gold)]/40 bg-[var(--wz-gold)]/5 px-3 py-2" data-testid="collab-readonly-notice">
+          Read-only · agent management controls are hidden in principal preview.
+        </div>
+      )}
       <div>
         <div className="overline mb-3">Current collaborators</div>
         {(data.collaborators || []).length === 0 ? (
@@ -142,6 +147,7 @@ export default function ListingCollaborators({ listingId, sellerId, currentAcces
         </div>
       )}
 
+      {!readOnly && (
       <form onSubmit={invite} className="space-y-3" data-testid="collab-invite-form">
         <div className="overline">Invite a collaborator</div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -176,6 +182,7 @@ export default function ListingCollaborators({ listingId, sellerId, currentAcces
           <UserPlus size={14} /> {busy ? "Sending…" : "Send invitation"}
         </button>
       </form>
+      )}
 
       <div className="border-t border-[var(--wz-border)] pt-5">
         <div className="overline mb-3 flex items-center gap-2">
@@ -214,8 +221,9 @@ export default function ListingCollaborators({ listingId, sellerId, currentAcces
         <button
           data-testid="policy-save"
           onClick={savePolicy}
-          disabled={busy}
+          disabled={busy || readOnly}
           className="wz-btn wz-btn-ghost mt-4 text-xs"
+          style={readOnly ? { display: "none" } : undefined}
         >
           {busy ? "Saving…" : "Save access policy"}
         </button>
