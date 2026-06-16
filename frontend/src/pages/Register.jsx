@@ -165,7 +165,7 @@ export default function Register() {
             <label className="block mt-3">
               <div className="overline mb-2">Organization name *</div>
               <input
-                data-testid="reg-org-name"
+                data-testid="reg-org-name-input"
                 required
                 className="wz-input"
                 value={form.org_name}
@@ -178,7 +178,7 @@ export default function Register() {
             <label className="block mt-3">
               <div className="overline mb-2">Invite token *</div>
               <input
-                data-testid="reg-org-token"
+                data-testid="reg-org-invite-token-input"
                 required
                 className="wz-input font-mono-wz text-xs"
                 value={form.org_invite_token}

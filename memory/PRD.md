@@ -259,6 +259,26 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - Regression tests still 19/19 across iter-15 / 16 / 18 / 22 suites.
 - **Remaining**: the right-panel hero illustration is a PNG asset that literally renders "WORKZ VENTURES" — needs a new image asset to fully retire the old wordmark.
 
+## What's been implemented (2026-06-16 — iter-25 Agent role + Organizations + Per-listing Collaborators)
+- **New `agent` platform role**: combined buyer+seller workspace nav (Layout.jsx AGENT_NAV de-dupes BUYER_NAV ∪ SELLER_NAV). Surfaced in Register page role dropdown.
+- **Organizations (multi-org, self-serve)**: `organizations` + `org_memberships` collections. Roles within: `org_admin`, `org_member`. One user can belong to many orgs. Listings auto-attach to the user's single org on create (or take explicit `?org_id=` query when user has multiple).
+- **Org bootstrap during signup**: RegisterRequest now accepts `org_choice` (`create|join|none`), `org_name`, `org_invite_token`. Admin approval handler reads the deferred `pending_org_create` / `pending_org_invite_token` on the user doc and materialises the org/membership at approval time.
+- **Per-listing collaborators**: listings now have `collaborators[]` ({user_id, email, name, role: owner|editor|viewer, invited_by, invited_at, accepted_at}) and `access_policy` ({require_principal_approval, competitor_blocklist[]}). Invite + accept use Resend email + token handoff.
+- **Industry-standard Vault access policy**: agent (editor) approves by default; principal owner gets veto via `require_principal_approval` toggle and `competitor_blocklist` (normalised: lowercased, deduped, empties stripped).
+- **Deal-room collaborators (Phase 2)**: GET/POST/DELETE `/api/deal-rooms/{rid}/collaborators` follow the same shape; only existing NextCapOS users can be added (no fresh email invites — buyer/seller pair is already established by NDA flow).
+- **New endpoints (all under `/api`)**:
+  - Orgs: `POST /orgs`, `GET /orgs/mine`, `GET /orgs/{id}`, `PATCH /orgs/{id}`, `GET /orgs/{id}/members`, `DELETE /orgs/{id}/members/{uid}`, `POST /orgs/{id}/invites`, `GET /orgs/{id}/invites`, `DELETE /orgs/{id}/invites/{iid}`, `GET /org-invites/{token}` (public), `POST /org-invites/{token}/accept`.
+  - Listing collab: `GET /listings/{lid}/collaborators`, `POST /listings/{lid}/collaborators`, `DELETE /listings/{lid}/collaborators/{uid}`, `GET /listing-invites/{token}` (public), `POST /listing-invites/{token}/accept`, `PATCH /listings/{lid}/access-policy`.
+  - Room collab: `GET/POST/DELETE /deal-rooms/{rid}/collaborators`.
+- **Updated permissions** on existing listing endpoints — `_listing_for_edit_or_404` allows principal owner, org admin/member, collaborator owner/editor, or platform admin. DELETE is further restricted to owner / org_admin / admin (collaborator editors cannot delete).
+- **Frontend pages**:
+  - `/app/org` — full org management page (tabs across multiple orgs, members list, invite form, pending invites with revoke). Empty state with CTA.
+  - `/accept-org-invite?token=…` and `/accept-listing-invite?token=…` — unified `AcceptCollabInvite` component handles both. Email-match enforced; signs user out if signed in as wrong email.
+  - MyListings now has a collapsible "Collaborators & access policy" panel per listing (`ListingCollaborators` component).
+  - Register page: "Team / Organization" radio card with "Work alone / Create / Join" + conditional org name / invite token inputs.
+  - Layout sidebar: "Organization" link added under Platform group for buyer / seller / admin / agent navs.
+- **Tested**: 26 RBAC pytest cases + 4 org/collab + 7 admin = 37/37 backend pass. Frontend smoke-tested + testing-agent regression on /app/org, /app/listings collaborator panel + access policy, /register, /accept-org-invite. No critical issues.
+
 ## What's been implemented (2026-06-08 — iter-25 Cross-subdomain auth handoff)
 - **Reversed the marketing/app split**: Login + register + forgot/reset password now live on the marketing apex (`nextcapos.com/login` etc.), and ONLY `/app/*` lives on `app.nextcapos.com`. This was the user's explicit preference — landing/auth on apex, authenticated workspace on subdomain.
 - **`src/lib/sessionCookie.js`** (new) — writes/reads/clears the `wz_token` + `wz_user` cookies with `Domain=.nextcapos.com; Secure; SameSite=Lax; Path=/; Max-Age=30d`. Domain derived from `REACT_APP_APP_URL` automatically, override via `REACT_APP_COOKIE_DOMAIN`.
