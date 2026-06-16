@@ -5880,6 +5880,11 @@ class AccessPolicyUpdate(BaseModel):
     competitor_blocklist: Optional[List[str]] = None
 
 
+class PreviewLinkCreate(BaseModel):
+    label: Optional[str] = None
+    expires_hours: int = Field(168, ge=1, le=720)  # default 7d, max 30d
+
+
 # ---- Helpers --------------------------------------------------------------
 
 async def _get_user_org_ids(user: dict) -> List[str]:
@@ -6323,6 +6328,115 @@ async def update_access_policy(lid: str, body: AccessPolicyUpdate, user=Depends(
     await db.listings.update_one({"id": lid}, {"$set": patch})
     await log_audit(user["id"], "listing.access_policy.update", lid, patch)
     return {"ok": True, "access_policy": {**(listing.get("access_policy") or {}), **{k.split('.')[-1]: v for k, v in patch.items()}}}
+
+
+# ---- Public listing preview links (share with the principal pre-signup) ----
+
+def _sanitise_listing_for_preview(listing: dict) -> dict:
+    """Return only fields safe to expose on a public preview link."""
+    keep = (
+        "id company_name sector geography asking_price_usd_m revenue_usd_m "
+        "ebitda_usd_m headline summary highlights status created_at "
+        "access_policy"
+    ).split()
+    out = {k: listing.get(k) for k in keep}
+    # Strip user_ids from collaborators — only show name/role
+    out["collaborators"] = [
+        {"name": c.get("name") or c.get("email"), "role": c.get("role")}
+        for c in (listing.get("collaborators") or [])
+    ]
+    return out
+
+
+@api_router.post("/listings/{lid}/preview-links")
+async def create_preview_link(lid: str, body: PreviewLinkCreate, user=Depends(get_current_user)):
+    """Mint a public, no-auth signed link the principal can click to see exactly
+    the listing card + dataroom file list. Only metadata is exposed — no file
+    downloads, no inquiry inbox, no audit log."""
+    await _listing_for_edit_or_404(lid, user)
+    token = secrets.token_urlsafe(32)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "listing_id": lid,
+        "token": token,
+        "label": body.label,
+        "created_by": user["id"],
+        "created_by_name": user.get("name"),
+        "created_at": now_utc().isoformat(),
+        "expires_at": (now_utc() + timedelta(hours=body.expires_hours)).isoformat(),
+        "revoked_at": None,
+        "view_count": 0,
+        "last_viewed_at": None,
+    }
+    await db.listing_preview_links.insert_one(doc)
+    await log_audit(user["id"], "listing.preview_link.create", lid, {"expires_hours": body.expires_hours})
+    doc.pop("_id", None)
+    doc["url"] = mail_link(f"/preview/listing/{token}")
+    return doc
+
+
+@api_router.get("/listings/{lid}/preview-links")
+async def list_preview_links(lid: str, user=Depends(get_current_user)):
+    await _listing_for_edit_or_404(lid, user)
+    rows = await db.listing_preview_links.find(
+        {"listing_id": lid, "revoked_at": None}, {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    for r in rows:
+        r["url"] = mail_link(f"/preview/listing/{r['token']}")
+        r["is_expired"] = datetime.fromisoformat(r["expires_at"]) < now_utc()
+        # Don't leak token in list view — only on create
+        r.pop("token", None)
+    return rows
+
+
+@api_router.delete("/listings/{lid}/preview-links/{plid}")
+async def revoke_preview_link(lid: str, plid: str, user=Depends(get_current_user)):
+    await _listing_for_edit_or_404(lid, user)
+    res = await db.listing_preview_links.update_one(
+        {"id": plid, "listing_id": lid, "revoked_at": None},
+        {"$set": {"revoked_at": now_utc().isoformat()}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Preview link not found")
+    await log_audit(user["id"], "listing.preview_link.revoke", lid, {"plid": plid})
+    return {"ok": True}
+
+
+@api_router.get("/preview/listings/{token}")
+async def public_listing_preview(token: str):
+    """Public endpoint — no auth. Returns sanitised listing data + dataroom
+    file metadata for clients to preview a listing they've been sent."""
+    link = await db.listing_preview_links.find_one({"token": token}, {"_id": 0})
+    if not link:
+        raise HTTPException(status_code=404, detail="Preview link not found")
+    if link.get("revoked_at"):
+        raise HTTPException(status_code=410, detail="This preview link has been revoked")
+    if datetime.fromisoformat(link["expires_at"]) < now_utc():
+        raise HTTPException(status_code=410, detail="This preview link has expired")
+    listing = await db.listings.find_one({"id": link["listing_id"]}, {"_id": 0})
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing no longer exists")
+    # Increment view counter (fire-and-forget — non-blocking)
+    async def _bump():
+        await db.listing_preview_links.update_one(
+            {"token": token},
+            {"$inc": {"view_count": 1}, "$set": {"last_viewed_at": now_utc().isoformat()}},
+        )
+    asyncio.create_task(_bump())
+    # Pull dataroom file list (metadata only — no signed download urls)
+    files = await db.listing_staged_files.find(
+        {"listing_id": link["listing_id"]},
+        {"_id": 0, "id": 1, "filename": 1, "size_bytes": 1, "content_type": 1, "note": 1, "uploaded_at": 1, "folder": 1},
+    ).sort("uploaded_at", -1).to_list(200)
+    return {
+        "listing": _sanitise_listing_for_preview(listing),
+        "data_room": files,
+        "preview": {
+            "expires_at": link["expires_at"],
+            "shared_by_name": link.get("created_by_name"),
+            "label": link.get("label"),
+        },
+    }
 
 
 # ---- Deal-room collaborators (Phase 2) -------------------------------------

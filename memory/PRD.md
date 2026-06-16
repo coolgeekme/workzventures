@@ -259,6 +259,22 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - Regression tests still 19/19 across iter-15 / 16 / 18 / 22 suites.
 - **Remaining**: the right-panel hero illustration is a PNG asset that literally renders "WORKZ VENTURES" — needs a new image asset to fully retire the old wordmark.
 
+## What's been implemented (2026-06-16 — iter-27 Share preview links)
+- **Public preview links** — agents mint signed, no-auth URLs to share a listing preview with the principal before they accept their collaborator invite.
+- **Backend** (`/app/backend/server.py`, new `listing_preview_links` collection):
+  - `POST /api/listings/{lid}/preview-links` — create (1h–30d expiry, optional label, returns token+url)
+  - `GET /api/listings/{lid}/preview-links` — list active (returns url + view_count + last_viewed_at, NO token leaked in the list response)
+  - `DELETE /api/listings/{lid}/preview-links/{plid}` — revoke (soft delete via `revoked_at`)
+  - `GET /api/preview/listings/{token}` — PUBLIC, no auth. Returns sanitised listing data (no seller_id, no inquiry counts) + data room file metadata (no downloads). Increments `view_count` + `last_viewed_at` via background task.
+  - Tokens are `secrets.token_urlsafe(32)`; expired/revoked tokens return 410 Gone with clear messages.
+- **Frontend**:
+  - `components/ShareLinkModal.jsx` — modal embedded on each listing card. Generates link with copy-to-clipboard, shows active links list with view count + expiry + Revoke action.
+  - `pages/PublicListingPreview.jsx` — mounted at `/preview/listing/:token`. Banner with sharer's name + expiry, full listing card, data-room file list (read-only with sizes), "Principal approval required" notice if set, "Sign in" CTA top-right + footer.
+  - `HostGuard.jsx` — explicitly excludes `/preview/listing/*` from cross-domain redirects so links work on either host.
+  - Listing card gets a new "SHARE" button next to "VIEW AS PRINCIPAL" (hidden in principal preview).
+- **URL hosting**: client builds the share URL with `marketingUrl()` so the link points to `https://nextcapos.com/preview/listing/...` in production (the apex), not the app subdomain.
+- **Tested**: 4 pytest specs (create+view+revoke→410, buyer-can't-create-for-others, invalid-token-404, expires_hours>720 rejected with 422). End-to-end smoke test confirmed the public page renders without auth.
+
 ## What's been implemented (2026-06-16 — iter-26 View-as-principal preview mode)
 - **`ListingCard` extracted** (in `MyListings.jsx`) — owns per-card `viewAsPrincipal` state, threads `viewAsPrincipal` down to `ListingDataRoom` and `ListingCollabPanel`.
 - **`ListingCollaborators` accepts `readOnly` prop** — hides invite form, per-collaborator remove buttons, and the "Save access policy" button when in preview mode. Shows a gold "Read-only · agent management controls are hidden in principal preview" notice at the top of the panel.

@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
-import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X, UsersThree, Eye, EyeSlash } from "@phosphor-icons/react";
+import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X, UsersThree, Eye, EyeSlash, ShareNetwork } from "@phosphor-icons/react";
 import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
 import ListingCollaborators from "../components/ListingCollaborators";
+import ShareLinkModal from "../components/ShareLinkModal";
 
 const STATUSES = [
   { v: "draft", l: "Draft" },
@@ -168,6 +169,7 @@ function Metric({ label, value }) {
  * ========================================================================== */
 function ListingCard({ listing: l, onRemove, onSetStatus }) {
   const [viewAsPrincipal, setViewAsPrincipal] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
   const cardBorder = viewAsPrincipal
     ? "wz-card p-6 border-dashed border-2 border-[var(--wz-gold)]"
     : "wz-card p-6";
@@ -198,6 +200,16 @@ function ListingCard({ listing: l, onRemove, onSetStatus }) {
           <div className="text-sm text-[var(--wz-text-secondary)] mt-1">{l.headline}</div>
         </div>
         <div className="flex items-center gap-2">
+          {!viewAsPrincipal && (
+            <button
+              onClick={() => setShowShareModal(true)}
+              data-testid={`share-link-${l.id}`}
+              title="Generate a public preview link to share"
+              className="text-[10px] font-mono-wz uppercase tracking-widest border border-[var(--wz-border)] text-[var(--wz-text-secondary)] hover:border-[var(--wz-gold)] hover:text-[var(--wz-gold)] px-2 py-1 transition-colors inline-flex items-center gap-1"
+            >
+              <ShareNetwork size={11} /> Share
+            </button>
+          )}
           <button
             onClick={() => setViewAsPrincipal((v) => !v)}
             data-testid={`view-as-principal-${l.id}`}
@@ -246,6 +258,14 @@ function ListingCard({ listing: l, onRemove, onSetStatus }) {
 
       <ListingDataRoom listingId={l.id} listingName={l.company_name} viewAsPrincipal={viewAsPrincipal} />
       <ListingCollabPanel listing={l} viewAsPrincipal={viewAsPrincipal} />
+
+      {showShareModal && (
+        <ShareLinkModal
+          listingId={l.id}
+          listingName={l.company_name}
+          onClose={() => setShowShareModal(false)}
+        />
+      )}
 
       <div className="mt-5 pt-4 border-t border-[var(--wz-border)] flex items-center justify-between flex-wrap gap-3">
         <div className="text-xs font-mono-wz text-[var(--wz-text-secondary)]">
