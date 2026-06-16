@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { Buildings, UserPlus, Trash, ArrowsClockwise, Plus, Copy } from "@phosphor-icons/react";
+import { Buildings, UserPlus, Trash, ArrowsClockwise, Plus, Copy, EnvelopeSimple, CheckCircle } from "@phosphor-icons/react";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import Layout from "../components/Layout";
@@ -9,6 +9,7 @@ import Layout from "../components/Layout";
 export default function OrgManagement() {
   const { user } = useAuth();
   const [orgs, setOrgs] = useState([]);
+  const [pendingForMe, setPendingForMe] = useState({ org: [], listing: [] });
   const [activeOrgId, setActiveOrgId] = useState(null);
   const [members, setMembers] = useState([]);
   const [invites, setInvites] = useState([]);
@@ -23,14 +24,47 @@ export default function OrgManagement() {
   const loadOrgs = async () => {
     setLoading(true);
     try {
-      const r = await api.get("/orgs/mine");
-      setOrgs(r.data);
-      if (r.data.length && !activeOrgId) setActiveOrgId(r.data[0].id);
-      if (!r.data.length) { setMembers([]); setInvites([]); }
+      const [orgsRes, pendingRes] = await Promise.all([
+        api.get("/orgs/mine"),
+        api.get("/me/invites/pending").catch(() => ({ data: { org: [], listing: [] } })),
+      ]);
+      setOrgs(orgsRes.data);
+      setPendingForMe(pendingRes.data);
+      if (orgsRes.data.length && !activeOrgId) setActiveOrgId(orgsRes.data[0].id);
+      if (!orgsRes.data.length) { setMembers([]); setInvites([]); }
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Failed to load orgs");
     }
     setLoading(false);
+  };
+
+  const acceptOrgInvite = async (token) => {
+    try {
+      await api.post(`/org-invites/${token}/accept`);
+      toast.success("Joined the organization");
+      await loadOrgs();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not accept invite");
+    }
+  };
+
+  const acceptListingInvite = async (token) => {
+    try {
+      await api.post(`/listing-invites/${token}/accept`);
+      toast.success("Joined the listing");
+      await loadOrgs();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not accept invite");
+    }
+  };
+
+  const resendInvite = async (iid) => {
+    try {
+      const r = await api.post(`/orgs/${activeOrgId}/invites/${iid}/resend`);
+      toast.success(`Invite re-sent to ${r.data.email}`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Resend failed");
+    }
   };
 
   const loadOrgDetail = async (orgId) => {
@@ -135,6 +169,58 @@ export default function OrgManagement() {
             <Plus size={14} /> New organization
           </button>
         </div>
+
+        {/* Pending invitations addressed to ME — shown whether or not I'm
+            already a member of any other org. Removes dependency on email
+            delivery. */}
+        {(pendingForMe.org.length > 0 || pendingForMe.listing.length > 0) && (
+          <div className="wz-card p-5" data-testid="pending-invites-for-me">
+            <div className="overline mb-3 flex items-center gap-2">
+              <EnvelopeSimple size={14} className="text-[var(--wz-gold)]" />
+              Pending invitations for you · {pendingForMe.org.length + pendingForMe.listing.length}
+            </div>
+            <div className="border border-[var(--wz-border)] divide-y divide-[var(--wz-border)]">
+              {pendingForMe.org.map((iv) => (
+                <div key={`org-${iv.token}`} className="p-3 flex items-center justify-between gap-3" data-testid={`pending-org-${iv.token}`}>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">{iv.org_name}</div>
+                    <div className="text-xs text-[var(--wz-text-tertiary)]">
+                      Organization · {iv.role.replace("_", " ")}
+                      {iv.invited_by_name ? ` · invited by ${iv.invited_by_name}` : ""}
+                      · expires {new Date(iv.expires_at).toLocaleDateString()}
+                    </div>
+                  </div>
+                  <button
+                    data-testid={`accept-org-${iv.token}`}
+                    onClick={() => acceptOrgInvite(iv.token)}
+                    className="wz-btn wz-btn-gold text-xs inline-flex items-center gap-1 shrink-0"
+                  >
+                    <CheckCircle size={12} /> Accept
+                  </button>
+                </div>
+              ))}
+              {pendingForMe.listing.map((iv) => (
+                <div key={`listing-${iv.token}`} className="p-3 flex items-center justify-between gap-3" data-testid={`pending-listing-${iv.token}`}>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">{iv.listing_name}</div>
+                    <div className="text-xs text-[var(--wz-text-tertiary)]">
+                      Listing · {iv.role}
+                      {iv.invited_by_name ? ` · invited by ${iv.invited_by_name}` : ""}
+                      · expires {new Date(iv.expires_at).toLocaleDateString()}
+                    </div>
+                  </div>
+                  <button
+                    data-testid={`accept-listing-${iv.token}`}
+                    onClick={() => acceptListingInvite(iv.token)}
+                    className="wz-btn wz-btn-gold text-xs inline-flex items-center gap-1 shrink-0"
+                  >
+                    <CheckCircle size={12} /> Accept
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {showCreate && (
           <form onSubmit={createOrg} className="wz-card p-5 sm:p-6 space-y-4" data-testid="org-create-form">
@@ -306,9 +392,23 @@ export default function OrgManagement() {
                                   {iv.role.replace("_", " ")} · expires {new Date(iv.expires_at).toLocaleDateString()}
                                 </div>
                               </div>
-                              <button onClick={() => revokeInvite(iv.id)} className="text-xs text-[var(--wz-danger)] hover:underline" data-testid={`org-invite-revoke-${iv.id}`}>
-                                Revoke
-                              </button>
+                              <div className="flex gap-3 items-center shrink-0">
+                                <button
+                                  onClick={() => resendInvite(iv.id)}
+                                  className="text-xs text-[var(--wz-gold)] hover:underline inline-flex items-center gap-1"
+                                  data-testid={`org-invite-resend-${iv.id}`}
+                                  title="Re-send the invitation email"
+                                >
+                                  <EnvelopeSimple size={12} /> Resend
+                                </button>
+                                <button
+                                  onClick={() => revokeInvite(iv.id)}
+                                  className="text-xs text-[var(--wz-danger)] hover:underline"
+                                  data-testid={`org-invite-revoke-${iv.id}`}
+                                >
+                                  Revoke
+                                </button>
+                              </div>
                             </div>
                           ))}
                         </div>

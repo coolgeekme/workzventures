@@ -6439,6 +6439,108 @@ async def public_listing_preview(token: str):
     }
 
 
+# ---- Cross-cutting: pending invites for the current user ------------------
+
+@api_router.get("/me/invites/pending")
+async def my_pending_invites(user=Depends(get_current_user)):
+    """Returns all unaccepted, unexpired invites (org + listing) addressed to
+    the current user's email. Drives the in-app "Pending invitations" panel
+    so users don't have to depend on receiving the original email."""
+    email = (user.get("email") or "").lower()
+    now = now_utc()
+    out_orgs = []
+    async for inv in db.org_invites.find({"email": email, "accepted_at": None}, {"_id": 0}):
+        try:
+            if datetime.fromisoformat(inv["expires_at"]) < now:
+                continue
+        except Exception:
+            pass
+        org = await db.organizations.find_one({"id": inv["org_id"]}, {"_id": 0, "name": 1, "org_type": 1})
+        out_orgs.append({
+            "kind": "org",
+            "token": inv["token"],
+            "role": inv["role"],
+            "invited_by_name": inv.get("invited_by_name"),
+            "created_at": inv.get("created_at"),
+            "expires_at": inv.get("expires_at"),
+            "org_name": (org or {}).get("name", "Unknown organization"),
+            "org_type": (org or {}).get("org_type"),
+        })
+    out_listings = []
+    async for inv in db.listing_invites.find({"email": email, "accepted_at": None}, {"_id": 0}):
+        try:
+            if datetime.fromisoformat(inv["expires_at"]) < now:
+                continue
+        except Exception:
+            pass
+        out_listings.append({
+            "kind": "listing",
+            "token": inv["token"],
+            "role": inv["role"],
+            "invited_by_name": inv.get("invited_by_name"),
+            "created_at": inv.get("created_at"),
+            "expires_at": inv.get("expires_at"),
+            "listing_name": inv.get("listing_name"),
+            "message": inv.get("message"),
+        })
+    return {"org": out_orgs, "listing": out_listings}
+
+
+# ---- Resend a stuck invitation (org admins + platform admins) --------------
+
+@api_router.post("/orgs/{org_id}/invites/{iid}/resend")
+async def resend_org_invite(org_id: str, iid: str, user=Depends(get_current_user)):
+    """Re-fire the email for an existing org invite. Useful after fixing
+    Resend config / sender domain. Does NOT rotate the token — existing
+    accept-URL keeps working."""
+    role = await _user_org_role(user["id"], org_id)
+    if role != "org_admin" and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Org admin only")
+    inv = await db.org_invites.find_one({"id": iid, "org_id": org_id}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    if inv.get("accepted_at"):
+        raise HTTPException(status_code=400, detail="Invite already accepted")
+    org = await db.organizations.find_one({"id": org_id}, {"_id": 0, "name": 1}) or {"name": "your team"}
+    accept_url = mail_link(f"/accept-org-invite?token={inv['token']}")
+    html = f"""
+    <p>Hi,</p>
+    <p><strong>{user.get('name', 'A teammate')}</strong> invited you to join
+    <strong>{org['name']}</strong> on NextCapOS as a <strong>{inv['role'].replace('_',' ')}</strong>.</p>
+    <p><a href="{accept_url}">Accept the invitation &rsaquo;</a></p>
+    <p style="margin-top:24px;font-size:12px;color:#999;">
+      If you didn't request this, you can ignore the email.
+    </p>
+    """
+    asyncio.create_task(send_email(inv["email"], f"NextCapOS · join {org['name']} (resent)", html, reply_to=user.get("email")))
+    await log_audit(user["id"], "org.invite.resend", org_id, {"invite_id": iid, "email": inv["email"]})
+    return {"ok": True, "email": inv["email"]}
+
+
+@api_router.post("/listings/{lid}/collaborators/{iid}/resend")
+async def resend_listing_invite(lid: str, iid: str, user=Depends(get_current_user)):
+    """Re-fire the email for a pending listing-collaborator invite."""
+    await _listing_for_edit_or_404(lid, user)
+    inv = await db.listing_invites.find_one({"id": iid, "listing_id": lid}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    if inv.get("accepted_at"):
+        raise HTTPException(status_code=400, detail="Invite already accepted")
+    accept_url = mail_link(f"/accept-listing-invite?token={inv['token']}")
+    msg_block = f"<blockquote style='border-left:3px solid #ddd;margin:16px 0;padding:8px 14px;color:#444;'>{inv.get('message')}</blockquote>" if inv.get("message") else ""
+    html = f"""
+    <p>Hi,</p>
+    <p><strong>{user.get('name', 'A teammate')}</strong> invited you to collaborate on the
+    NextCapOS listing for <strong>{inv.get('listing_name', 'a company')}</strong> as a
+    <strong>{inv['role']}</strong>.</p>
+    {msg_block}
+    <p><a href="{accept_url}">Open the listing &rsaquo;</a></p>
+    """
+    asyncio.create_task(send_email(inv["email"], f"NextCapOS · listing invitation · {inv.get('listing_name','')} (resent)", html, reply_to=user.get("email")))
+    await log_audit(user["id"], "listing.collab.invite.resend", lid, {"invite_id": iid, "email": inv["email"]})
+    return {"ok": True, "email": inv["email"]}
+
+
 # ---- Deal-room collaborators (Phase 2) -------------------------------------
 
 @api_router.get("/deal-rooms/{rid}/collaborators")
