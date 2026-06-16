@@ -36,6 +36,8 @@ import DetailedReport from "./pages/DetailedReport";
 import PrivateLocker from "./pages/PrivateLocker";
 import AdminUsers from "./pages/AdminUsers";
 import AcceptInvite from "./pages/AcceptInvite";
+import AcceptCollabInvite from "./pages/AcceptCollabInvite";
+import OrgManagement from "./pages/OrgManagement";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
 
@@ -84,7 +86,10 @@ function AppRoutes() {
       <Route path="/app/research/detailed/:rid" element={<Protected><DetailedReport /></Protected>} />
       <Route path="/app/private-locker" element={<Protected><PrivateLocker /></Protected>} />
       <Route path="/app/admin/users" element={<AdminOnly><AdminUsers /></AdminOnly>} />
+      <Route path="/app/org" element={<Protected><OrgManagement /></Protected>} />
       <Route path="/accept-invite" element={<AcceptInvite />} />
+      <Route path="/accept-org-invite" element={<AcceptCollabInvite kind="org" />} />
+      <Route path="/accept-listing-invite" element={<AcceptCollabInvite kind="listing" />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/apps" element={<ConnectableApps />} />

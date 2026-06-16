@@ -6,7 +6,7 @@ import { splitHostingEnabled, marketingUrl } from "../lib/hostRouting";
 import {
   House, MagnifyingGlass, NotePencil, PaperPlaneTilt, Kanban,
   EnvelopeSimple, Plugs, Terminal, ChartLineUp, ListChecks, SignOut,
-  Storefront, Tag, Question, ChartBar, Files, ShieldCheck, Crosshair, Bell, Lock, UsersThree,
+  Storefront, Tag, Question, ChartBar, Files, ShieldCheck, Crosshair, Bell, Lock, UsersThree, Buildings,
 } from "@phosphor-icons/react";
 import Logo from "./Logo";
 import ThemeToggle from "./ThemeToggle";
@@ -23,6 +23,7 @@ const BUYER_NAV = [
   { to: "/app/private-locker", label: "Private Locker", icon: Lock, group: "Diligence" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Engagement" },
   { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
+  { to: "/app/org", label: "Organization", icon: Buildings, group: "Platform" },
   { to: "/app/security", label: "Security", icon: ShieldCheck, group: "Platform" },
   { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp, group: "Platform" },
 ];
@@ -39,6 +40,7 @@ const SELLER_NAV = [
   { to: "/app/leads", label: "Lead Nurturing", icon: Kanban, group: "Pipeline" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Pipeline" },
   { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
+  { to: "/app/org", label: "Organization", icon: Buildings, group: "Platform" },
   { to: "/app/security", label: "Security", icon: ShieldCheck, group: "Platform" },
   { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp, group: "Platform" },
 ];
@@ -58,6 +60,7 @@ const ADMIN_NAV = [
   { to: "/app/leads", label: "Leads", icon: Kanban, group: "Pipeline" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Pipeline" },
   { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
+  { to: "/app/org", label: "Organization", icon: Buildings, group: "Platform (Admin)" },
   { to: "/app/admin/users", label: "Users", icon: UsersThree, group: "Platform (Admin)" },
   { to: "/app/security", label: "Security", icon: ShieldCheck, group: "Platform (Admin)" },
   { to: "/app/mcp", label: "MCP Console", icon: Terminal, group: "Platform (Admin)" },
@@ -65,9 +68,24 @@ const ADMIN_NAV = [
   { to: "/app/audit", label: "Audit Logs", icon: ListChecks, group: "Platform (Admin)" },
 ];
 
+// Agent role = buyer + seller workspace combined. Pulls from both BUYER_NAV
+// and SELLER_NAV (de-duped) so a broker can act as either side without
+// swapping accounts. Org is surfaced under Platform.
+const AGENT_NAV = (() => {
+  const seen = new Set();
+  const items = [];
+  for (const item of [...BUYER_NAV, ...SELLER_NAV]) {
+    if (seen.has(item.to)) continue;
+    seen.add(item.to);
+    items.push(item);
+  }
+  return items;
+})();
+
 function navFor(role) {
   if (role === "seller") return SELLER_NAV;
   if (role === "admin") return ADMIN_NAV;
+  if (role === "agent") return AGENT_NAV;
   return BUYER_NAV;
 }
 

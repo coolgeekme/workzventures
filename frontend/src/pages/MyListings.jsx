@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
-import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X } from "@phosphor-icons/react";
+import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X, UsersThree } from "@phosphor-icons/react";
 import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
+import ListingCollaborators from "../components/ListingCollaborators";
 
 const STATUSES = [
   { v: "draft", l: "Draft" },
@@ -151,6 +152,7 @@ export default function MyListings() {
             )}
 
             <ListingDataRoom listingId={l.id} listingName={l.company_name} />
+            <ListingCollabPanel listing={l} />
 
             <div className="mt-5 pt-4 border-t border-[var(--wz-border)] flex items-center justify-between flex-wrap gap-3">
               <div className="text-xs font-mono-wz text-[var(--wz-text-secondary)]">
@@ -202,6 +204,38 @@ function Metric({ label, value }) {
     <div className="border border-[var(--wz-border)] p-2">
       <div className="overline mb-1">{label}</div>
       <div className="font-mono-wz text-sm">{value}</div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * ListingCollabPanel — collapsible wrapper around the collaborators editor
+ * ========================================================================== */
+function ListingCollabPanel({ listing }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-3 border border-[var(--wz-border)]" data-testid={`listing-collab-${listing.id}`}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        data-testid={`collab-toggle-${listing.id}`}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-[var(--wz-surface-hover)] transition-colors"
+      >
+        <span className="flex items-center gap-2">
+          <UsersThree size={16} className="text-[var(--wz-gold)]" />
+          <span className="text-sm font-medium">Collaborators &amp; access policy</span>
+          <span className="overline">share with the principal or your team</span>
+        </span>
+        {open ? <CaretUp size={14} /> : <CaretDown size={14} />}
+      </button>
+      {open && (
+        <div className="border-t border-[var(--wz-border)] p-4">
+          <ListingCollaborators
+            listingId={listing.id}
+            sellerId={listing.seller_id}
+            currentAccessPolicy={listing.access_policy}
+          />
+        </div>
+      )}
     </div>
   );
 }

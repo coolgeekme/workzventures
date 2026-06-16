@@ -14,6 +14,7 @@ export default function Register() {
   const nav = useNavigate();
   const [form, setForm] = useState({
     name: "", email: "", password: "", organization: "", role: "buyer",
+    org_choice: "none", org_name: "", org_invite_token: "",
   });
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -102,12 +103,90 @@ export default function Register() {
             <select data-testid="reg-role" className="wz-input" value={form.role} onChange={update("role")}>
               <option value="buyer">Buyer · acquire companies</option>
               <option value="seller">Seller · market portfolio</option>
+              <option value="agent">Agent · broker / advisor (both sides)</option>
             </select>
           </label>
           <label className="block col-span-2">
             <div className="overline mb-2">Password</div>
             <input data-testid="reg-password" type="password" required minLength={6} className="wz-input" value={form.password} onChange={update("password")} />
           </label>
+        </div>
+
+        <div className="mt-6 border border-[var(--wz-border)] p-4">
+          <div className="overline mb-3">Team / Organization (optional)</div>
+          <div className="space-y-2 text-sm">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="org_choice"
+                value="none"
+                checked={form.org_choice === "none"}
+                onChange={update("org_choice")}
+                data-testid="reg-org-none"
+                className="mt-0.5"
+              />
+              <span>
+                <span className="font-medium">Work alone</span>
+                <span className="text-xs text-[var(--wz-text-tertiary)] block">You can still create or join an org later from your workspace.</span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="org_choice"
+                value="create"
+                checked={form.org_choice === "create"}
+                onChange={update("org_choice")}
+                data-testid="reg-org-create"
+                className="mt-0.5"
+              />
+              <span>
+                <span className="font-medium">Create a new organization</span>
+                <span className="text-xs text-[var(--wz-text-tertiary)] block">For brokers, advisors, funds, and corp-dev teams.</span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="org_choice"
+                value="join"
+                checked={form.org_choice === "join"}
+                onChange={update("org_choice")}
+                data-testid="reg-org-join"
+                className="mt-0.5"
+              />
+              <span>
+                <span className="font-medium">I have an invite token</span>
+                <span className="text-xs text-[var(--wz-text-tertiary)] block">Paste it below. We'll auto-add you on approval.</span>
+              </span>
+            </label>
+          </div>
+          {form.org_choice === "create" && (
+            <label className="block mt-3">
+              <div className="overline mb-2">Organization name *</div>
+              <input
+                data-testid="reg-org-name"
+                required
+                className="wz-input"
+                value={form.org_name}
+                onChange={update("org_name")}
+                placeholder="e.g. Smith Advisory Group"
+              />
+            </label>
+          )}
+          {form.org_choice === "join" && (
+            <label className="block mt-3">
+              <div className="overline mb-2">Invite token *</div>
+              <input
+                data-testid="reg-org-token"
+                required
+                className="wz-input font-mono-wz text-xs"
+                value={form.org_invite_token}
+                onChange={update("org_invite_token")}
+                placeholder="paste from your invite email"
+              />
+            </label>
+          )}
         </div>
 
         <button data-testid="reg-submit" disabled={loading} className="wz-btn wz-btn-gold w-full mt-7">

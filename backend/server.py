@@ -13,7 +13,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import secrets
 from mailer import send_email, link as mail_link
-from typing import List, Optional, Literal, Dict, Any
+from typing import List, Optional, Literal, Dict, Any, Tuple
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Header, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -103,7 +103,13 @@ class RegisterRequest(BaseModel):
     password: str
     name: str
     organization: Optional[str] = None
-    role: Literal["buyer", "seller"] = "buyer"
+    role: Literal["buyer", "seller", "agent"] = "buyer"
+    # Optional org bootstrap: requester can create a new org during signup
+    # ("create" + org_name) or join one via a pending invite ("join" + org_invite_token).
+    # Defaults to "none" — they'll work as an individual until invited later.
+    org_choice: Literal["create", "join", "none"] = "none"
+    org_name: Optional[str] = None
+    org_invite_token: Optional[str] = None
 
 
 class ListingCreate(BaseModel):
@@ -735,6 +741,20 @@ async def register(body: RegisterRequest, request: Request):
     await db.users.insert_one(doc)
     await log_audit(user_id, "auth.register", body.email, {"status": "pending"})
 
+    # Capture org_choice for downstream wiring — actual org create/join happens
+    # at /auth/accept-invite (for admin invites) or on first login after
+    # approval (so we honor org_choice via a deferred entry stored on the user doc).
+    if body.org_choice == "create" and body.org_name:
+        await db.users.update_one(
+            {"id": user_id},
+            {"$set": {"pending_org_create": body.org_name}},
+        )
+    elif body.org_choice == "join" and body.org_invite_token:
+        await db.users.update_one(
+            {"id": user_id},
+            {"$set": {"pending_org_invite_token": body.org_invite_token}},
+        )
+
     # 1) Notify the operator/admin inbox that a new request landed
     cfg_notify = os.environ.get("REQUEST_NOTIFY_EMAIL")
     if cfg_notify:
@@ -790,7 +810,7 @@ async def register(body: RegisterRequest, request: Request):
 @api_router.post("/admin/users/{uid}/approve")
 async def admin_approve_user(uid: str, user=Depends(get_current_user)):
     _admin_only(user)
-    target = await db.users.find_one({"id": uid}, {"_id": 0, "email": 1, "name": 1, "status": 1, "role": 1})
+    target = await db.users.find_one({"id": uid}, {"_id": 0})
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     if target.get("status") == "active":
@@ -801,6 +821,43 @@ async def admin_approve_user(uid: str, user=Depends(get_current_user)):
                   "approved_by_admin_id": user["id"]}},
     )
     await log_audit(user["id"], "admin.user.approve", uid, {"email": target["email"]})
+
+    # If they requested to bootstrap an org at signup, materialise it now.
+    pending_create = target.get("pending_org_create")
+    pending_join = target.get("pending_org_invite_token")
+    if pending_create:
+        org_id = str(uuid.uuid4())
+        slug = re.sub(r"[^a-z0-9-]+", "-", pending_create.lower()).strip("-")[:60] or org_id[:8]
+        if await db.organizations.find_one({"slug": slug}, {"_id": 0, "id": 1}):
+            slug = f"{slug}-{org_id[:6]}"
+        await db.organizations.insert_one({
+            "id": org_id, "name": pending_create, "slug": slug,
+            "org_type": "advisory", "description": None,
+            "created_by": uid, "created_at": now_utc().isoformat(),
+        })
+        await db.org_memberships.insert_one({
+            "id": str(uuid.uuid4()), "org_id": org_id, "user_id": uid,
+            "role": "org_admin", "joined_at": now_utc().isoformat(), "invited_by": None,
+        })
+        await db.users.update_one({"id": uid}, {"$unset": {"pending_org_create": ""}})
+        await log_audit(uid, "org.create", org_id, {"name": pending_create, "via": "approval"})
+    elif pending_join:
+        inv = await db.org_invites.find_one({"token": pending_join}, {"_id": 0})
+        if inv and not inv.get("accepted_at") and inv["email"].lower() == target["email"].lower():
+            await db.org_memberships.insert_one({
+                "id": str(uuid.uuid4()),
+                "org_id": inv["org_id"],
+                "user_id": uid,
+                "role": inv["role"],
+                "joined_at": now_utc().isoformat(),
+                "invited_by": inv.get("invited_by"),
+            })
+            await db.org_invites.update_one(
+                {"token": pending_join}, {"$set": {"accepted_at": now_utc().isoformat()}}
+            )
+            await db.users.update_one({"id": uid}, {"$unset": {"pending_org_invite_token": ""}})
+            await log_audit(uid, "org.invite.accept", inv["org_id"], {"via": "approval"})
+
     html = f"""
       <p>Hi {target.get('name') or 'there'},</p>
       <p>Your NextCapOS access request has been <strong>approved</strong>. You can now sign in:</p>
@@ -943,13 +1000,13 @@ class AdminCreateUser(BaseModel):
     email: EmailStr
     password: str
     name: str
-    role: Literal["admin", "buyer", "seller"] = "buyer"
+    role: Literal["admin", "buyer", "seller", "agent"] = "buyer"
     organization: Optional[str] = None
 
 
 class AdminUpdateUser(BaseModel):
     name: Optional[str] = None
-    role: Optional[Literal["admin", "buyer", "seller"]] = None
+    role: Optional[Literal["admin", "buyer", "seller", "agent"]] = None
     organization: Optional[str] = None
     status: Optional[Literal["active", "deactivated"]] = None
 
@@ -957,7 +1014,7 @@ class AdminUpdateUser(BaseModel):
 class AdminInviteRequest(BaseModel):
     email: EmailStr
     name: Optional[str] = None
-    role: Literal["admin", "buyer", "seller"] = "buyer"
+    role: Literal["admin", "buyer", "seller", "agent"] = "buyer"
     organization: Optional[str] = None
     expires_hours: int = 168  # 7 days
 
@@ -1285,35 +1342,65 @@ async def list_deals(user=Depends(get_current_user)):
 # -----------------------------------------------------------------------------
 @api_router.get("/listings")
 async def my_listings(user=Depends(get_current_user)):
-    """Seller view — list my listings."""
-    items = await db.listings.find({"seller_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    """Workspace view — listings I personally own, plus listings owned by
+    orgs I'm a member of, plus listings I'm an explicit collaborator on."""
+    org_ids = await _get_user_org_ids(user)
+    or_clauses: List[Dict[str, Any]] = [
+        {"seller_id": user["id"]},
+        {"collaborators.user_id": user["id"]},
+    ]
+    if org_ids:
+        or_clauses.append({"org_id": {"$in": org_ids}})
+    items = await db.listings.find(
+        {"$or": or_clauses}, {"_id": 0}
+    ).sort("created_at", -1).to_list(200)
     return items
 
 
 @api_router.post("/listings")
-async def create_listing(body: ListingCreate, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin"):
-        raise HTTPException(status_code=403, detail="Sellers only")
+async def create_listing(body: ListingCreate, user=Depends(get_current_user), org_id: Optional[str] = None):
+    if user.get("role") not in ("seller", "admin", "agent"):
+        raise HTTPException(status_code=403, detail="Sellers and agents only")
+    # If an org_id is supplied, the creator must be a member of it. If omitted
+    # and the user has exactly one org, default to it. Otherwise the listing
+    # is individually owned (legacy behavior).
+    resolved_org_id = None
+    if org_id:
+        role = await _user_org_role(user["id"], org_id)
+        if not role and user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Not a member of that org")
+        resolved_org_id = org_id
+    else:
+        my_orgs = await _get_user_org_ids(user)
+        if len(my_orgs) == 1:
+            resolved_org_id = my_orgs[0]
     doc = {
         "id": str(uuid.uuid4()),
         "seller_id": user["id"],
         "seller_name": user.get("name"),
         "seller_org": user.get("organization"),
+        "org_id": resolved_org_id,
+        "collaborators": [],
+        "access_policy": {
+            "require_principal_approval": False,
+            "competitor_blocklist": [],
+        },
         **body.model_dump(),
         "inquiry_count": 0,
         "view_count": 0,
         "created_at": now_utc().isoformat(),
     }
     await db.listings.insert_one(doc)
-    await log_audit(user["id"], "listing.create", body.company_name)
+    await log_audit(user["id"], "listing.create", body.company_name, {"org_id": resolved_org_id})
     doc.pop("_id", None)
     return doc
 
 
 @api_router.patch("/listings/{lid}")
 async def update_listing(lid: str, body: ListingCreate, user=Depends(get_current_user)):
+    await _listing_for_edit_or_404(lid, user)
     res = await db.listings.update_one(
-        {"id": lid, "seller_id": user["id"]},
+        {"id": lid},
         {"$set": body.model_dump()},
     )
     if res.matched_count == 0:
@@ -1324,22 +1411,22 @@ async def update_listing(lid: str, body: ListingCreate, user=Depends(get_current
 
 @api_router.delete("/listings/{lid}")
 async def delete_listing(lid: str, user=Depends(get_current_user)):
-    res = await db.listings.delete_one({"id": lid, "seller_id": user["id"]})
-    if res.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Listing not found")
+    listing = await _listing_for_edit_or_404(lid, user)
+    # Only the principal owner, an org_admin of the owning org, or platform admin
+    # can fully delete. Collaborators/editors can edit but not delete.
+    _, role = await _resolve_listing_access(user, listing)
+    if role not in ("owner", "org_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Only the principal owner or org admin can delete")
+    await db.listings.delete_one({"id": lid})
     await log_audit(user["id"], "listing.delete", lid)
     return {"ok": True}
 
 
 # ---- Listing-level data room (pre-stage documents) --------------------------
 async def _seller_listing_or_404(lid: str, user: dict) -> Dict[str, Any]:
-    """Fetch a listing the current user is allowed to manage staged docs for."""
-    listing = await db.listings.find_one({"id": lid}, {"_id": 0})
-    if not listing:
-        raise HTTPException(status_code=404, detail="Listing not found")
-    if user.get("role") != "admin" and listing.get("seller_id") != user["id"]:
-        raise HTTPException(status_code=403, detail="Not your listing")
-    return listing
+    """Backwards-compat wrapper: returns the listing if the user can edit it
+    (principal owner, org member, collaborator editor/owner, or admin)."""
+    return await _listing_for_edit_or_404(lid, user)
 
 
 @api_router.get("/listings/{lid}/staged-files")
@@ -1514,7 +1601,7 @@ PRIVATE_LOCKER_FOLDERS = ("notes", "modeling", "memos", "external", "other")
 
 
 async def _private_locker_guard(user) -> None:
-    if user.get("role") not in ("buyer", "admin"):
+    if user.get("role") not in ("buyer", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Private Locker is buyer-only")
 
 
@@ -2260,7 +2347,7 @@ async def create_detailed_report(body: DetailedAnalysisRequest, user=Depends(get
     until status flips to `completed` or `failed`. The pipeline (Perplexity + 4× Brave +
     Claude 4.5 with grounded context) typically takes 60-180s — well beyond the ingress
     60s read timeout, hence the async pattern."""
-    if user.get("role") not in ("buyer", "admin"):
+    if user.get("role") not in ("buyer", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Detailed analysis is buyer/admin only")
     if not body.company_name or not body.company_name.strip():
         raise HTTPException(status_code=400, detail="company_name is required")
@@ -2945,7 +3032,7 @@ async def set_prefs(body: NewsletterPreferences, user=Depends(get_current_user))
 @api_router.post("/newsletter/draft")
 async def draft_newsletter(body: NewsletterDraftRequest, user=Depends(get_current_user)):
     """Used by sellers (or admins) to draft a broadcast newsletter to opted-in buyers."""
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Broadcasts are seller/admin only")
     started = now_utc()
     interests = ", ".join(user.get("interests", [])) or "institutional buyers"
@@ -2980,7 +3067,7 @@ async def draft_newsletter(body: NewsletterDraftRequest, user=Depends(get_curren
 @api_router.post("/newsletter/personal")
 async def personal_newsletter(body: NewsletterDraftRequest, user=Depends(get_current_user)):
     """Buyer self-service: generate AND deliver a personalized digest in one call (recipient=self)."""
-    if user.get("role") not in ("buyer", "admin"):
+    if user.get("role") not in ("buyer", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Personal digests are buyer/admin only")
     started = now_utc()
     interests = ", ".join(user.get("interests", [])) or "general institutional buying themes"
@@ -3253,7 +3340,7 @@ async def composio_connect_zoho_crm(user=Depends(get_current_user)):
 @api_router.post("/composio/zoho/push-lead/{inquiry_id}")
 async def push_inquiry_to_zoho(inquiry_id: str, user=Depends(get_current_user)):
     """Seller-only: push a buyer inquiry into Zoho CRM as a Lead via Composio Proxy Execute."""
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Sellers/admin only")
 
     inquiry = await db.inquiries.find_one({"id": inquiry_id, "seller_id": user["id"]}, {"_id": 0})
@@ -3467,7 +3554,7 @@ async def list_drl_templates(user=Depends(get_current_user)):
 @api_router.post("/inquiries/{inquiry_id}/open-room")
 async def open_deal_room(inquiry_id: str, user=Depends(get_current_user)):
     """Seller opens a Vault against an engaged inquiry."""
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Sellers/admin only")
     inquiry = await db.inquiries.find_one({"id": inquiry_id, "seller_id": user["id"]}, {"_id": 0})
     if not inquiry:
@@ -3583,7 +3670,7 @@ async def apply_drl_template(rid: str, body: DRLApply, user=Depends(get_current_
     if not room:
         raise HTTPException(status_code=404, detail="Vault not found")
     role = await participant_check(room, user)
-    if role not in ("buyer", "admin"):
+    if role not in ("buyer", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Only the buyer can apply a DRL template")
     template = DRL_TEMPLATES.get(body.template_id)
     if not template:
@@ -3640,7 +3727,7 @@ async def upload_file(rid: str, body: FileUpload, user=Depends(get_current_user)
 
     # Best-effort auto-match against DRL items
     matched_request_id = None
-    if role in ("seller", "admin"):
+    if role in ("seller", "admin", "agent"):
         requests = await db.deal_room_requests.find({"room_id": rid, "status": "pending"}, {"_id": 0}).to_list(200)
         if requests:
             try:
@@ -3842,7 +3929,7 @@ async def upload_file_binary(
     ))
 
     matched_request_id = None
-    if role in ("seller", "admin"):
+    if role in ("seller", "admin", "agent"):
         matched_request_id = await _auto_match_drl(rid, file_id, filename, folder, flat, user["id"])
 
     doc.pop("_id", None)
@@ -3997,7 +4084,7 @@ async def generate_findings(rid: str, user=Depends(get_current_user)):
     if not room:
         raise HTTPException(status_code=404, detail="Vault not found")
     role = await participant_check(room, user)
-    if role not in ("buyer", "admin"):
+    if role not in ("buyer", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Only the buyer can generate findings")
 
     files = await db.deal_room_files.find({"room_id": rid}, {"_id": 0}).sort("uploaded_at", 1).to_list(50)
@@ -4572,7 +4659,7 @@ async def edit_newsletter(nid: str, body: NewsletterEdit, user=Depends(get_curre
 @api_router.get("/newsletter/recipient-candidates")
 async def newsletter_recipient_candidates(user=Depends(get_current_user)):
     """Return opted-in buyer accounts a seller can hand-pick into a broadcast."""
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Seller/admin only")
     cands = await db.users.find(
         {"role": "buyer", "newsletter_opt_in": True},
@@ -5069,7 +5156,7 @@ async def _run_buyer_scan(listing: Dict[str, Any], *, triggered_by: str) -> Dict
 @api_router.post("/buyer-discovery/listings/{lid}/scan")
 async def trigger_buyer_scan(lid: str, user=Depends(get_current_user)):
     """Sellers (or admins) — run a buyer discovery scan now for one of their listings."""
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
     listing = await _listing_for_seller(lid, user)
     result = await _run_buyer_scan(listing, triggered_by=f"user:{user['id']}")
@@ -5078,7 +5165,7 @@ async def trigger_buyer_scan(lid: str, user=Depends(get_current_user)):
 
 @api_router.get("/buyer-discovery/listings/{lid}/matches")
 async def list_buyer_matches(lid: str, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
     listing = await _listing_for_seller(lid, user)
     matches = await db.buyer_matches.find(
@@ -5095,7 +5182,7 @@ async def list_buyer_matches(lid: str, user=Depends(get_current_user)):
 @api_router.get("/buyer-discovery/overview")
 async def buyer_discovery_overview(user=Depends(get_current_user)):
     """Seller cockpit — per-listing summary (count, top score, last scan)."""
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
     seller_filter = {} if user.get("role") == "admin" else {"seller_id": user["id"]}
     listings = await db.listings.find(seller_filter, {"_id": 0}).to_list(200)
@@ -5125,7 +5212,7 @@ async def buyer_discovery_overview(user=Depends(get_current_user)):
 
 @api_router.patch("/buyer-discovery/matches/{mid}")
 async def update_buyer_match(mid: str, body: BuyerMatchAction, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
     if not match:
@@ -5145,7 +5232,7 @@ async def update_buyer_match(mid: str, body: BuyerMatchAction, user=Depends(get_
 
 @api_router.delete("/buyer-discovery/matches/{mid}")
 async def delete_buyer_match(mid: str, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
     if not match:
@@ -5161,7 +5248,7 @@ async def delete_buyer_match(mid: str, user=Depends(get_current_user)):
 
 @api_router.post("/buyer-discovery/matches/{mid}/add-to-leads")
 async def add_match_to_leads(mid: str, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
     if not match or (user.get("role") != "admin" and match.get("seller_id") != user["id"]):
@@ -5195,7 +5282,7 @@ async def add_match_to_leads(mid: str, user=Depends(get_current_user)):
 
 @api_router.post("/buyer-discovery/matches/{mid}/generate-outreach")
 async def generate_outreach_for_match(mid: str, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
     if not match or (user.get("role") != "admin" and match.get("seller_id") != user["id"]):
@@ -5228,7 +5315,7 @@ async def find_contacts_for_match(mid: str, refresh: bool = False, user=Depends(
     """Find named M&A/Corp Dev/IR contacts at this buyer firm by parsing their recent SEC filings
     (DEF 14A, 10-K, 8-K) with Claude, then resolve LinkedIn URLs via Brave. Emails/phones are only
     surfaced if they literally appear in the filing text."""
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
     if not match or (user.get("role") != "admin" and match.get("seller_id") != user["id"]):
@@ -5275,7 +5362,7 @@ async def find_contacts_for_match(mid: str, refresh: bool = False, user=Depends(
 @api_router.post("/buyer-discovery/matches/{mid}/contacts/{contact_idx}/add-to-leads")
 async def add_contact_to_leads(mid: str, contact_idx: int, user=Depends(get_current_user)):
     """Promote a single resolved executive into the Lead Nurturing kanban."""
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
     if not match or (user.get("role") != "admin" and match.get("seller_id") != user["id"]):
@@ -5312,7 +5399,7 @@ async def add_contact_to_leads(mid: str, contact_idx: int, user=Depends(get_curr
 
 @api_router.get("/buyer-alerts")
 async def list_buyer_alerts(unseen_only: bool = False, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Buyer alerts are seller/admin only")
     q: Dict[str, Any] = {"deleted_at": {"$exists": False}}
     if user.get("role") != "admin":
@@ -5325,7 +5412,7 @@ async def list_buyer_alerts(unseen_only: bool = False, user=Depends(get_current_
 
 @api_router.get("/buyer-alerts/count")
 async def buyer_alerts_count(user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         return {"unseen": 0}
     q: Dict[str, Any] = {"seen": False, "deleted_at": {"$exists": False}}
     if user.get("role") != "admin":
@@ -5336,7 +5423,7 @@ async def buyer_alerts_count(user=Depends(get_current_user)):
 
 @api_router.patch("/buyer-alerts/{aid}/seen")
 async def mark_buyer_alert_seen(aid: str, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Buyer alerts are seller/admin only")
     q = {"id": aid}
     if user.get("role") != "admin":
@@ -5349,7 +5436,7 @@ async def mark_buyer_alert_seen(aid: str, user=Depends(get_current_user)):
 
 @api_router.post("/buyer-alerts/mark-all-seen")
 async def mark_all_buyer_alerts_seen(user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Buyer alerts are seller/admin only")
     q: Dict[str, Any] = {"seen": False}
     if user.get("role") != "admin":
@@ -5360,7 +5447,7 @@ async def mark_all_buyer_alerts_seen(user=Depends(get_current_user)):
 
 @api_router.delete("/buyer-alerts/{aid}")
 async def delete_buyer_alert(aid: str, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin"):
+    if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Buyer alerts are seller/admin only")
     q = {"id": aid}
     if user.get("role") != "admin":
@@ -5749,6 +5836,572 @@ async def admin_demo_purge(user=Depends(get_current_user)):
     summary = await purge_demo_data(db, gridfs_bucket, listing_files_bucket, private_locker_bucket)
     await log_audit(user["id"], "admin.demo.purge", "manual_trigger", summary)
     return summary
+
+
+# =============================================================================
+# ORGANIZATIONS + COLLABORATORS (M&A advisor workflow)
+# =============================================================================
+# - Users can belong to many orgs (org_memberships: many-to-many).
+# - An org owns its listings; org_admins manage members + invites.
+# - On top of org membership, each listing also has a `collaborators` array
+#   so the PRINCIPAL seller (typically not in the agent's org) can be invited
+#   as owner/editor of that specific listing.
+# - access_policy on each listing controls who approves Vault access:
+#   any editor by default; the principal owner gets a veto via the
+#   require_principal_approval toggle and the competitor_blocklist.
+# =============================================================================
+
+
+class OrgCreateRequest(BaseModel):
+    name: str = Field(..., min_length=2, max_length=120)
+    org_type: Literal["advisory", "fund", "corporate", "other"] = "advisory"
+    description: Optional[str] = None
+
+
+class OrgUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=2, max_length=120)
+    org_type: Optional[Literal["advisory", "fund", "corporate", "other"]] = None
+    description: Optional[str] = None
+
+
+class OrgInviteRequest(BaseModel):
+    email: EmailStr
+    role: Literal["org_admin", "org_member"] = "org_member"
+
+
+class CollaboratorInviteRequest(BaseModel):
+    email: EmailStr
+    role: Literal["owner", "editor", "viewer"] = "editor"
+    message: Optional[str] = None
+
+
+class AccessPolicyUpdate(BaseModel):
+    require_principal_approval: Optional[bool] = None
+    competitor_blocklist: Optional[List[str]] = None
+
+
+# ---- Helpers --------------------------------------------------------------
+
+async def _get_user_org_ids(user: dict) -> List[str]:
+    """Return list of org_ids the user is a member of."""
+    rows = await db.org_memberships.find(
+        {"user_id": user["id"]}, {"_id": 0, "org_id": 1}
+    ).to_list(200)
+    return [r["org_id"] for r in rows]
+
+
+async def _user_org_role(user_id: str, org_id: str) -> Optional[str]:
+    row = await db.org_memberships.find_one(
+        {"user_id": user_id, "org_id": org_id}, {"_id": 0, "role": 1}
+    )
+    return row["role"] if row else None
+
+
+async def _resolve_listing_access(user: dict, listing: dict) -> Tuple[bool, Optional[str]]:
+    """
+    Returns (can_view, role_on_listing). role_on_listing is one of:
+      "owner" (principal), "org_admin", "org_member", "collab_owner",
+      "collab_editor", "collab_viewer", "admin", or None.
+    """
+    if user.get("role") == "admin":
+        return True, "admin"
+    # Legacy / individual seller ownership
+    if listing.get("seller_id") == user["id"]:
+        return True, "owner"
+    # Org membership
+    listing_org = listing.get("org_id")
+    if listing_org:
+        role = await _user_org_role(user["id"], listing_org)
+        if role:
+            return True, "org_admin" if role == "org_admin" else "org_member"
+    # Explicit collaborators
+    for c in listing.get("collaborators", []) or []:
+        if c.get("user_id") == user["id"]:
+            return True, f"collab_{c.get('role', 'viewer')}"
+    return False, None
+
+
+def _listing_role_can_edit(role: Optional[str]) -> bool:
+    return role in {"admin", "owner", "org_admin", "org_member", "collab_owner", "collab_editor"}
+
+
+async def _listing_for_edit_or_404(lid: str, user: dict) -> Dict[str, Any]:
+    listing = await db.listings.find_one({"id": lid}, {"_id": 0})
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    can_view, role = await _resolve_listing_access(user, listing)
+    if not can_view or not _listing_role_can_edit(role):
+        raise HTTPException(status_code=403, detail="Not authorized to edit this listing")
+    return listing
+
+
+async def _listing_for_view_or_404(lid: str, user: dict) -> Dict[str, Any]:
+    listing = await db.listings.find_one({"id": lid}, {"_id": 0})
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    can_view, _ = await _resolve_listing_access(user, listing)
+    if not can_view:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return listing
+
+
+# ---- Organizations CRUD ----------------------------------------------------
+
+@api_router.post("/orgs")
+async def create_org(body: OrgCreateRequest, user=Depends(get_current_user)):
+    """Self-serve: any active user can create an org. The creator becomes org_admin."""
+    org_id = str(uuid.uuid4())
+    slug = re.sub(r"[^a-z0-9-]+", "-", body.name.lower()).strip("-")[:60] or org_id[:8]
+    # Ensure uniqueness on slug
+    if await db.organizations.find_one({"slug": slug}, {"_id": 0, "id": 1}):
+        slug = f"{slug}-{org_id[:6]}"
+    org_doc = {
+        "id": org_id,
+        "name": body.name,
+        "slug": slug,
+        "org_type": body.org_type,
+        "description": body.description,
+        "created_by": user["id"],
+        "created_at": now_utc().isoformat(),
+    }
+    await db.organizations.insert_one(org_doc)
+    await db.org_memberships.insert_one({
+        "id": str(uuid.uuid4()),
+        "org_id": org_id,
+        "user_id": user["id"],
+        "role": "org_admin",
+        "joined_at": now_utc().isoformat(),
+        "invited_by": None,
+    })
+    await log_audit(user["id"], "org.create", org_id, {"name": body.name})
+    org_doc.pop("_id", None)
+    org_doc["member_count"] = 1
+    org_doc["my_role"] = "org_admin"
+    return org_doc
+
+
+@api_router.get("/orgs/mine")
+async def list_my_orgs(user=Depends(get_current_user)):
+    rows = await db.org_memberships.find({"user_id": user["id"]}, {"_id": 0}).to_list(200)
+    out = []
+    for r in rows:
+        org = await db.organizations.find_one({"id": r["org_id"]}, {"_id": 0})
+        if not org:
+            continue
+        org["my_role"] = r["role"]
+        org["joined_at"] = r.get("joined_at")
+        org["member_count"] = await db.org_memberships.count_documents({"org_id": org["id"]})
+        out.append(org)
+    return out
+
+
+@api_router.get("/orgs/{org_id}")
+async def get_org(org_id: str, user=Depends(get_current_user)):
+    org = await db.organizations.find_one({"id": org_id}, {"_id": 0})
+    if not org:
+        raise HTTPException(status_code=404, detail="Org not found")
+    role = await _user_org_role(user["id"], org_id)
+    if not role and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Not a member")
+    org["my_role"] = role or "admin"
+    org["member_count"] = await db.org_memberships.count_documents({"org_id": org_id})
+    return org
+
+
+@api_router.patch("/orgs/{org_id}")
+async def update_org(org_id: str, body: OrgUpdateRequest, user=Depends(get_current_user)):
+    role = await _user_org_role(user["id"], org_id)
+    if role != "org_admin" and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Org admin only")
+    patch = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if not patch:
+        return {"ok": True}
+    res = await db.organizations.update_one({"id": org_id}, {"$set": patch})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Org not found")
+    await log_audit(user["id"], "org.update", org_id, patch)
+    return {"ok": True}
+
+
+@api_router.get("/orgs/{org_id}/members")
+async def list_org_members(org_id: str, user=Depends(get_current_user)):
+    role = await _user_org_role(user["id"], org_id)
+    if not role and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Not a member")
+    rows = await db.org_memberships.find({"org_id": org_id}, {"_id": 0}).to_list(500)
+    out = []
+    for r in rows:
+        u = await db.users.find_one({"id": r["user_id"]}, {"_id": 0, "email": 1, "name": 1, "role": 1})
+        if not u:
+            continue
+        out.append({
+            "user_id": r["user_id"],
+            "email": u.get("email"),
+            "name": u.get("name"),
+            "platform_role": u.get("role"),
+            "org_role": r["role"],
+            "joined_at": r.get("joined_at"),
+        })
+    return out
+
+
+@api_router.delete("/orgs/{org_id}/members/{member_id}")
+async def remove_org_member(org_id: str, member_id: str, user=Depends(get_current_user)):
+    role = await _user_org_role(user["id"], org_id)
+    if role != "org_admin" and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Org admin only")
+    # Don't allow removing the last org_admin
+    if member_id == user["id"]:
+        admins = await db.org_memberships.count_documents({"org_id": org_id, "role": "org_admin"})
+        if admins <= 1:
+            raise HTTPException(status_code=400, detail="Cannot remove the last org admin")
+    res = await db.org_memberships.delete_one({"org_id": org_id, "user_id": member_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Member not found")
+    await log_audit(user["id"], "org.member.remove", org_id, {"removed": member_id})
+    return {"ok": True}
+
+
+# ---- Org invites -----------------------------------------------------------
+
+@api_router.post("/orgs/{org_id}/invites")
+async def create_org_invite(org_id: str, body: OrgInviteRequest, user=Depends(get_current_user)):
+    role = await _user_org_role(user["id"], org_id)
+    if role != "org_admin" and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Org admin only")
+    org = await db.organizations.find_one({"id": org_id}, {"_id": 0, "name": 1})
+    if not org:
+        raise HTTPException(status_code=404, detail="Org not found")
+    email_norm = body.email.lower()
+    # If a member already, no-op
+    existing_user = await db.users.find_one({"email": email_norm}, {"_id": 0, "id": 1})
+    if existing_user:
+        if await _user_org_role(existing_user["id"], org_id):
+            raise HTTPException(status_code=400, detail="User is already a member")
+    token = uuid.uuid4().hex
+    invite = {
+        "id": str(uuid.uuid4()),
+        "org_id": org_id,
+        "email": email_norm,
+        "role": body.role,
+        "token": token,
+        "invited_by": user["id"],
+        "invited_by_name": user.get("name"),
+        "created_at": now_utc().isoformat(),
+        "expires_at": (now_utc() + timedelta(days=14)).isoformat(),
+        "accepted_at": None,
+    }
+    await db.org_invites.insert_one(invite)
+    accept_url = mail_link(f"/accept-org-invite?token={token}")
+    html = f"""
+    <p>Hi,</p>
+    <p><strong>{user.get('name', 'A teammate')}</strong> invited you to join
+    <strong>{org['name']}</strong> on NextCapOS as a <strong>{body.role.replace('_', ' ')}</strong>.</p>
+    <p><a href="{accept_url}">Accept the invitation &rsaquo;</a></p>
+    <p style="margin-top:24px;font-size:12px;color:#999;">
+      This invite expires in 14 days. Didn't expect it? You can ignore this email.
+    </p>
+    """
+    asyncio.create_task(send_email(email_norm, f"NextCapOS · join {org['name']}", html, reply_to=user.get("email")))
+    await log_audit(user["id"], "org.invite.create", org_id, {"email": email_norm, "role": body.role})
+    return {"ok": True, "invite_id": invite["id"], "token": token, "accept_url": accept_url}
+
+
+@api_router.get("/orgs/{org_id}/invites")
+async def list_org_invites(org_id: str, user=Depends(get_current_user)):
+    role = await _user_org_role(user["id"], org_id)
+    if role != "org_admin" and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Org admin only")
+    rows = await db.org_invites.find(
+        {"org_id": org_id, "accepted_at": None}, {"_id": 0, "token": 0}
+    ).sort("created_at", -1).to_list(200)
+    return rows
+
+
+@api_router.delete("/orgs/{org_id}/invites/{iid}")
+async def revoke_org_invite(org_id: str, iid: str, user=Depends(get_current_user)):
+    role = await _user_org_role(user["id"], org_id)
+    if role != "org_admin" and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Org admin only")
+    res = await db.org_invites.delete_one({"id": iid, "org_id": org_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    await log_audit(user["id"], "org.invite.revoke", org_id, {"invite_id": iid})
+    return {"ok": True}
+
+
+@api_router.get("/org-invites/{token}")
+async def public_get_org_invite(token: str):
+    """Public endpoint so an unauthenticated user can preview their invite."""
+    inv = await db.org_invites.find_one({"token": token}, {"_id": 0, "token": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invite not found or already used")
+    if inv.get("accepted_at"):
+        raise HTTPException(status_code=400, detail="Invite already accepted")
+    if inv.get("expires_at") and datetime.fromisoformat(inv["expires_at"]) < now_utc():
+        raise HTTPException(status_code=400, detail="Invite expired")
+    org = await db.organizations.find_one({"id": inv["org_id"]}, {"_id": 0, "name": 1, "org_type": 1})
+    return {
+        "email": inv["email"],
+        "role": inv["role"],
+        "org_id": inv["org_id"],
+        "org_name": org["name"] if org else "Unknown",
+        "org_type": org.get("org_type") if org else None,
+        "invited_by_name": inv.get("invited_by_name"),
+    }
+
+
+@api_router.post("/org-invites/{token}/accept")
+async def accept_org_invite(token: str, user=Depends(get_current_user)):
+    """Authenticated user accepts an invite. The invite's email must match
+    the user's email to prevent invite-token grabbing."""
+    inv = await db.org_invites.find_one({"token": token}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    if inv.get("accepted_at"):
+        raise HTTPException(status_code=400, detail="Already accepted")
+    if inv.get("expires_at") and datetime.fromisoformat(inv["expires_at"]) < now_utc():
+        raise HTTPException(status_code=400, detail="Invite expired")
+    if inv["email"].lower() != user["email"].lower():
+        raise HTTPException(status_code=403, detail="This invite is for a different email")
+    # Already a member?
+    if await _user_org_role(user["id"], inv["org_id"]):
+        await db.org_invites.update_one({"token": token}, {"$set": {"accepted_at": now_utc().isoformat()}})
+        return {"ok": True, "already_member": True, "org_id": inv["org_id"]}
+    await db.org_memberships.insert_one({
+        "id": str(uuid.uuid4()),
+        "org_id": inv["org_id"],
+        "user_id": user["id"],
+        "role": inv["role"],
+        "joined_at": now_utc().isoformat(),
+        "invited_by": inv.get("invited_by"),
+    })
+    await db.org_invites.update_one({"token": token}, {"$set": {"accepted_at": now_utc().isoformat()}})
+    await log_audit(user["id"], "org.invite.accept", inv["org_id"], {"role": inv["role"]})
+    return {"ok": True, "org_id": inv["org_id"], "role": inv["role"]}
+
+
+# ---- Listing collaborators -------------------------------------------------
+
+@api_router.get("/listings/{lid}/collaborators")
+async def list_listing_collaborators(lid: str, user=Depends(get_current_user)):
+    listing = await _listing_for_view_or_404(lid, user)
+    return {
+        "owner_id": listing.get("seller_id"),
+        "org_id": listing.get("org_id"),
+        "collaborators": listing.get("collaborators", []) or [],
+        "pending_invites": await db.listing_invites.find(
+            {"listing_id": lid, "accepted_at": None}, {"_id": 0, "token": 0}
+        ).sort("created_at", -1).to_list(50),
+    }
+
+
+@api_router.post("/listings/{lid}/collaborators")
+async def invite_listing_collaborator(lid: str, body: CollaboratorInviteRequest, user=Depends(get_current_user)):
+    listing = await _listing_for_edit_or_404(lid, user)
+    email_norm = body.email.lower()
+    # If user already exists + already a collaborator, no-op
+    existing_user = await db.users.find_one({"email": email_norm}, {"_id": 0, "id": 1, "name": 1})
+    if existing_user:
+        for c in listing.get("collaborators", []) or []:
+            if c.get("user_id") == existing_user["id"]:
+                raise HTTPException(status_code=400, detail="Already a collaborator")
+    token = uuid.uuid4().hex
+    invite = {
+        "id": str(uuid.uuid4()),
+        "listing_id": lid,
+        "email": email_norm,
+        "role": body.role,
+        "token": token,
+        "invited_by": user["id"],
+        "invited_by_name": user.get("name"),
+        "listing_name": listing.get("company_name"),
+        "message": body.message,
+        "created_at": now_utc().isoformat(),
+        "expires_at": (now_utc() + timedelta(days=14)).isoformat(),
+        "accepted_at": None,
+    }
+    await db.listing_invites.insert_one(invite)
+    accept_url = mail_link(f"/accept-listing-invite?token={token}")
+    msg_block = f"<blockquote style='border-left:3px solid #ddd;margin:16px 0;padding:8px 14px;color:#444;'>{body.message}</blockquote>" if body.message else ""
+    html = f"""
+    <p>Hi,</p>
+    <p><strong>{user.get('name', 'A teammate')}</strong> invited you to collaborate on the
+    NextCapOS listing for <strong>{listing.get('company_name', 'a company')}</strong> as a
+    <strong>{body.role}</strong>.</p>
+    {msg_block}
+    <p><a href="{accept_url}">Open the listing &rsaquo;</a></p>
+    <p style="margin-top:24px;font-size:12px;color:#999;">
+      Owners and editors can edit the listing and upload to the Vault. Viewers can read only.
+    </p>
+    """
+    asyncio.create_task(send_email(email_norm, f"NextCapOS · listing invitation · {listing.get('company_name', '')}", html, reply_to=user.get("email")))
+    await log_audit(user["id"], "listing.collab.invite", lid, {"email": email_norm, "role": body.role})
+    return {"ok": True, "invite_id": invite["id"], "token": token, "accept_url": accept_url}
+
+
+@api_router.delete("/listings/{lid}/collaborators/{member_id}")
+async def remove_listing_collaborator(lid: str, member_id: str, user=Depends(get_current_user)):
+    listing = await _listing_for_edit_or_404(lid, user)
+    if listing.get("seller_id") == member_id:
+        raise HTTPException(status_code=400, detail="Cannot remove the principal owner")
+    res = await db.listings.update_one(
+        {"id": lid},
+        {"$pull": {"collaborators": {"user_id": member_id}}},
+    )
+    if res.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Collaborator not found")
+    await log_audit(user["id"], "listing.collab.remove", lid, {"removed": member_id})
+    return {"ok": True}
+
+
+@api_router.get("/listing-invites/{token}")
+async def public_get_listing_invite(token: str):
+    inv = await db.listing_invites.find_one({"token": token}, {"_id": 0, "token": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invite not found or already used")
+    if inv.get("accepted_at"):
+        raise HTTPException(status_code=400, detail="Invite already accepted")
+    if inv.get("expires_at") and datetime.fromisoformat(inv["expires_at"]) < now_utc():
+        raise HTTPException(status_code=400, detail="Invite expired")
+    return inv
+
+
+@api_router.post("/listing-invites/{token}/accept")
+async def accept_listing_invite(token: str, user=Depends(get_current_user)):
+    inv = await db.listing_invites.find_one({"token": token}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    if inv.get("accepted_at"):
+        raise HTTPException(status_code=400, detail="Already accepted")
+    if inv.get("expires_at") and datetime.fromisoformat(inv["expires_at"]) < now_utc():
+        raise HTTPException(status_code=400, detail="Invite expired")
+    if inv["email"].lower() != user["email"].lower():
+        raise HTTPException(status_code=403, detail="This invite is for a different email")
+    listing = await db.listings.find_one({"id": inv["listing_id"]}, {"_id": 0})
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing no longer exists")
+    # Already a collaborator?
+    for c in listing.get("collaborators", []) or []:
+        if c.get("user_id") == user["id"]:
+            await db.listing_invites.update_one({"token": token}, {"$set": {"accepted_at": now_utc().isoformat()}})
+            return {"ok": True, "already_collaborator": True, "listing_id": inv["listing_id"]}
+    await db.listings.update_one(
+        {"id": inv["listing_id"]},
+        {"$push": {"collaborators": {
+            "user_id": user["id"],
+            "email": user["email"],
+            "name": user.get("name"),
+            "role": inv["role"],
+            "invited_by": inv.get("invited_by"),
+            "invited_at": inv.get("created_at"),
+            "accepted_at": now_utc().isoformat(),
+        }}},
+    )
+    await db.listing_invites.update_one({"token": token}, {"$set": {"accepted_at": now_utc().isoformat()}})
+    await log_audit(user["id"], "listing.collab.accept", inv["listing_id"], {"role": inv["role"]})
+    return {"ok": True, "listing_id": inv["listing_id"], "role": inv["role"]}
+
+
+# ---- Access policy (principal veto + competitor blocklist) -----------------
+
+@api_router.patch("/listings/{lid}/access-policy")
+async def update_access_policy(lid: str, body: AccessPolicyUpdate, user=Depends(get_current_user)):
+    listing = await _listing_for_edit_or_404(lid, user)
+    # Principal toggle + blocklist can be set by any editor; the principal
+    # always inherits effective control because principal_approval falls back
+    # to them on approval routing (server enforces).
+    patch = {}
+    if body.require_principal_approval is not None:
+        patch["access_policy.require_principal_approval"] = body.require_principal_approval
+    if body.competitor_blocklist is not None:
+        # Normalize: lowercase, strip, dedupe
+        items = list({(s or "").strip().lower() for s in body.competitor_blocklist if (s or "").strip()})
+        patch["access_policy.competitor_blocklist"] = items
+    if not patch:
+        return {"ok": True}
+    await db.listings.update_one({"id": lid}, {"$set": patch})
+    await log_audit(user["id"], "listing.access_policy.update", lid, patch)
+    return {"ok": True, "access_policy": {**(listing.get("access_policy") or {}), **{k.split('.')[-1]: v for k, v in patch.items()}}}
+
+
+# ---- Deal-room collaborators (Phase 2) -------------------------------------
+
+@api_router.get("/deal-rooms/{rid}/collaborators")
+async def list_room_collaborators(rid: str, user=Depends(get_current_user)):
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    # Allowed if the user is buyer or seller side, or appears in collaborators.
+    can = (
+        room.get("buyer_id") == user["id"]
+        or room.get("seller_id") == user["id"]
+        or user.get("role") == "admin"
+        or any(c.get("user_id") == user["id"] for c in (room.get("collaborators") or []))
+    )
+    if not can:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return {
+        "buyer_id": room.get("buyer_id"),
+        "seller_id": room.get("seller_id"),
+        "collaborators": room.get("collaborators", []) or [],
+    }
+
+
+@api_router.post("/deal-rooms/{rid}/collaborators")
+async def invite_room_collaborator(rid: str, body: CollaboratorInviteRequest, user=Depends(get_current_user)):
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    # Only the seller-side principal/agent or buyer-side principal/agent can invite.
+    can = (
+        room.get("buyer_id") == user["id"]
+        or room.get("seller_id") == user["id"]
+        or user.get("role") == "admin"
+        or any(c.get("user_id") == user["id"] and c.get("role") in ("owner", "editor") for c in (room.get("collaborators") or []))
+    )
+    if not can:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    email_norm = body.email.lower()
+    existing_user = await db.users.find_one({"email": email_norm}, {"_id": 0, "id": 1, "name": 1})
+    if not existing_user:
+        raise HTTPException(status_code=400, detail="The collaborator must have a NextCapOS account first")
+    for c in room.get("collaborators", []) or []:
+        if c.get("user_id") == existing_user["id"]:
+            raise HTTPException(status_code=400, detail="Already a collaborator")
+    entry = {
+        "user_id": existing_user["id"],
+        "email": email_norm,
+        "name": existing_user.get("name"),
+        "role": body.role,
+        "invited_by": user["id"],
+        "invited_at": now_utc().isoformat(),
+        "accepted_at": now_utc().isoformat(),  # implicit accept; user already has account
+    }
+    await db.deal_rooms.update_one({"id": rid}, {"$push": {"collaborators": entry}})
+    await log_audit(user["id"], "room.collab.add", rid, {"user_id": existing_user["id"], "role": body.role})
+    return {"ok": True, "collaborator": entry}
+
+
+@api_router.delete("/deal-rooms/{rid}/collaborators/{member_id}")
+async def remove_room_collaborator(rid: str, member_id: str, user=Depends(get_current_user)):
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    can = (
+        room.get("seller_id") == user["id"]
+        or room.get("buyer_id") == user["id"]
+        or user.get("role") == "admin"
+    )
+    if not can:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    res = await db.deal_rooms.update_one(
+        {"id": rid}, {"$pull": {"collaborators": {"user_id": member_id}}}
+    )
+    if res.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Collaborator not found")
+    await log_audit(user["id"], "room.collab.remove", rid, {"removed": member_id})
+    return {"ok": True}
 
 
 # Register router + middleware
