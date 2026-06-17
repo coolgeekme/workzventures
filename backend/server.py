@@ -6607,6 +6607,50 @@ async def remove_listing_collaborator(lid: str, member_id: str, user=Depends(get
     return {"ok": True}
 
 
+class CollaboratorRolePatch(BaseModel):
+    role: Literal["owner", "editor", "viewer"]
+
+
+@api_router.patch("/listings/{lid}/collaborators/{member_id}")
+async def update_listing_collaborator_role(
+    lid: str, member_id: str, body: CollaboratorRolePatch, user=Depends(get_current_user),
+):
+    """Change an existing collaborator's role. The principal owner's role is
+    immutable (use remove + re-invite if that ever needs to change)."""
+    listing = await _listing_for_edit_or_404(lid, user)
+    if listing.get("seller_id") == member_id:
+        raise HTTPException(status_code=400, detail="Cannot change the principal owner's role")
+    res = await db.listings.update_one(
+        {"id": lid, "collaborators.user_id": member_id},
+        {"$set": {"collaborators.$.role": body.role}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Collaborator not found")
+    await log_audit(user["id"], "listing.collab.update_role", lid,
+                    {"member_id": member_id, "new_role": body.role})
+    return {"ok": True, "role": body.role}
+
+
+@api_router.delete("/listings/{lid}/collaborators/invites/{iid}")
+async def revoke_listing_invite(lid: str, iid: str, user=Depends(get_current_user)):
+    """Cancel a pending listing-collaborator invite. Only listing editors can
+    revoke. Already-accepted invites can't be revoked (use DELETE on the
+    collaborator instead)."""
+    await _listing_for_edit_or_404(lid, user)
+    inv = await db.listing_invites.find_one({"id": iid, "listing_id": lid}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    if inv.get("accepted_at"):
+        raise HTTPException(
+            status_code=400,
+            detail="Invite already accepted — remove the collaborator instead.",
+        )
+    await db.listing_invites.delete_one({"id": iid, "listing_id": lid})
+    await log_audit(user["id"], "listing.invite.revoke", lid,
+                    {"invite_id": iid, "email": inv.get("email")})
+    return {"ok": True}
+
+
 @api_router.get("/listing-invites/{token}")
 async def public_get_listing_invite(token: str):
     inv = await db.listing_invites.find_one({"token": token}, {"_id": 0, "token": 0})

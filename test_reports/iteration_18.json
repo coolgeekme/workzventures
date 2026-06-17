@@ -1,0 +1,38 @@
+{
+  "summary": "Iter-18 — Validated collaborator role-edit + invite-revoke/resend flows end-to-end (backend + frontend). Backend pytest /app/backend/tests/test_collab_role_revoke.py: 9/9 PASS covering (1) PATCH role 200 + reflected in GET, (2) PATCH on principal owner seller_id → 400 'Cannot change the principal owner\\'s role' + owner unchanged, (3) PATCH on bogus user id → 404 'Collaborator not found', (4) PATCH with role='admin' → 422 (pydantic Literal rejection), (5) PATCH as a regular buyer not on listing → 403/404 from _listing_for_edit_or_404, (6) DELETE pending invite 200 + invite gone from pending_invites + token no longer registers, (7) DELETE accepted invite 400 'already accepted', (8) DELETE bogus iid → 404, (9) editor collaborator (agent-style) can PATCH another member's role AND revoke a pending invite they own. Frontend Playwright on the preview URL covered all 4 UI flows: TEST1 toggling the listing's collaborators panel renders collab-role-{uid} <select> on each non-principal row; selecting 'editor' fires PATCH and surfaces toast 'Role updated to editor' — Collab row visibly changes to 'Editor' label after reload. TEST2 each pending invite row exposes collab-invite-resend-{iid} + collab-invite-revoke-{iid}; clicking resend toasts 'Invite re-sent to <email>'. TEST3 clicking revoke triggers window.confirm (auto-accepted), DELETE fires, toast 'Invite cancelled' appears and the collab-pending-{iid} DOM row is removed. TEST4 'View as principal' (readOnly mode) renders collab-readonly-notice and hides ALL role selects (0 found), invite resend/revoke buttons (0 found) and remove buttons (0 found). Principal-pill branch (lines 158-161 in ListingCollaborators.jsx) verified by code review — only triggers when seller_id is ALSO present in collaborators[] array (not the case in current seed data; principal is tracked via listing.seller_id separately and is correctly excluded from the editable list). All review-request acceptance criteria met.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_collab_role_revoke.py",
+    "/app/test_reports/pytest/iter18_collab.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:6610-6611 — CollaboratorRolePatch uses Literal['owner','editor','viewer'] so role validation is enforced at parse time; the 422 path is automatic and no manual whitelist needed.",
+    "server.py:6614-6631 — uses _listing_for_edit_or_404 for RBAC (consistent with POST/DELETE collab endpoints) → editors/owners only; matched_count==0 distinguishes 'not a collaborator' from a generic write failure; principal-owner short-circuit (line 6621) runs BEFORE the update so the role array can never enter an inconsistent state.",
+    "server.py:6634-6651 — DELETE invite enforces both listing-edit RBAC AND filters by {id: iid, listing_id: lid} so a malicious editor on listing A can't revoke listing B's invite even if they guess the iid; accepted_at check happens BEFORE delete (idempotency win — re-revoke of already-accepted returns 400 not a misleading 404).",
+    "ListingCollaborators.jsx:76-86 — changeRole() does optimistic update via select onChange + falls back to a full reload on error so the dropdown snaps back to the server's value on a 4xx. Good UX.",
+    "ListingCollaborators.jsx:88-98 — revokeInvite() prompts window.confirm BEFORE the destructive DELETE and reloads to remove the row; the row disappears via reload, not stale local state — verified in TEST3.",
+    "ListingCollaborators.jsx:147-148 — `isOwner = c.user_id === sellerId` and `canEdit = !readOnly && !isOwner` cleanly drive both the pill-vs-select rendering and the conditional Remove button; readOnly cascades correctly to BOTH collaborator controls and pending-invite buttons (verified TEST4: 0 of each).",
+    "ListingCollaborators.jsx:200-228 — pending-invite section uses iv.id (the invite doc id) for all data-testids and DELETE/POST URLs — matches the backend's response shape {invite_id, token} where invite_id is the same doc id. No ambiguity between iid and token.",
+    "Minor / nice-to-have (NOT blocking): on revokeInvite() failure (e.g. 400 'already accepted' if someone else accepts between page-load and click) the row stays in the UI until next load() — could call load() in the catch branch to refresh state. Also, the resend button has no busy-state lockout so a double-click sends 2 emails; consider disabling during the in-flight request.",
+    "Minor / nice-to-have: the principal-owner pill (line 158-161) only renders when the principal id ALSO appears in collaborators[]; in the current data model the principal is the seller_id and is NOT added to collaborators[]. If product wants the principal always visible at the top of the collab list, MyListings.jsx (or the server endpoint) would need to synthesise a virtual entry. As coded today, the pill branch is defensive cover for an edge case that won't fire in normal use."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_collab_role_revoke.py (new, 9 tests, ~280 LOC)"
+  ],
+  "success_rate": {"backend": "100% (9/9)", "frontend": "100% (4/4)"},
+  "test_credentials": "Seller mira@workz.example.com / WorkzPass123!  ·  invitees created fresh each run as invitee_*@workz.example.com / TestPass123!",
+  "seed_data_creation": "Test created several invitee_*@workz.example.com users via the invite→register fast-path (all flagged is_demo, reaped by 48h demo sweeper). One pending listing_invite and one accepted listing_invite were created against Mira's first seed listing (NoTouch 34fb4 · 7657e715-ab6b-4379-b76c-6f67ba61eb25) — pending one was revoked in TEST3.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Reusable suite: REACT_APP_BACKEND_URL=https://buyer-intel-lab.preview.emergentagent.com pytest /app/backend/tests/test_collab_role_revoke.py -v  (~5s, 9 tests). Key facts reused from iter-17: (a) invite→register fast-path materialises an active collaborator in one HTTP call — pattern in helper _materialize_collab() at top of test file. (b) Pending invite ID is `invite_id` on POST response AND `id` on the invite doc in GET response — they're the same value. (c) data-testid scheme on ListingCollaborators: collab-toggle-{lid} (panel toggle in MyListings wrapper), collab-{uid}, collab-role-{uid}, collab-remove-{uid}, collab-pending-{iid}, collab-invite-resend-{iid}, collab-invite-revoke-{iid}, collab-readonly-notice. (d) readOnly mode is triggered by 'View as principal' button on the listing card in MyListings — that re-renders the panel with readOnly=true.",
+  "rca of the issue": "N/A — no functional bugs found. PATCH /api/listings/{lid}/collaborators/{member_id} and DELETE /api/listings/{lid}/collaborators/invites/{iid} both correctly reuse _listing_for_edit_or_404 for RBAC, validate principal-owner immutability and accepted-invite immutability with HTTP 400 BEFORE any mutation, return 404 for missing targets, and 422 for invalid role enums. ListingCollaborators.jsx wires changeRole/revokeInvite/resendInvite handlers with toast feedback, window.confirm for destructive revoke, and a reload-on-error fallback. readOnly mode correctly suppresses ALL management controls (selects, remove, resend, revoke)."
+}

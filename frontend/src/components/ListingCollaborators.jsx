@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { UserPlus, Trash, ShieldCheck, Warning } from "@phosphor-icons/react";
+import { UserPlus, Trash, ShieldCheck, Warning, ArrowsClockwise, X } from "@phosphor-icons/react";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 
@@ -73,6 +73,39 @@ export default function ListingCollaborators({ listingId, sellerId, currentAcces
     }
   };
 
+  const changeRole = async (userId, newRole) => {
+    try {
+      await api.patch(`/listings/${listingId}/collaborators/${userId}`, { role: newRole });
+      toast.success(`Role updated to ${newRole}`);
+      await load();
+      onChange?.();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Role update failed");
+      await load(); // reload so the dropdown snaps back to the actual server value
+    }
+  };
+
+  const revokeInvite = async (inviteId, email) => {
+    if (!window.confirm(`Cancel the pending invite to ${email}? The link in their email will stop working.`)) return;
+    try {
+      await api.delete(`/listings/${listingId}/collaborators/invites/${inviteId}`);
+      toast.success("Invite cancelled");
+      await load();
+      onChange?.();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Cancel failed");
+    }
+  };
+
+  const resendInvite = async (inviteId, email) => {
+    try {
+      await api.post(`/listings/${listingId}/collaborators/${inviteId}/resend`);
+      toast.success(`Invite re-sent to ${email}`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Resend failed");
+    }
+  };
+
   const savePolicy = async () => {
     setBusy(true);
     try {
@@ -110,23 +143,52 @@ export default function ListingCollaborators({ listingId, sellerId, currentAcces
           </div>
         ) : (
           <div className="border border-[var(--wz-border)] divide-y divide-[var(--wz-border)]">
-            {data.collaborators.map((c) => (
-              <div key={c.user_id} data-testid={`collab-${c.user_id}`} className="flex items-center justify-between p-3">
-                <div>
-                  <div className="text-sm font-medium">{c.name || c.email}</div>
-                  <div className="text-xs text-[var(--wz-text-tertiary)]">
-                    {c.email} · {c.role}
+            {data.collaborators.map((c) => {
+              const isOwner = c.user_id === sellerId;
+              const canEdit = !readOnly && !isOwner;
+              return (
+                <div key={c.user_id} data-testid={`collab-${c.user_id}`} className="flex items-center justify-between p-3 gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">{c.name || c.email}</div>
+                    <div className="text-xs text-[var(--wz-text-tertiary)] truncate">
+                      {c.email}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {isOwner ? (
+                      <span className="text-[10px] font-mono-wz uppercase tracking-widest text-[var(--wz-gold)] border border-[var(--wz-gold)]/40 px-2 py-1">
+                        {c.role || "owner"} · principal
+                      </span>
+                    ) : canEdit ? (
+                      <select
+                        data-testid={`collab-role-${c.user_id}`}
+                        value={c.role || "viewer"}
+                        onChange={(e) => changeRole(c.user_id, e.target.value)}
+                        className="wz-input text-xs py-1 px-2"
+                        style={{ minWidth: "100px" }}
+                        title="Change collaborator role"
+                      >
+                        <option value="owner">Owner</option>
+                        <option value="editor">Editor</option>
+                        <option value="viewer">Viewer</option>
+                      </select>
+                    ) : (
+                      <span className="text-xs text-[var(--wz-text-tertiary)]">{c.role}</span>
+                    )}
+                    {canEdit && (
+                      <button
+                        data-testid={`collab-remove-${c.user_id}`}
+                        onClick={() => remove(c.user_id, c.name)}
+                        className="text-xs text-[var(--wz-danger)] hover:underline flex items-center gap-1"
+                        title="Remove from listing"
+                      >
+                        <Trash size={12} /> Remove
+                      </button>
+                    )}
                   </div>
                 </div>
-                <button
-                  data-testid={`collab-remove-${c.user_id}`}
-                  onClick={() => remove(c.user_id, c.name)}
-                  className="text-xs text-[var(--wz-danger)] hover:underline flex items-center gap-1"
-                >
-                  <Trash size={12} /> Remove
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -136,11 +198,33 @@ export default function ListingCollaborators({ listingId, sellerId, currentAcces
           <div className="overline mb-3">Pending invites · {data.pending_invites.length}</div>
           <div className="border border-[var(--wz-border)] divide-y divide-[var(--wz-border)]">
             {data.pending_invites.map((iv) => (
-              <div key={iv.id} className="p-3" data-testid={`collab-pending-${iv.id}`}>
-                <div className="text-sm">{iv.email}</div>
-                <div className="text-xs text-[var(--wz-text-tertiary)]">
-                  {iv.role} · expires {new Date(iv.expires_at).toLocaleDateString()}
+              <div key={iv.id} className="p-3 flex items-center justify-between gap-3" data-testid={`collab-pending-${iv.id}`}>
+                <div className="min-w-0">
+                  <div className="text-sm truncate">{iv.email}</div>
+                  <div className="text-xs text-[var(--wz-text-tertiary)]">
+                    {iv.role} · expires {new Date(iv.expires_at).toLocaleDateString()}
+                  </div>
                 </div>
+                {!readOnly && (
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => resendInvite(iv.id, iv.email)}
+                      data-testid={`collab-invite-resend-${iv.id}`}
+                      className="text-xs text-[var(--wz-text-secondary)] hover:text-[var(--wz-gold)] flex items-center gap-1"
+                      title="Email the invite again"
+                    >
+                      <ArrowsClockwise size={12} /> Resend
+                    </button>
+                    <button
+                      onClick={() => revokeInvite(iv.id, iv.email)}
+                      data-testid={`collab-invite-revoke-${iv.id}`}
+                      className="text-xs text-[var(--wz-danger)] hover:underline flex items-center gap-1"
+                      title="Cancel this pending invite"
+                    >
+                      <X size={12} /> Cancel
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
