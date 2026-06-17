@@ -3687,6 +3687,64 @@ async def participant_check(room: dict, user: dict) -> str:
     raise HTTPException(status_code=403, detail="Not a participant of this Vault")
 
 
+@api_router.post("/listings/{lid}/preview-vault")
+async def open_preview_vault(lid: str, user=Depends(get_current_user)):
+    """Create or reuse a personal "preview Vault" for the current user on a
+    listing they have edit access to. Lets an agent / seller / org teammate
+    QA the full buyer-side Vault experience (AI copilot, DRL, findings, etc.)
+    on their own listing without waiting for a real buyer to engage.
+
+    Security: caller MUST already be on the sell-side workspace of the
+    listing (principal owner, org member, or collaborator editor/owner).
+    No NDA gate is bypassed because the caller is the listing's own party.
+
+    The created room:
+      - buyer_id = current_user.id (so they pass `participant_check` cleanly)
+      - status = "preview" (filtered out of real buyer-facing metrics)
+      - inquiry_id = None
+      - auto-clones the listing data room files
+    Idempotent — one preview vault per (listing, user) pair.
+    """
+    listing = await _listing_for_edit_or_404(lid, user)
+
+    existing = await db.deal_rooms.find_one(
+        {"listing_id": lid, "buyer_id": user["id"], "status": "preview"}, {"_id": 0}
+    )
+    if existing:
+        return existing
+
+    room = {
+        "id": str(uuid.uuid4()),
+        "inquiry_id": None,
+        "listing_id": lid,
+        "listing_name": listing.get("company_name"),
+        "sector": listing.get("sector"),
+        "buyer_id": user["id"],
+        "buyer_name": user.get("name"),
+        "buyer_org": user.get("organization"),
+        "seller_id": listing.get("seller_id"),
+        "seller_name": listing.get("seller_name"),
+        "seller_org": listing.get("seller_org"),
+        "status": "preview",
+        "is_preview": True,
+        "nda_accepted_by_buyer_at": now_utc().isoformat(),  # auto-accept for preview
+        "drl_template_id": None,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.deal_rooms.insert_one(room)
+
+    cloned = 0
+    try:
+        cloned = await _clone_listing_files_into_room(lid, room["id"], user["id"])
+    except Exception as e:
+        logger.warning(f"preview-vault: clone of staged listing files failed: {e}")
+    await log_audit(user["id"], "dealroom.preview.open", room["id"],
+                    {"listing": listing.get("company_name"), "cloned_staged_files": cloned})
+    room.pop("_id", None)
+    return room
+
+
+
 @api_router.get("/drl-templates")
 async def list_drl_templates(user=Depends(get_current_user)):
     return [{"id": t["id"], "name": t["name"], "item_count": len(t["items"])} for t in DRL_TEMPLATES.values()]

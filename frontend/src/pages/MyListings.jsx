@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "../lib/api";
-import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X, UsersThree, Eye, EyeSlash, ShareNetwork, Buildings } from "@phosphor-icons/react";
+import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X, UsersThree, Eye, EyeSlash, ShareNetwork, Buildings, Vault } from "@phosphor-icons/react";
 import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
 import ListingCollaborators from "../components/ListingCollaborators";
 import ShareLinkModal from "../components/ShareLinkModal";
@@ -209,9 +210,26 @@ function Metric({ label, value }) {
 function ListingCard({ listing: l, onRemove, onSetStatus }) {
   const [viewAsPrincipal, setViewAsPrincipal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const navigate = useNavigate();
   const cardBorder = viewAsPrincipal
     ? "wz-card p-6 border-dashed border-2 border-[var(--wz-gold)]"
     : "wz-card p-6";
+
+  const openPreviewVault = async () => {
+    setPreviewBusy(true);
+    try {
+      const r = await api.post(`/listings/${l.id}/preview-vault`);
+      toast.success("Preview Vault ready", {
+        description: "Opened a buyer-side QA Vault. NDA auto-accepted, staged docs cloned.",
+      });
+      navigate(`/app/rooms/${r.data.id}`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Failed to open preview vault");
+    } finally {
+      setPreviewBusy(false);
+    }
+  };
 
   return (
     <div className={cardBorder} data-testid={`listing-card-${l.id}`} data-view-as-principal={viewAsPrincipal}>
@@ -257,7 +275,18 @@ function ListingCard({ listing: l, onRemove, onSetStatus }) {
           <div className="font-display text-2xl tracking-tight">{l.company_name}</div>
           <div className="text-sm text-[var(--wz-text-secondary)] mt-1">{l.headline}</div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          {!viewAsPrincipal && (
+            <button
+              onClick={openPreviewVault}
+              disabled={previewBusy}
+              data-testid={`preview-vault-${l.id}`}
+              title="Open a buyer-side preview Vault to QA copilot, DRL, and findings on this listing"
+              className="text-[10px] font-mono-wz uppercase tracking-widest border border-[var(--wz-border)] text-[var(--wz-text-secondary)] hover:border-[var(--wz-gold)] hover:text-[var(--wz-gold)] px-2 py-1 transition-colors inline-flex items-center gap-1 disabled:opacity-50"
+            >
+              <Vault size={11} /> {previewBusy ? "Opening…" : "Preview as buyer"}
+            </button>
+          )}
           {!viewAsPrincipal && (
             <button
               onClick={() => setShowShareModal(true)}

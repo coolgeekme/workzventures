@@ -1,0 +1,41 @@
+{
+  "summary": "Iter-16 — Validated the Preview Vault feature end-to-end (backend + frontend). Backend pytest /app/backend/tests/test_preview_vault.py: 6/6 PASS covering seller open + persistence (status='preview', is_preview=true), idempotency (same room id on 2nd POST), buyer 403, agent flow on a freshly created listing, and the GET /api/drl-templates regression (HTTP 200). Frontend Playwright run on the public preview URL: as seller (mira) the /app/listings page shows 4 preview-vault-{lid} buttons; clicking one POSTs /api/listings/{lid}/preview-vault and navigates to /app/rooms/{roomId}, where the preview-vault-banner is rendered and the room status pill shows 'preview'. A second click on the same listing routes to the SAME room URL (frontend-level idempotency verified). On /app/rooms the preview-badge-{roomId} pill is present. As buyer (alex) the /app/listings page renders with no preview-vault buttons (buyer can't edit listings). All review-request acceptance criteria are met.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Anywhere (global)", "issues": ["Console SVG/HTML errors observed across pages: (a) <img> elements rendered with src=\"\" causing the browser to re-download the document; (b) several <path> / <g> attributes use raw CSS calc() / translate('50%, 50%') values which are invalid in SVG attribute syntax (Expected number, 'M calc(100% - 40px…' etc.). These are pre-existing decorative-svg issues unrelated to Preview Vault, but worth cleaning up."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_preview_vault.py",
+    "/app/test_reports/pytest/iter16_preview_vault.xml"
+  ],
+  "action_items": [
+    "(Optional, pre-existing) Sanitize the empty-src <img> tags and the SVG path/transform values that contain CSS calc()/% strings — they spam the console with errors but do not block functionality."
+  ],
+  "critical_code_review_comments": [
+    "POST /api/listings/{lid}/preview-vault (server.py:3690) correctly delegates to _listing_for_edit_or_404 for the edit-permission gate, so buyer 403 is enforced consistently with the rest of the listing-edit endpoints (DRY).",
+    "Idempotency is implemented as a simple find_one({listing_id, buyer_id, status:'preview'}) before insert — clean and correct. The (listing, user) pair is the natural key and no race condition is meaningful at human click cadence.",
+    "_clone_listing_files_into_room is wrapped in try/except with a logger.warning, so a clone failure (e.g. zero staged files, GridFS hiccup) never blocks the room creation — good defensive coding. The audit log records cloned_staged_files count for traceability.",
+    "auto-NDA-accept for preview vaults is set via nda_accepted_by_buyer_at = now_utc().isoformat(); this lets the seller pass participant_check and skip the NDA gate cleanly, which is required for the QA flow.",
+    "GET /api/drl-templates decorator is back at line 3748 and returns HTTP 200 — regression closed.",
+    "Frontend openPreviewVault (MyListings.jsx:219) correctly handles loading state (previewBusy) + toast on success/error + navigate; the button is disabled while in-flight to prevent double-submits.",
+    "DealRoomDetail.jsx renders the preview-vault-banner conditional on room.is_preview, so non-preview rooms don't accidentally show it. The status pill already has a 'pill-amber' branch for status==='preview'.",
+    "DealRooms.jsx renders the preview-badge-{r.id} pill conditional on r.is_preview, so non-preview rooms aren't affected — matches the spec."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_preview_vault.py (new, 6 tests, ~140 LOC)"
+  ],
+  "success_rate": {"backend": "100% (6/6)", "frontend": "100% on the seller + buyer flows tested"},
+  "test_credentials": "Seller mira@workz.example.com / WorkzPass123!  ·  Buyer alex@workz.example.com / WorkzPass123!  ·  Agent agent@workz.example.com / WorkzPass123!",
+  "seed_data_creation": "Test created and deleted one transient listing 'TEST_PreviewVault_Agent' under the agent account. Preview vaults created during testing remain on the seller's account (one for the first seed listing) — they are flagged is_preview=true and is_demo=true and will be reaped by the 48h demo sweeper.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Reusable suite: REACT_APP_BACKEND_URL=https://buyer-intel-lab.preview.emergentagent.com pytest /app/backend/tests/test_preview_vault.py -v  (~2.5s, 6 tests). Key facts: (1) deal-room endpoints are /api/deal-rooms, NOT /api/rooms (the FRONTEND route is /app/rooms/:id but the API is /api/deal-rooms/:id); (2) preview vault is idempotent on (listing_id, buyer_id, status='preview') — second POST returns the existing room dict, not 409; (3) the test_listings_for_agent fixture creates a NEW listing via POST /api/listings before opening the preview vault (agent doesn't have seed listings); (4) login is via POST /api/auth/login with {email, password}, JWT returned in 'token'; (5) the login page form has top-level email/password inputs and a 'Enter terminal' submit button; demo-account buttons live below.",
+  "rca of the issue": "N/A — no functional bugs found. Feature is correctly wired end-to-end. Backend gate (_listing_for_edit_or_404) blocks buyer at 403, idempotency holds, banner + status pill + rooms-list badge all render under the documented data-testids."
+}

@@ -216,11 +216,28 @@ export default function DealRoomDetail() {
           >
             <Certificate size={14} /> <span className="hidden sm:inline">Provenance certificate</span><span className="sm:hidden">Certificate</span>
           </button>
-          <span className={`pill ${room.status === "active" ? "pill-positive" : room.status === "closed" ? "pill-gold" : "pill-amber"}`}>
+          <span className={`pill ${room.status === "active" ? "pill-positive" : room.status === "closed" ? "pill-gold" : room.status === "preview" ? "pill-amber" : "pill-amber"}`}>
             {room.status.replace("_", " ")}
           </span>
         </div>
       </div>
+
+      {/* Preview Vault banner — agent / seller QA mode */}
+      {room.is_preview && (
+        <div
+          data-testid="preview-vault-banner"
+          className="mb-6 px-4 py-3 border-2 border-dashed border-[var(--wz-gold)] bg-[var(--wz-gold)]/10 text-xs flex items-start gap-3"
+        >
+          <ShieldCheck size={18} className="text-[var(--wz-gold)] shrink-0 mt-0.5" />
+          <div className="leading-relaxed text-[var(--wz-text-secondary)]">
+            <strong className="text-[var(--wz-gold)]">Preview Vault.</strong>{" "}
+            You&apos;re viewing this listing&apos;s Vault as a buyer would — NDA auto-accepted,
+            staged docs cloned in. Use this to QA the buyer experience (Copilot, DRL,
+            findings) before a real buyer engages. Activity here is flagged{" "}
+            <code className="font-mono-wz">is_preview</code> and excluded from real deal metrics.
+          </div>
+        </div>
+      )}
 
       {/* NDA gate */}
       {room.status === "pending_nda" && isBuyer && (

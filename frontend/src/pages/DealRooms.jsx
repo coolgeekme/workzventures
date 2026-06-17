@@ -58,9 +58,21 @@ export default function DealRooms() {
                   {isSeller ? `buyer · ${r.buyer_name} (${r.buyer_org})` : `seller · ${r.seller_name} (${r.seller_org})`}
                 </div>
               </div>
-              <span className={`pill ${r.status === "active" ? "pill-positive" : r.status === "closed" ? "pill-gold" : "pill-amber"}`}>
-                {r.status.replace("_", " ")}
-              </span>
+              <div className="flex flex-col items-end gap-1 shrink-0">
+                <span className={`pill ${r.status === "active" ? "pill-positive" : r.status === "closed" ? "pill-gold" : "pill-amber"}`}>
+                  {r.status.replace("_", " ")}
+                </span>
+                {r.is_preview && (
+                  <span
+                    className="pill"
+                    style={{ borderColor: "var(--wz-gold)", color: "var(--wz-gold)" }}
+                    data-testid={`preview-badge-${r.id}`}
+                    title="Preview Vault — created by the sell-side workspace to QA buyer flow"
+                  >
+                    preview
+                  </span>
+                )}
+              </div>
               <button
                 onClick={(e) => remove(e, r)}
                 data-testid={`delete-room-${r.id}`}
