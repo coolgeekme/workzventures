@@ -356,6 +356,13 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Deployment runbook** committed to `/app/memory/SUBDOMAIN_RUNBOOK.md` — DNS record, three frontend env vars (`REACT_APP_BACKEND_URL`, `REACT_APP_APP_URL`, `REACT_APP_MARKETING_URL`), one backend env var (`CORS_ORIGINS`), redeploy, verify.
 - No new pytests — the split is a deployment / env-var change, not a backend feature. All 19 regression tests still pass.
 
+## What's been implemented (2026-06-17 — iter-16 Preview Vault frontend wiring)
+- **`MyListings.jsx`** — added a `Preview as buyer` button (data-testid `preview-vault-{lid}`) next to "Share" + "View as principal" on every listing card. Click POSTs `/api/listings/{lid}/preview-vault`, shows a success toast, then `navigate("/app/rooms/{roomId}")`. Disabled during in-flight. Hidden when card is in "View as principal" mode.
+- **`DealRoomDetail.jsx`** — added a gold dashed `preview-vault-banner` that renders when `room.is_preview === true`, explaining the QA mode + flagging that activity is excluded from real deal metrics. Status pill now branches on `status === "preview"`.
+- **`DealRooms.jsx`** — added a `preview-badge-{rid}` pill next to the status pill so the rooms list visually distinguishes preview vaults from real ones.
+- **Regression fix**: restored the `@api_router.get("/drl-templates")` decorator (server.py:3747) — it was accidentally dropped in iter-15 when the preview-vault endpoint was added above it, causing a 404 in the room detail UI.
+- **Tested** (iter-16): backend pytest `tests/test_preview_vault.py` 6/6 pass — seller open, persistence, idempotency, buyer 403, agent flow on fresh listing, drl-templates regression. Frontend Playwright run confirms 4 preview-vault buttons render for the seller, click navigates to `/app/rooms/{id}`, banner + preview status pill render, repeat click is idempotent, buyer sees no buttons.
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)
