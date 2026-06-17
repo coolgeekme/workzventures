@@ -4,7 +4,6 @@ import { toast } from "sonner";
 import { Buildings, UserPlus, Trash, ArrowsClockwise, Plus, Copy, EnvelopeSimple, CheckCircle } from "@phosphor-icons/react";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import Layout from "../components/Layout";
 
 export default function OrgManagement() {
   const { user } = useAuth();
@@ -147,8 +146,7 @@ export default function OrgManagement() {
   const isAdmin = activeOrg?.my_role === "org_admin" || user?.role === "admin";
 
   return (
-    <Layout>
-      <div className="max-w-5xl mx-auto p-4 sm:p-6 space-y-6" data-testid="org-page">
+    <div className="max-w-5xl mx-auto p-4 sm:p-6 space-y-6" data-testid="org-page">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
             <div className="overline mb-1">Workspace</div>
@@ -421,6 +419,5 @@ export default function OrgManagement() {
           </>
         )}
       </div>
-    </Layout>
   );
 }
