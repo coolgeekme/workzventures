@@ -1178,7 +1178,60 @@ async def admin_create_invite(body: AdminInviteRequest, request: Request, user=D
 
     doc.pop("_id", None)
     doc["accept_url"] = accept_url
+
+    # Fire the actual invitation email so the recipient doesn't have to be
+    # hand-walked the URL. Best-effort; the API response still succeeds even
+    # if Resend rejects (logged in mailer).
+    role_label = {"buyer": "Buyer", "seller": "Seller", "agent": "Agent (broker / advisor)", "admin": "Admin"}.get(body.role, body.role)
+    org_line = f" at <strong>{body.organization}</strong>" if body.organization else ""
+    name_line = f" Hi {body.name},<br><br>" if body.name else " Hi,<br><br>"
+    html = f"""
+    <p>{name_line}
+    <strong>{user.get('name') or user.get('email')}</strong> invited you to join
+    <strong>NextCapOS</strong>{org_line} as a <strong>{role_label}</strong>.</p>
+    <p><a href="{accept_url}">Accept the invitation &rsaquo;</a></p>
+    <p style="margin-top:24px;font-size:12px;color:#999;">
+      This invite expires {expires.strftime('%b %d, %Y at %H:%M UTC')}. If you weren't
+      expecting it, you can safely ignore this email.
+    </p>
+    """
+    asyncio.create_task(send_email(
+        email_norm,
+        f"NextCapOS · you're invited to join{(' ' + body.organization) if body.organization else ''}",
+        html,
+        reply_to=user.get("email"),
+    ))
     return doc
+
+
+@api_router.post("/admin/invites/{iid}/resend")
+async def admin_resend_invite(iid: str, request: Request, user=Depends(get_current_user)):
+    """Re-fire the invitation email for an existing pending platform invite.
+    Useful after fixing Resend config — the original token keeps working."""
+    _admin_only(user)
+    inv = await db.user_invites.find_one({"id": iid, "status": "pending"}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invite not found or no longer pending")
+    origin = request.headers.get("origin") or request.headers.get("referer") or ""
+    base = origin.rstrip("/").rsplit("/", 1)[0] if "/app/" in origin else origin.rstrip("/")
+    accept_url = f"{base}/accept-invite?token={inv['token']}" if base else f"/accept-invite?token={inv['token']}"
+    role_label = {"buyer": "Buyer", "seller": "Seller", "agent": "Agent (broker / advisor)", "admin": "Admin"}.get(inv.get("role", ""), inv.get("role", ""))
+    org_line = f" at <strong>{inv['organization']}</strong>" if inv.get("organization") else ""
+    name_line = f" Hi {inv['name']},<br><br>" if inv.get("name") else " Hi,<br><br>"
+    html = f"""
+    <p>{name_line}
+    <strong>{user.get('name') or user.get('email')}</strong> invited you to join
+    <strong>NextCapOS</strong>{org_line} as a <strong>{role_label}</strong>.</p>
+    <p><a href="{accept_url}">Accept the invitation &rsaquo;</a></p>
+    """
+    asyncio.create_task(send_email(
+        inv["email"],
+        f"NextCapOS · you're invited to join{(' ' + inv['organization']) if inv.get('organization') else ''} (resent)",
+        html,
+        reply_to=user.get("email"),
+    ))
+    await log_audit(user["id"], "admin.invite.resend", iid, {"email": inv["email"]})
+    return {"ok": True, "email": inv["email"]}
 
 
 @api_router.delete("/admin/invites/{iid}")

@@ -70,6 +70,15 @@ export default function AdminUsers() {
     }
   };
 
+  const resendInvite = async (inv) => {
+    try {
+      const r = await api.post(`/admin/invites/${inv.id}/resend`);
+      toast.success(`Invitation email re-sent to ${r.data.email}`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Resend failed");
+    }
+  };
+
   const approve = async (u) => {
     try {
       await api.post(`/admin/users/${u.id}/approve`);
@@ -270,13 +279,23 @@ export default function AdminUsers() {
                   <td className="px-4 py-3 text-[var(--wz-text-tertiary)]">{relativeTime(inv.expires_at)}</td>
                   <td className="px-4 py-3 text-right">
                     {inv.status === "pending" && (
-                      <button
-                        data-testid={`revoke-${inv.id}`}
-                        onClick={() => revokeInvite(inv)}
-                        className="wz-btn wz-btn-ghost text-[11px] text-[var(--wz-negative)]"
-                      >
-                        Revoke
-                      </button>
+                      <div className="inline-flex gap-2">
+                        <button
+                          data-testid={`resend-${inv.id}`}
+                          onClick={() => resendInvite(inv)}
+                          className="wz-btn wz-btn-ghost text-[11px] text-[var(--wz-gold)]"
+                          title="Re-send the invitation email"
+                        >
+                          Resend email
+                        </button>
+                        <button
+                          data-testid={`revoke-${inv.id}`}
+                          onClick={() => revokeInvite(inv)}
+                          className="wz-btn wz-btn-ghost text-[11px] text-[var(--wz-negative)]"
+                        >
+                          Revoke
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>
