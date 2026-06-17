@@ -10,6 +10,7 @@ import { useAuth } from "../lib/auth";
 const ROLE_OPTIONS = [
   { id: "buyer", label: "Buyer" },
   { id: "seller", label: "Seller" },
+  { id: "agent", label: "Agent (broker / advisor — both sides)" },
   { id: "admin", label: "Admin" },
 ];
 
@@ -178,7 +179,7 @@ export default function AdminUsers() {
                     <div className="text-[10px] text-[var(--wz-text-tertiary)]">{u.email}</div>
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`pill ${u.role === "admin" ? "pill-gold" : u.role === "seller" ? "pill-positive" : "pill-amber"}`}>
+                    <span className={`pill ${u.role === "admin" ? "pill-gold" : u.role === "agent" ? "pill-gold" : u.role === "seller" ? "pill-positive" : "pill-amber"}`}>
                       {u.role}
                     </span>
                   </td>
