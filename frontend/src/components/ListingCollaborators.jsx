@@ -94,15 +94,20 @@ export default function ListingCollaborators({ listingId, sellerId, currentAcces
       onChange?.();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Cancel failed");
+      await load(); // refresh to reflect server truth if the row was already gone
     }
   };
 
+  const [resendingId, setResendingId] = useState(null);
   const resendInvite = async (inviteId, email) => {
+    setResendingId(inviteId);
     try {
       await api.post(`/listings/${listingId}/collaborators/${inviteId}/resend`);
       toast.success(`Invite re-sent to ${email}`);
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Resend failed");
+    } finally {
+      setResendingId(null);
     }
   };
 
@@ -209,11 +214,12 @@ export default function ListingCollaborators({ listingId, sellerId, currentAcces
                   <div className="flex items-center gap-2 shrink-0">
                     <button
                       onClick={() => resendInvite(iv.id, iv.email)}
+                      disabled={resendingId === iv.id}
                       data-testid={`collab-invite-resend-${iv.id}`}
-                      className="text-xs text-[var(--wz-text-secondary)] hover:text-[var(--wz-gold)] flex items-center gap-1"
+                      className="text-xs text-[var(--wz-text-secondary)] hover:text-[var(--wz-gold)] flex items-center gap-1 disabled:opacity-50"
                       title="Email the invite again"
                     >
-                      <ArrowsClockwise size={12} /> Resend
+                      <ArrowsClockwise size={12} /> {resendingId === iv.id ? "Sending…" : "Resend"}
                     </button>
                     <button
                       onClick={() => revokeInvite(iv.id, iv.email)}

@@ -378,6 +378,18 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
   - `AcceptCollabInvite.jsx` — when unauthed, renders BOTH "Sign in to accept" AND a new "Don't have an account? Create one" CTA that hands off to `/register?invite_token=…&invite_kind=…`.
 - **Tested** (iter-17): backend pytest `tests/test_invite_register.py` 6/6 pass (listing fast path + active flow + collaborator membership; mismatched-email rejection; no-invite still pending; expired invite rejection; already-accepted invite rejection; org-invite fast path + org_membership). Frontend Playwright 5/5 pass (query-string preserved on login→register; invite banner + email lock + hidden org-choice; full E2E register → auto-login → /app/listings; AcceptCollabInvite has both signin + register CTAs; invalid token surfaces error + form still usable).
 
+## What's been implemented (2026-06-17 — iter-18 Collaborator role-edit + invite revoke/resend)
+- **Problem solved**: Agents/Sellers could ADD and REMOVE collaborators, but had no way to change an existing collaborator's role, cancel a pending invite, or resend it from the listing UI.
+- **Backend** (`server.py`):
+  - `PATCH /api/listings/{lid}/collaborators/{member_id}` — change collaborator role (Literal: owner / editor / viewer). Principal owner's role is immutable (returns HTTP 400). Unknown role → 422 (pydantic). Unknown member → 404. Reuses `_listing_for_edit_or_404` so only listing editors/owners can mutate.
+  - `DELETE /api/listings/{lid}/collaborators/invites/{iid}` — revoke a pending invite. Already-accepted invites return HTTP 400 with "remove the collaborator instead" guidance. Idempotent: re-revoke returns 404. Filters by both `id` AND `listing_id` so a malicious editor on listing A can't revoke listing B's invite. Audit logged as `listing.invite.revoke`.
+- **Frontend** (`ListingCollaborators.jsx`):
+  - Per-row role `<select>` (Owner/Editor/Viewer) for every non-principal collaborator (data-testid `collab-role-{uid}`). On change → PATCH + toast; on error → reload so dropdown snaps back to server truth.
+  - Principal owner row shows a fixed `· principal` pill instead of a select, and no Remove button (renders only if the principal also appears in `collaborators[]`).
+  - Each pending invite row now exposes `Resend` (data-testid `collab-invite-resend-{iid}`) with in-flight lockout to prevent double-sends, and `Cancel` (data-testid `collab-invite-revoke-{iid}`) with a confirm prompt.
+  - `readOnly` mode (View-as-principal preview) suppresses all role selects, remove buttons, and resend/revoke buttons.
+- **Tested** (iter-18): backend pytest `tests/test_collab_role_revoke.py` 9/9 pass + frontend Playwright 4/4 pass.
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)
