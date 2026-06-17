@@ -363,6 +363,21 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Regression fix**: restored the `@api_router.get("/drl-templates")` decorator (server.py:3747) — it was accidentally dropped in iter-15 when the preview-vault endpoint was added above it, causing a 404 in the room detail UI.
 - **Tested** (iter-16): backend pytest `tests/test_preview_vault.py` 6/6 pass — seller open, persistence, idempotency, buyer 403, agent flow on fresh listing, drl-templates regression. Frontend Playwright run confirms 4 preview-vault buttons render for the seller, click navigates to `/app/rooms/{id}`, banner + preview status pill render, repeat click is idempotent, buyer sees no buttons.
 
+## What's been implemented (2026-06-17 — iter-17 Invite-driven registration fast path)
+- **Problem solved**: Listing/Org collaborator invitees who weren't already registered hit a UX dead-end — the invite link bounced them to `/login` → "Request access" → `/register` and the invite token from the URL was lost mid-bounce. The Register form's "I have an invite token" field was ORG-only anyway, and even after registration the account sat in the admin-approval queue.
+- **Backend** (`server.py`):
+  - `RegisterRequest` now accepts an optional `listing_invite_token` field.
+  - `POST /api/auth/register` validates any supplied invite token (email match, not expired, not used) BEFORE creating the user. If valid, the account is created with `status="active"`, the invite is accepted in-line (collaborator pushed onto listing / org_membership inserted), and the response returns `{token, user, listing_id, org_id}` like the login endpoint — no admin approval needed.
+  - Mismatched-email / expired / already-used invites return HTTP 400 with a clear message and DON'T create the user.
+  - No-invite registrations still go through the existing `status="pending"` admin-approval queue.
+  - Listing and org invite emails (both new + resend variants) now include a "Create your account" link to `/register?invite_token=…&invite_kind=…`, plus the raw token in a monospace block as a manual fallback.
+- **Frontend** (`Login.jsx`, `Register.jsx`, `AcceptCollabInvite.jsx`):
+  - `Login.jsx` — "Request access" link preserves the full `location.search` so `?next=/accept-listing-invite?token=XYZ` survives the bounce to register.
+  - `Register.jsx` — reads `invite_token` + `invite_kind` from URL, fetches the public invite preview, pre-fills email (read-only + "locked to invite" hint), shows a banner with inviter + listing/org name + role, hides the manual org-choice picker, posts the token in the register body, and (on `status="active"`) calls `setSession()` + redirects to `/app/listings` (or `/app/org`).
+  - `Register.jsx` — invalid token surfaces `register-invite-error` and falls back to a normal register form.
+  - `AcceptCollabInvite.jsx` — when unauthed, renders BOTH "Sign in to accept" AND a new "Don't have an account? Create one" CTA that hands off to `/register?invite_token=…&invite_kind=…`.
+- **Tested** (iter-17): backend pytest `tests/test_invite_register.py` 6/6 pass (listing fast path + active flow + collaborator membership; mismatched-email rejection; no-invite still pending; expired invite rejection; already-accepted invite rejection; org-invite fast path + org_membership). Frontend Playwright 5/5 pass (query-string preserved on login→register; invite banner + email lock + hidden org-choice; full E2E register → auto-login → /app/listings; AcceptCollabInvite has both signin + register CTAs; invalid token surfaces error + form still usable).
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)
