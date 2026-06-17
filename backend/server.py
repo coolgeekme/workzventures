@@ -1343,7 +1343,9 @@ async def list_deals(user=Depends(get_current_user)):
 @api_router.get("/listings")
 async def my_listings(user=Depends(get_current_user)):
     """Workspace view — listings I personally own, plus listings owned by
-    orgs I'm a member of, plus listings I'm an explicit collaborator on."""
+    orgs I'm a member of, plus listings I'm an explicit collaborator on.
+    Each row is decorated with `workspace_scope` ('mine' | 'org' | 'shared')
+    and (if applicable) `org_name` so the UI can filter and badge them."""
     org_ids = await _get_user_org_ids(user)
     or_clauses: List[Dict[str, Any]] = [
         {"seller_id": user["id"]},
@@ -1354,6 +1356,22 @@ async def my_listings(user=Depends(get_current_user)):
     items = await db.listings.find(
         {"$or": or_clauses}, {"_id": 0}
     ).sort("created_at", -1).to_list(200)
+    # Decorate
+    org_names = {}
+    if org_ids:
+        org_names = {
+            o["id"]: o["name"] for o in await db.organizations.find(
+                {"id": {"$in": org_ids}}, {"_id": 0, "id": 1, "name": 1}
+            ).to_list(200)
+        }
+    for it in items:
+        if it.get("seller_id") == user["id"]:
+            it["workspace_scope"] = "mine"
+        elif it.get("org_id") and it["org_id"] in org_names:
+            it["workspace_scope"] = "org"
+            it["org_name"] = org_names[it["org_id"]]
+        else:
+            it["workspace_scope"] = "shared"
     return items
 
 
@@ -1963,15 +1981,48 @@ async def inquire(lid: str, body: InquiryCreate, user=Depends(get_current_user))
 
 @api_router.get("/inquiries")
 async def list_inquiries(user=Depends(get_current_user)):
-    """Sellers see inbound; buyers see outbound; admin sees all."""
+    """Sellers + agents see all inquiries on listings in their workspace
+    (personal + org-owned + listings they collaborate on). Buyers see
+    outbound. Admin sees all."""
     role = user.get("role", "buyer")
-    if role == "seller":
-        q = {"seller_id": user["id"]}
+    if role in ("seller", "agent"):
+        listing_ids, _ = await _user_workspace_listing_ids(user)
+        if not listing_ids:
+            return []
+        q = {"listing_id": {"$in": listing_ids}}
     elif role == "buyer":
         q = {"buyer_id": user["id"]}
     else:
         q = {}
     items = await db.inquiries.find({**q, "deleted_at": {"$exists": False}}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    # Decorate each inquiry with the scope so the UI can show "via [Org]" / "team"
+    if items and role in ("seller", "agent"):
+        my_listings_personal = set(
+            r["id"] for r in await db.listings.find({"seller_id": user["id"]}, {"_id": 0, "id": 1}).to_list(500)
+        )
+        listings_by_id = {
+            r["id"]: r for r in await db.listings.find(
+                {"id": {"$in": [i["listing_id"] for i in items]}},
+                {"_id": 0, "id": 1, "org_id": 1, "seller_id": 1, "company_name": 1},
+            ).to_list(500)
+        }
+        org_name_by_id = {
+            o["id"]: o["name"] for o in await db.organizations.find(
+                {"id": {"$in": [l.get("org_id") for l in listings_by_id.values() if l.get("org_id")]}},
+                {"_id": 0, "id": 1, "name": 1},
+            ).to_list(200)
+        }
+        for it in items:
+            lst = listings_by_id.get(it["listing_id"], {})
+            if it["listing_id"] in my_listings_personal:
+                it["workspace_scope"] = "mine"
+            elif lst.get("org_id"):
+                it["workspace_scope"] = "org"
+                it["workspace_org_name"] = org_name_by_id.get(lst["org_id"])
+                it["workspace_owner_id"] = lst.get("seller_id")
+            else:
+                it["workspace_scope"] = "shared"
+                it["workspace_owner_id"] = lst.get("seller_id")
     return items
 
 
@@ -1980,19 +2031,22 @@ async def update_inquiry(iid: str, body: dict, user=Depends(get_current_user)):
     new_status = body.get("status")
     if new_status not in ("new", "reviewing", "engaged", "passed"):
         raise HTTPException(status_code=400, detail="Invalid status")
-    res = await db.inquiries.update_one(
-        {"id": iid, "seller_id": user["id"]},
-        {"$set": {"status": new_status}},
-    )
-    if res.matched_count == 0:
+    # Fetch first so we can check workspace permission (not strict seller_id ownership)
+    inq = await db.inquiries.find_one({"id": iid, "deleted_at": {"$exists": False}}, {"_id": 0})
+    if not inq:
         raise HTTPException(status_code=404, detail="Inquiry not found")
+    if user.get("role") != "admin":
+        ws_listings, _ = await _user_workspace_listing_ids(user)
+        if inq.get("listing_id") not in ws_listings:
+            raise HTTPException(status_code=403, detail="Not authorized")
+    await db.inquiries.update_one({"id": iid}, {"$set": {"status": new_status}})
     await log_audit(user["id"], "inquiry.status", iid, {"status": new_status})
     # Bitcoin-anchored proof of status change
     if new_status in ("engaged", "passed"):
         asyncio.create_task(notarize_event(
             kind="inquiry.status",
             target_id=iid,
-            payload={"inquiry_id": iid, "status": new_status, "seller_id": user["id"], "ts": now_utc().isoformat()},
+            payload={"inquiry_id": iid, "status": new_status, "actor_id": user["id"], "ts": now_utc().isoformat()},
             owner_user_id=user["id"],
             label=f"Inquiry → {new_status}",
         ))
@@ -3553,12 +3607,17 @@ async def list_drl_templates(user=Depends(get_current_user)):
 
 @api_router.post("/inquiries/{inquiry_id}/open-room")
 async def open_deal_room(inquiry_id: str, user=Depends(get_current_user)):
-    """Seller opens a Vault against an engaged inquiry."""
+    """Seller (or any teammate in the listing's workspace) opens a Vault
+    against an engaged inquiry."""
     if user.get("role") not in ("seller", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Sellers/admin only")
-    inquiry = await db.inquiries.find_one({"id": inquiry_id, "seller_id": user["id"]}, {"_id": 0})
+    inquiry = await db.inquiries.find_one({"id": inquiry_id}, {"_id": 0})
     if not inquiry:
         raise HTTPException(status_code=404, detail="Inquiry not found")
+    if user.get("role") != "admin":
+        ws_listings, _ = await _user_workspace_listing_ids(user)
+        if inquiry.get("listing_id") not in ws_listings:
+            raise HTTPException(status_code=403, detail="Not authorized on this inquiry")
     if inquiry.get("status") != "engaged":
         raise HTTPException(status_code=400, detail="Inquiry must be 'engaged' before opening the Vault")
 
@@ -3604,6 +3663,14 @@ async def open_deal_room(inquiry_id: str, user=Depends(get_current_user)):
 async def list_deal_rooms(user=Depends(get_current_user)):
     if user.get("role") == "admin":
         q = {}
+    elif user.get("role") in ("seller", "agent"):
+        # Sellers/agents see rooms tied to any listing in their workspace
+        ws_listings, _ = await _user_workspace_listing_ids(user)
+        q = {"$or": [
+            {"buyer_id": user["id"]},
+            {"seller_id": user["id"]},
+            {"listing_id": {"$in": ws_listings}},
+        ]}
     else:
         q = {"$or": [{"buyer_id": user["id"]}, {"seller_id": user["id"]}]}
     rooms = await db.deal_rooms.find({**q, "deleted_at": {"$exists": False}}, {"_id": 0}).sort("created_at", -1).to_list(200)
@@ -4551,9 +4618,14 @@ async def _inquiry_participant(iid: str, user: dict) -> dict:
         raise HTTPException(status_code=404, detail="Inquiry not found")
     if user.get("role") == "admin":
         return inq
-    if user["id"] not in (inq.get("buyer_id"), inq.get("seller_id")):
-        raise HTTPException(status_code=403, detail="Not a participant of this inquiry")
-    return inq
+    if user["id"] in (inq.get("buyer_id"), inq.get("seller_id")):
+        return inq
+    # Org teammates / listing collaborators on the seller side count as participants
+    if user.get("role") in ("seller", "agent"):
+        ws_listings, _ = await _user_workspace_listing_ids(user)
+        if inq.get("listing_id") in ws_listings:
+            return inq
+    raise HTTPException(status_code=403, detail="Not a participant of this inquiry")
 
 
 @api_router.get("/inquiries/{iid}/messages")
@@ -6437,6 +6509,24 @@ async def public_listing_preview(token: str):
             "label": link.get("label"),
         },
     }
+
+
+async def _user_workspace_listing_ids(user: dict) -> Tuple[List[str], List[str]]:
+    """Return (seller_workspace_listing_ids, org_ids) — listings the user
+    can act on as seller-side: personal + org-owned + collaborator (editor/owner).
+
+    Used to widen access to inquiries, vaults, and listing actions so org
+    teammates can pick up where each other left off without re-assigning.
+    """
+    org_ids = await _get_user_org_ids(user)
+    or_clauses: List[Dict[str, Any]] = [
+        {"seller_id": user["id"]},
+        {"collaborators": {"$elemMatch": {"user_id": user["id"], "role": {"$in": ["owner", "editor"]}}}},
+    ]
+    if org_ids:
+        or_clauses.append({"org_id": {"$in": org_ids}})
+    rows = await db.listings.find({"$or": or_clauses}, {"_id": 0, "id": 1}).to_list(500)
+    return [r["id"] for r in rows], org_ids
 
 
 # ---- Cross-cutting: pending invites for the current user ------------------

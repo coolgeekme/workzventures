@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
-import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X, UsersThree, Eye, EyeSlash, ShareNetwork } from "@phosphor-icons/react";
+import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X, UsersThree, Eye, EyeSlash, ShareNetwork, Buildings } from "@phosphor-icons/react";
 import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
 import ListingCollaborators from "../components/ListingCollaborators";
 import ShareLinkModal from "../components/ShareLinkModal";
@@ -23,9 +23,19 @@ export default function MyListings() {
   const [listings, setListings] = useState([]);
   const [show, setShow] = useState(false);
   const [form, setForm] = useState(emptyForm);
+  const [scopeFilter, setScopeFilter] = useState("all"); // all | mine | org | shared
 
   const load = () => api.get("/listings").then((r) => setListings(r.data));
   useEffect(() => { load(); }, []);
+
+  const filteredListings = scopeFilter === "all"
+    ? listings
+    : listings.filter((l) => (l.workspace_scope || "mine") === scopeFilter);
+  const counts = listings.reduce((acc, l) => {
+    const s = l.workspace_scope || "mine";
+    acc[s] = (acc[s] || 0) + 1;
+    return acc;
+  }, {});
 
   const submit = async (e) => {
     e.preventDefault();
@@ -116,10 +126,39 @@ export default function MyListings() {
         </form>
       )}
 
+      {listings.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 mb-5" data-testid="listing-scope-filter">
+          {[
+            ["all", "All", listings.length],
+            ["mine", "Mine", counts.mine || 0],
+            ["org", "Org", counts.org || 0],
+            ["shared", "Shared with me", counts.shared || 0],
+          ].map(([key, label, n]) => (
+            <button
+              key={key}
+              onClick={() => setScopeFilter(key)}
+              data-testid={`filter-${key}`}
+              className={`text-[10px] font-mono-wz uppercase tracking-widest px-3 py-1.5 border transition-colors ${
+                scopeFilter === key
+                  ? "border-[var(--wz-gold)] text-[var(--wz-gold)] bg-[var(--wz-gold)]/10"
+                  : "border-[var(--wz-border)] text-[var(--wz-text-secondary)] hover:border-[var(--wz-text-tertiary)]"
+              }`}
+            >
+              {label} · {n}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6" data-testid="listing-grid">
-        {listings.map((l) => (
+        {filteredListings.map((l) => (
           <ListingCard key={l.id} listing={l} onRemove={remove} onSetStatus={setStatus} />
         ))}
+        {filteredListings.length === 0 && listings.length > 0 && (
+          <div className="text-xs text-[var(--wz-text-tertiary)] col-span-full" data-testid="listing-empty-filter">
+            No listings match this filter.
+          </div>
+        )}
         {listings.length === 0 && (
           <div className="wz-card p-10 text-center text-sm text-[var(--wz-text-tertiary)] md:col-span-2">
             No listings yet — create your first one above.
@@ -191,10 +230,29 @@ function ListingCard({ listing: l, onRemove, onSetStatus }) {
 
       <div className="flex justify-between items-start gap-3">
         <div className="flex-1">
-          <div className="flex items-center gap-2 mb-2">
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
             <Tag size={14} className="text-[var(--wz-amber)]" />
             <span className={`pill ${l.status === "live" ? "pill-positive" : l.status === "under_loi" ? "pill-amber" : "pill-gold"}`}>{l.status}</span>
             <span className="pill pill-gold">{l.sector}</span>
+            {l.workspace_scope === "org" && l.org_name && (
+              <span
+                className="pill pill-amber inline-flex items-center gap-1"
+                title={`Owned by ${l.org_name}`}
+                data-testid={`scope-badge-${l.id}`}
+              >
+                <Buildings size={10} /> {l.org_name}
+              </span>
+            )}
+            {l.workspace_scope === "shared" && (
+              <span
+                className="pill"
+                style={{ borderColor: "var(--wz-text-tertiary)", color: "var(--wz-text-tertiary)" }}
+                title="Shared with you as a collaborator"
+                data-testid={`scope-badge-${l.id}`}
+              >
+                Shared with me
+              </span>
+            )}
           </div>
           <div className="font-display text-2xl tracking-tight">{l.company_name}</div>
           <div className="text-sm text-[var(--wz-text-secondary)] mt-1">{l.headline}</div>

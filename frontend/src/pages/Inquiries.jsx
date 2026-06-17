@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { useAgentMode } from "../lib/agentMode";
 import {
   Buildings, FileText, Trash, CaretDown, CaretUp, ChatCircleDots,
   PaperPlaneTilt, Paperclip, Info,
@@ -22,7 +23,9 @@ export default function Inquiries() {
   const [items, setItems] = useState([]);
   const [pushing, setPushing] = useState(null);
   const [openThread, setOpenThread] = useState(null);
-  const isSeller = user?.role === "seller";
+  // Agents in seller mode also see/manage inbound inquiries the same way sellers do.
+  const [agentMode] = useAgentMode();
+  const isSeller = user?.role === "seller" || (user?.role === "agent" && agentMode === "seller");
 
   const load = () => api.get("/inquiries").then((r) => setItems(r.data));
   useEffect(() => { load(); }, []);
@@ -105,6 +108,21 @@ export default function Inquiries() {
                   {i.message_count > 0 && (
                     <span className="pill pill-gold flex items-center gap-1" data-testid={`thread-count-${i.id}`}>
                       <ChatCircleDots size={10} weight="fill" /> {i.message_count}
+                    </span>
+                  )}
+                  {isSeller && i.workspace_scope === "org" && i.workspace_org_name && (
+                    <span className="pill pill-amber" title={`On a listing your org "${i.workspace_org_name}" owns`} data-testid={`inquiry-scope-${i.id}`}>
+                      via {i.workspace_org_name}
+                    </span>
+                  )}
+                  {isSeller && i.workspace_scope === "shared" && (
+                    <span
+                      className="pill"
+                      style={{ borderColor: "var(--wz-text-tertiary)", color: "var(--wz-text-tertiary)" }}
+                      title="On a listing shared with you as a collaborator"
+                      data-testid={`inquiry-scope-${i.id}`}
+                    >
+                      shared
                     </span>
                   )}
                 </div>

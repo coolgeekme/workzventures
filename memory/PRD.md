@@ -259,6 +259,24 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - Regression tests still 19/19 across iter-15 / 16 / 18 / 22 suites.
 - **Remaining**: the right-panel hero illustration is a PNG asset that literally renders "WORKZ VENTURES" — needs a new image asset to fully retire the old wordmark.
 
+## What's been implemented (2026-06-17 — iter-29 Orgs actually do something + duplicate sidebar fix)
+- **Fix: duplicate sidebar on `/app/org`** — `OrgManagement.jsx` was wrapping itself in `<Layout>`, but `<Protected>` in `App.js` already does that. Removed the extra wrapper; Org page is now consistent with every other protected page.
+- **Org-pooled inboxes** (the real value-add for teams):
+  - Backend `_user_workspace_listing_ids(user)` helper returns the seller-side workspace listing-id set: personal + org-owned + collaborator-as-editor/owner.
+  - `GET /api/inquiries` for sellers/agents now returns inquiries on ANY listing in their workspace, not just their personal `seller_id`. Each row decorated with `workspace_scope` (`mine` | `org` | `shared`) + `workspace_org_name` so the UI can render badges.
+  - `PATCH /api/inquiries/{iid}/status` now checks workspace permission, not strict ownership — any teammate can triage.
+  - `POST /api/inquiries/{id}/open-room` (open the Vault) extended to workspace teammates.
+  - `_inquiry_participant` extended so message threads include workspace teammates as participants — every member of the org can read + reply on shared inquiry threads.
+  - `GET /api/deal-rooms` returns vaults for any listing in the user's workspace, not just rooms they personally created.
+- **`GET /api/listings` decoration**: each listing row now carries `workspace_scope` and (if applicable) `org_name` so the frontend can filter and badge.
+- **Frontend `MyListings`**:
+  - Filter pills above the grid: **All / Mine / Org / Shared with me** with live counts.
+  - Each listing card shows an `org_name` badge with a building icon when org-owned, or a "Shared with me" badge when the user is a collaborator on a listing they don't otherwise own.
+- **Frontend `Inquiries`**:
+  - Agent-in-seller-mode is now treated the same as a seller for inbound triage (via `useAgentMode`).
+  - Inbound inquiries get a `via [Org name]` badge when they're on an org-owned listing, or `shared` when on a collaborator listing.
+- **E2E verified**: Mira creates listing in org → Alex buyer inquires → Agent (different `seller_id`) sees + updates inquiry status. Pool works.
+
 ## What's been implemented (2026-06-16 — iter-28 Agent workspace mode switcher)
 - **Header workspace switcher** (`AgentModeSwitcher` in `Layout.jsx` + `MobileTopbar.jsx`) — segmented `[ Buyer | Seller ]` toggle visible only when `user.role === "agent"`. Persists choice to localStorage via `useAgentMode()` (`/app/frontend/src/lib/agentMode.js`), cross-tab synced via `storage` event and a custom `wz-agent-mode-change` event.
 - **Layout uses `effectiveRole`** — when role is agent, derives the active role from `agentMode` so sidebar nav, chrome accent colors (gold/amber), sidebar title, role-pill text and topbar pill all switch atomically with the toggle. Buyer mode → BUYER_NAV, Seller mode → SELLER_NAV. Organization link is included in both navs so it's always reachable.
