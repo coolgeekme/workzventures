@@ -3590,13 +3590,30 @@ DRL_TEMPLATES = {
 
 
 async def participant_check(room: dict, user: dict) -> str:
-    """Returns 'buyer' | 'seller' | 'admin' if participant, raises 403 otherwise."""
-    if user["id"] == room["buyer_id"]:
-        return "buyer"
-    if user["id"] == room["seller_id"]:
-        return "seller"
+    """Returns 'buyer' | 'seller' | 'admin' if participant, raises 403 otherwise.
+
+    Sell-side participant set includes the literal `seller_id` on the room,
+    anyone in the listing's seller-side workspace (org members, listing
+    collaborator-editors/owners), and anyone added via the room-level
+    `collaborators[]` array. Buy-side includes the literal `buyer_id` and
+    any room-level collaborators on the buyer's side.
+    """
     if user.get("role") == "admin":
         return "admin"
+    if user["id"] == room.get("buyer_id"):
+        return "buyer"
+    if user["id"] == room.get("seller_id"):
+        return "seller"
+    # Room-level collaborators (phase-2 explicit add) — assume sell-side
+    # unless the user happens to also be the literal buyer (handled above).
+    for c in room.get("collaborators", []) or []:
+        if c.get("user_id") == user["id"]:
+            return "seller"
+    # Sell-side workspace teammates of the listing this room belongs to
+    if user.get("role") in ("seller", "agent") and room.get("listing_id"):
+        ws_listings, _ = await _user_workspace_listing_ids(user)
+        if room["listing_id"] in ws_listings:
+            return "seller"
     raise HTTPException(status_code=403, detail="Not a participant of this Vault")
 
 
