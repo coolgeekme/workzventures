@@ -4,11 +4,12 @@ import { toast } from "sonner";
 import { ArrowLeft } from "@phosphor-icons/react";
 import { useAuth } from "../lib/auth";
 import { splitHostingEnabled, appUrl, marketingUrl } from "../lib/hostRouting";
-import Logo, { WORKZ_HERO_URL } from "../components/Logo";
+import Logo from "../components/Logo";
+import HeroVisual from "../components/HeroVisual";
 import ThemeToggle from "../components/ThemeToggle";
 import DemoAccounts from "../components/DemoAccounts";
 
-const BG = WORKZ_HERO_URL;
+const BG = "";
 
 // Demo accounts that the Landing page links to via `?demo=...`
 const DEMO_ACCOUNT_PASSWORDS = {
@@ -58,7 +59,8 @@ export default function Login() {
   return (
     <div className="min-h-screen grid lg:grid-cols-2 grain" data-testid="login-page">
       <div className="relative hidden lg:block border-r border-[var(--wz-border)]">
-        <img src={BG} alt="NextCapOS" className="absolute inset-0 w-full h-full object-cover opacity-70" />
+        <img src={BG} alt="" className="absolute inset-0 w-full h-full object-cover opacity-70" style={{ display: BG ? "block" : "none" }} />
+        {!BG && <HeroVisual />}
         <div className="absolute inset-0 bg-gradient-to-br from-[var(--wz-bg)]/30 via-transparent to-[var(--wz-bg)]/40" />
         <div className="absolute top-10 left-10 right-10">
           <div className="flex items-center gap-3">

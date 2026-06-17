@@ -1,8 +1,7 @@
 import { Link } from "react-router-dom";
 import { ArrowUpRight, ChartLineUp, Terminal, Compass } from "@phosphor-icons/react";
-import Logo, { WORKZ_HERO_URL } from "../components/Logo";
-
-const HERO_IMG = WORKZ_HERO_URL;
+import Logo from "../components/Logo";
+import HeroVisual from "../components/HeroVisual";
 
 // Login/register stay on the marketing apex, so all CTAs are plain React
 // Router links — no cross-origin handoff needed.
@@ -61,7 +60,7 @@ export default function Landing() {
         </div>
 
         <div className="relative h-[280px] sm:h-[400px] lg:h-[520px] wz-card overflow-hidden">
-          <img src={HERO_IMG} alt="NextCapOS" className="absolute inset-0 w-full h-full object-cover" />
+          <HeroVisual />
           <div className="absolute top-3 right-3 sm:top-5 sm:right-5 flex items-center gap-2 px-3 py-1.5 bg-[var(--wz-bg)]/70 backdrop-blur border border-[var(--wz-border)]">
             <div className="dot-blink" />
             <span className="overline text-[var(--wz-text)]">live · online</span>

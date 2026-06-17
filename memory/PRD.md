@@ -259,6 +259,14 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - Regression tests still 19/19 across iter-15 / 16 / 18 / 22 suites.
 - **Remaining**: the right-panel hero illustration is a PNG asset that literally renders "WORKZ VENTURES" — needs a new image asset to fully retire the old wordmark.
 
+## What's been implemented (2026-06-17 — iter-30 Full rebrand to Bloomberg-blue NextCapOS)
+- **Theme**: gold/amber accent palette → Bloomberg-terminal blue. Dark mode `--wz-gold = #3B82F6` (primary), `--wz-amber = #60A5FA` (secondary). Light mode `--wz-gold = #1D4ED8`, `--wz-amber = #2563EB`. Pill borders + radial glows updated to match. Because the entire codebase routes accents through CSS variables, every page/pill/badge/button/chart/border picks up the swap with no per-component edits.
+- **Logo**: rewritten as an inline SVG `<BrandMark />` + `<Logo />` component — two overlapping rounded-rect "OS window / capital stack" squares (back-rect dimmed, front-rect full intensity, top highlight stripe) paired with a monospaced "NextCap**OS**" wordmark (OS highlighted in brand blue). Theme-aware via `currentColor` + CSS vars. No more dependency on a hosted PNG asset.
+- **Hero visual**: replaced the old "WORKZ VENTURES"-lettered raster with `<HeroVisual />` — fully SVG composition: blueprint grid background, three animated dashed ticker lines (data feel), centered oversized brand-mark blueprint, corner reticles, and a bottom-left mono caption "NextCap**OS** · marketing OS for M&A · build · {today}". Pure CSS-var driven, light/dark adaptive.
+- **Login page**: dropped the hero-as-image background, now uses `<HeroVisual />` directly so light/dark mode looks consistent.
+- **Favicon**: new SVG favicon (`/public/favicon.svg`) matching the brand mark; old hosted PNG link removed from `index.html`.
+- **Smoke-tested visually**: landing + login + agent dashboard all render with new theme + logo.
+
 ## What's been implemented (2026-06-17 — iter-29 Orgs actually do something + duplicate sidebar fix)
 - **Fix: duplicate sidebar on `/app/org`** — `OrgManagement.jsx` was wrapping itself in `<Layout>`, but `<Protected>` in `App.js` already does that. Removed the extra wrapper; Org page is now consistent with every other protected page.
 - **Org-pooled inboxes** (the real value-add for teams):
