@@ -3,12 +3,16 @@ import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { FileText, Files, MagnifyingGlass, ListChecks, ArrowUpRight, Trash } from "@phosphor-icons/react";
+import { useAgentMode } from "../lib/agentMode";
+import { FileText, Files, MagnifyingGlass, ListChecks, ArrowUpRight, Trash, FolderOpen } from "@phosphor-icons/react";
 
 export default function DealRooms() {
   const { user } = useAuth();
   const [rooms, setRooms] = useState([]);
-  const isSeller = user?.role === "seller";
+  const [agentMode] = useAgentMode();
+  // Sellers AND agents-in-seller-mode get the sell-side empty-state copy.
+  const isSeller =
+    user?.role === "seller" || (user?.role === "agent" && agentMode === "seller");
 
   const load = () => api.get("/deal-rooms").then((r) => setRooms(r.data));
   useEffect(() => { load(); }, []);
@@ -84,25 +88,48 @@ export default function DealRooms() {
           </Link>
         ))}
         {rooms.length === 0 && (
-          <div className="wz-card p-10 text-center text-sm text-[var(--wz-text-tertiary)] lg:col-span-2">
+          <div className="wz-card p-10 text-center text-sm text-[var(--wz-text-tertiary)] lg:col-span-2" data-testid="vault-empty-state">
             <FileText size={28} className="mx-auto mb-3 text-[var(--wz-text-tertiary)]" />
             {isSeller ? (
               <>
-                No active Vaults yet. A Vault opens when you mark a buyer&apos;s inquiry as{" "}
-                <span className="text-[var(--wz-positive)] font-medium">Accepted</span> on the{" "}
-                <Link to="/app/inquiries" className="text-[var(--wz-amber)] hover:underline">Inquiries page</Link>
-                {" "}and click <span className="font-medium">Open Vault</span>. Documents you upload to a
-                listing&apos;s <Link to="/app/listings" className="text-[var(--wz-amber)] hover:underline">Data Room</Link>
-                {" "}auto-copy into every Vault you open — so the buyer reads them as soon as they sign the NDA.
+                <div className="text-[var(--wz-text)] font-medium mb-2">No active Vaults yet</div>
+                <p className="leading-relaxed max-w-xl mx-auto">
+                  A Vault opens when you mark a buyer&apos;s inquiry as{" "}
+                  <span className="text-[var(--wz-positive)] font-medium">Accepted</span> on the{" "}
+                  <Link to="/app/inquiries" className="text-[var(--wz-gold)] hover:underline">Inquiries page</Link>
+                  {" "}and click <span className="font-medium">Open Vault</span>.
+                </p>
+                <p className="leading-relaxed max-w-xl mx-auto mt-3">
+                  Want to <strong>pre-stage documents</strong> now so they&apos;re ready the moment a
+                  buyer engages? Use the <span className="font-medium">Listing Data Room</span> on
+                  each of your listings — staged docs auto-clone into every Vault you open.
+                </p>
+                <Link
+                  to="/app/listings"
+                  className="wz-btn wz-btn-gold mt-5 inline-flex items-center gap-2"
+                  data-testid="vault-empty-goto-listings"
+                >
+                  <FolderOpen size={14} /> Open Listing Data Room
+                </Link>
               </>
             ) : (
               <>
-                No Vaults yet. A Vault opens after the seller marks your inquiry{" "}
-                <span className="text-[var(--wz-positive)] font-medium">Accepted</span> on the{" "}
-                <Link to="/app/inquiries" className="text-[var(--wz-amber)] hover:underline">Inquiries page</Link>
-                {" "}and opens it for you. If your inquiry shows{" "}
-                <span className="text-[var(--wz-negative)] font-medium">Declined</span>, the seller passed —
-                no Vault will open for that listing.
+                <div className="text-[var(--wz-text)] font-medium mb-2">No Vaults yet</div>
+                <p className="leading-relaxed max-w-xl mx-auto">
+                  A Vault opens after the seller marks your inquiry{" "}
+                  <span className="text-[var(--wz-positive)] font-medium">Accepted</span> on the{" "}
+                  <Link to="/app/inquiries" className="text-[var(--wz-gold)] hover:underline">Inquiries page</Link>
+                  {" "}and opens it for you. If your inquiry shows{" "}
+                  <span className="text-[var(--wz-negative)] font-medium">Declined</span>, the seller passed —
+                  no Vault will open for that listing.
+                </p>
+                <Link
+                  to="/app/marketplace"
+                  className="wz-btn wz-btn-gold mt-5 inline-flex items-center gap-2"
+                  data-testid="vault-empty-goto-marketplace"
+                >
+                  Browse marketplace
+                </Link>
               </>
             )}
           </div>

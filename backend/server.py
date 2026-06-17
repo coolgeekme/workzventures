@@ -3645,11 +3645,17 @@ DRL_TEMPLATES = {
 async def participant_check(room: dict, user: dict) -> str:
     """Returns 'buyer' | 'seller' | 'admin' if participant, raises 403 otherwise.
 
-    Sell-side participant set includes the literal `seller_id` on the room,
-    anyone in the listing's seller-side workspace (org members, listing
-    collaborator-editors/owners), and anyone added via the room-level
-    `collaborators[]` array. Buy-side includes the literal `buyer_id` and
-    any room-level collaborators on the buyer's side.
+    Sell-side participants:
+      - Literal `seller_id` on the room
+      - Anyone in the listing's seller-side workspace (org members, listing
+        collaborator-editors/owners)
+      - Anyone added via the room-level `collaborators[]` array
+
+    Buy-side participants:
+      - Literal `buyer_id` on the room
+      - Org teammates of the literal buyer — so an agent representing a
+        buyer client (or a buy-side analyst team) can run diligence on the
+        same Vault. Restricted to agents and the buyer's same-org members.
     """
     if user.get("role") == "admin":
         return "admin"
@@ -3657,8 +3663,7 @@ async def participant_check(room: dict, user: dict) -> str:
         return "buyer"
     if user["id"] == room.get("seller_id"):
         return "seller"
-    # Room-level collaborators (phase-2 explicit add) — assume sell-side
-    # unless the user happens to also be the literal buyer (handled above).
+    # Room-level collaborators (phase-2 explicit add) — sell-side by default
     for c in room.get("collaborators", []) or []:
         if c.get("user_id") == user["id"]:
             return "seller"
@@ -3667,6 +3672,18 @@ async def participant_check(room: dict, user: dict) -> str:
         ws_listings, _ = await _user_workspace_listing_ids(user)
         if room["listing_id"] in ws_listings:
             return "seller"
+    # Buy-side: agent or fellow team member who shares an org with the room's
+    # buyer. Lets an advisor act on behalf of their buyer client.
+    if user.get("role") in ("buyer", "agent") and room.get("buyer_id"):
+        my_orgs = set(await _get_user_org_ids(user))
+        if my_orgs:
+            buyer_orgs = set(
+                r["org_id"] for r in await db.org_memberships.find(
+                    {"user_id": room["buyer_id"]}, {"_id": 0, "org_id": 1}
+                ).to_list(50)
+            )
+            if my_orgs & buyer_orgs:
+                return "buyer"
     raise HTTPException(status_code=403, detail="Not a participant of this Vault")
 
 
@@ -3733,14 +3750,25 @@ async def open_deal_room(inquiry_id: str, user=Depends(get_current_user)):
 async def list_deal_rooms(user=Depends(get_current_user)):
     if user.get("role") == "admin":
         q = {}
-    elif user.get("role") in ("seller", "agent"):
-        # Sellers/agents see rooms tied to any listing in their workspace
-        ws_listings, _ = await _user_workspace_listing_ids(user)
-        q = {"$or": [
+    elif user.get("role") in ("seller", "agent", "buyer"):
+        # Seller-side: rooms tied to any listing in their workspace
+        ws_listings, my_orgs = await _user_workspace_listing_ids(user) if user.get("role") in ("seller", "agent") else ([], await _get_user_org_ids(user))
+        # Buy-side: rooms where the buyer is a teammate in any of my orgs
+        buyer_ids: List[str] = []
+        if my_orgs:
+            memberships = await db.org_memberships.find(
+                {"org_id": {"$in": my_orgs}}, {"_id": 0, "user_id": 1}
+            ).to_list(500)
+            buyer_ids = [m["user_id"] for m in memberships]
+        or_clauses = [
             {"buyer_id": user["id"]},
             {"seller_id": user["id"]},
-            {"listing_id": {"$in": ws_listings}},
-        ]}
+        ]
+        if ws_listings:
+            or_clauses.append({"listing_id": {"$in": ws_listings}})
+        if buyer_ids:
+            or_clauses.append({"buyer_id": {"$in": buyer_ids}})
+        q = {"$or": or_clauses}
     else:
         q = {"$or": [{"buyer_id": user["id"]}, {"seller_id": user["id"]}]}
     rooms = await db.deal_rooms.find({**q, "deleted_at": {"$exists": False}}, {"_id": 0}).sort("created_at", -1).to_list(200)
