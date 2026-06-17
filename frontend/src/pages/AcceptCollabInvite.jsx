@@ -95,9 +95,18 @@ export default function AcceptCollabInvite({ kind = "org" }) {
                   {busy ? "Accepting…" : "Accept invitation"}
                 </button>
               ) : (
-                <button onClick={accept} className="wz-btn wz-btn-gold w-full" data-testid="accept-invite-signin">
-                  Sign in to accept
-                </button>
+                <>
+                  <button onClick={accept} className="wz-btn wz-btn-gold w-full" data-testid="accept-invite-signin">
+                    Sign in to accept
+                  </button>
+                  <a
+                    href={marketingUrl(`/register?invite_token=${encodeURIComponent(token || "")}&invite_kind=${kind}`)}
+                    className="wz-btn wz-btn-ghost w-full inline-block text-xs"
+                    data-testid="accept-invite-register"
+                  >
+                    Don&apos;t have an account? Create one
+                  </a>
+                </>
               )}
               <a href={marketingUrl("/")} className="wz-btn wz-btn-ghost w-full inline-block text-xs">Back to home</a>
             </div>

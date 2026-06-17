@@ -1,0 +1,39 @@
+{
+  "summary": "Iter-17 — Validated the invite-driven registration fast-path end-to-end (backend + frontend). Backend pytest /app/backend/tests/test_invite_register.py: 6/6 PASS covering (a) listing-invite token registers active+JWT and the new user immediately sees the invited listing on GET /api/listings, (b) mismatched email returns HTTP 400 with the documented 'This invite is for {email}...' message and does NOT create the user (verified by a second register call returning 200/pending), (c) no-invite returns HTTP 200 status=pending, (d) expired listing invite (forced via direct pymongo update to expires_at in the past) returns HTTP 400 'Listing invite expired', (e) already-accepted invite returns HTTP 400 'Listing invite already accepted', (f) org-invite token with org_choice=join returns active+JWT+org_id and the new user shows up on /api/orgs/mine with my_role='org_member'. Frontend Playwright run on the public preview URL covered all 5 UI flows: TEST1 /login?next=... 'Request access' link preserves the query string (href=/register?next=/accept-listing-invite?token=XYZ). TEST2 /register?invite_token=VALID&invite_kind=listing shows H1 'Finish your invite.', register-invite-banner is rendered with inviter name + listing name + role, email is pre-filled + readOnly, org-choice radios are hidden. TEST3 submitting the form auto-logs-in and navigates to /app/listings where the invited listing is visible. TEST4 /accept-listing-invite?token=XYZ with no auth renders BOTH accept-invite-signin and accept-invite-register buttons; the register href is /register?invite_token=XYZ&invite_kind=listing. TEST5 /register?invite_token=BOGUS&invite_kind=listing renders register-invite-error 'Invite not found or already used', the banner is absent, the email input is blank, and the form is still usable for normal registration. All review-request acceptance criteria met.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_invite_register.py",
+    "/app/test_reports/pytest/iter17_invite_register.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:735-758 — invite validation happens BEFORE the user doc is inserted, so the mismatched-email + expired + already-accepted rejections cannot leave a partially-provisioned user behind. Test 2 explicitly confirms this by re-registering the same email and getting status=pending. Good defensive ordering.",
+    "server.py:774 auto_active = bool(listing_invite or org_invite) — clean, single source of truth that drives both the doc.status assignment and the response shape (token+user vs message). No risk of an invite-driven user landing in the pending queue.",
+    "server.py:797-809 — pending_org_create / pending_org_invite_token deferred wiring is kept ONLY when the fast-path didn't fire, avoiding double-application on /admin/users/{uid}/approve.",
+    "server.py:6571 + 6434 — email templates now include both an accept_url (legacy) AND a register_url (new fast-path) AND a raw-token fallback in a monospace block — non-technical invitees have three independent escape hatches. Good UX defense in depth.",
+    "Register.jsx:42-63 — invite preview is fetched via the existing public endpoints (/listing-invites/{t} & /org-invites/{t}) which already return 404/400 with helpful detail strings; the UI surfaces err?.response?.data?.detail directly into register-invite-error, so backend message changes propagate without UI edits.",
+    "Register.jsx:122 emailLocked = Boolean(invitePreview?.email) — single derived state controls both readOnly and the '· locked to invite' helper text. Good DRY.",
+    "Register.jsx:219-298 — the entire org-choice block is wrapped in `{!invitePreview && (...)}` so when invite drives the flow the UI does not surface conflicting controls. Org_choice radios are also absent for valid invites (verified in TEST2).",
+    "Login.jsx:160-166 — `to={`/register${loc.search || ''}`}` preserves the full query string including the nested `?token=XYZ` (browser handles it as a literal substring; URL parser then re-applies it). Verified in TEST1.",
+    "AcceptCollabInvite.jsx:99-108 — both CTAs are rendered side-by-side ONLY when user is null (the existing 'Accept invitation' button takes over when signed in). Good conditional branching, no overlay or hidden CTAs.",
+    "Minor / nice-to-have (NOT blocking): /api/listing-invites/{token} returns 400 when the invite is expired or accepted, but /api/auth/register treats both as 400 with different messages. The contract is consistent (always 400) but the UI's preview path will surface the GET 400 detail. If you ever change one, change both — they share the message strings."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_invite_register.py (new, 6 tests, ~290 LOC)"
+  ],
+  "success_rate": {"backend": "100% (6/6)", "frontend": "100% (5/5)"},
+  "test_credentials": "Seller mira@workz.example.com / WorkzPass123!  ·  invitees created fresh each run as invitee_<rand>@workz.example.com / TestPass123!",
+  "seed_data_creation": "Test created several invitee_*@workz.example.com users (flagged is_demo via the default demo-tag pipeline they will be reaped by the 48h demo sweeper). Multiple listing_invites and one org_invite were also created against Mira's first seed listing and first seed org — all consumed during testing.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Reusable suite: REACT_APP_BACKEND_URL=https://buyer-intel-lab.preview.emergentagent.com pytest /app/backend/tests/test_invite_register.py -v  (~4s, 6 tests). Key facts: (1) listing-invite is created via POST /api/listings/{lid}/collaborators with body {email, role: 'editor'|'viewer'|'owner', message?} — response shape {ok, invite_id, token, accept_url}. (2) org-invite role enum is 'org_admin' | 'org_member' (NOT 'member' or 'admin'). (3) The fast-path register response shape on success is {ok, status:'active', token, user, listing_id, org_id} — listing_id is None on org-only invites and vice versa. (4) /accept-listing-invite frontend route uses kind='listing'; org variant is /accept-org-invite with kind='org'. (5) To monkey-patch invite expires_at the test uses pymongo with MONGO_URL+DB_NAME read from /app/backend/.env. (6) Mira's first listing id is stable at 7657e715-ab6b-4379-b76c-6f67ba61eb25 ('NoTouch 34fb4').",
+  "rca of the issue": "N/A — no functional bugs found. The three-layer fix (a) wire invite token through Login→Register (Login.jsx loc.search preservation + Register.jsx invite_token URL params), (b) backend auto-approve + accept on register (server.py:720-912 with invite-first validation, single auto_active flag, in-line listing/org membership writes), (c) email raw-token fallback + 'Create account' link (server.py:6571 + 6434) all work end-to-end. Backend correctly rejects mismatched/expired/already-accepted invites with HTTP 400 BEFORE creating any user state, and the frontend correctly surfaces the same error states via register-invite-error without breaking the normal-register fallback."
+}

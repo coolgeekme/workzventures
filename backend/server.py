@@ -110,6 +110,11 @@ class RegisterRequest(BaseModel):
     org_choice: Literal["create", "join", "none"] = "none"
     org_name: Optional[str] = None
     org_invite_token: Optional[str] = None
+    # Optional listing-collaborator invite token. When supplied and valid
+    # (email match, not expired, not already accepted), the new account is
+    # auto-activated, added to the listing's collaborator list, and the
+    # response returns a JWT directly — no admin approval gate.
+    listing_invite_token: Optional[str] = None
 
 
 class ListingCreate(BaseModel):
@@ -715,9 +720,17 @@ async def _record_login_attempt(email: str, ok: bool, ip: Optional[str] = None):
 @api_router.post("/auth/register")
 async def register(body: RegisterRequest, request: Request):
     """
-    Public access-request endpoint. Account is created in `pending` status
-    awaiting admin approval. The user CANNOT log in until status flips to
-    `active`. An email goes to REQUEST_NOTIFY_EMAIL on every new request.
+    Public access-request endpoint.
+
+    Default path: account is created in `pending` status awaiting admin
+    approval. The user CANNOT log in until status flips to `active`.
+
+    Fast path (invited users): if a valid `listing_invite_token` OR a valid
+    `org_invite_token` (with `org_choice="join"`) is supplied — and the
+    invite's email matches the signup email — the account is created
+    `active` immediately and a JWT is returned in the response. The invite
+    is also accepted on the spot so the user lands inside the listing /
+    org with one redirect. This is the path the email-invite flow uses.
     """
     err = _password_complexity_ok(body.password)
     if err:
@@ -725,10 +738,46 @@ async def register(body: RegisterRequest, request: Request):
     existing = await db.users.find_one({"email": body.email.lower()}, {"_id": 0})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
+
+    # -- Resolve invite-driven fast path -------------------------------------
+    # If any invite token is supplied, validate it before creating the user
+    # so we never partially-provision on bad input.
+    email_norm = body.email.lower()
+    listing_invite = None
+    if body.listing_invite_token:
+        listing_invite = await db.listing_invites.find_one(
+            {"token": body.listing_invite_token}, {"_id": 0}
+        )
+        if not listing_invite:
+            raise HTTPException(status_code=400, detail="Listing invite not found")
+        if listing_invite.get("accepted_at"):
+            raise HTTPException(status_code=400, detail="Listing invite already accepted")
+        if listing_invite.get("expires_at") and datetime.fromisoformat(listing_invite["expires_at"]) < now_utc():
+            raise HTTPException(status_code=400, detail="Listing invite expired")
+        if listing_invite["email"].lower() != email_norm:
+            raise HTTPException(status_code=400, detail=f"This invite is for {listing_invite['email']}. Sign up with that email.")
+
+    org_invite = None
+    if body.org_choice == "join" and body.org_invite_token:
+        org_invite = await db.org_invites.find_one(
+            {"token": body.org_invite_token}, {"_id": 0}
+        )
+        if not org_invite:
+            raise HTTPException(status_code=400, detail="Org invite not found")
+        if org_invite.get("accepted_at"):
+            raise HTTPException(status_code=400, detail="Org invite already accepted")
+        if org_invite.get("expires_at") and datetime.fromisoformat(org_invite["expires_at"]) < now_utc():
+            raise HTTPException(status_code=400, detail="Org invite expired")
+        if org_invite["email"].lower() != email_norm:
+            raise HTTPException(status_code=400, detail=f"This invite is for {org_invite['email']}. Sign up with that email.")
+
+    # An invite vouches for the user → skip admin approval gate.
+    auto_active = bool(listing_invite or org_invite)
+
     user_id = str(uuid.uuid4())
     doc = {
         "id": user_id,
-        "email": body.email.lower(),
+        "email": email_norm,
         "name": body.name,
         "role": body.role,
         "organization": body.organization,
@@ -736,10 +785,13 @@ async def register(body: RegisterRequest, request: Request):
         "interests": [],
         "newsletter_opt_in": False,
         "created_at": now_utc().isoformat(),
-        "status": "pending",
+        "status": "active" if auto_active else "pending",
     }
+    if auto_active:
+        doc["approved_at"] = now_utc().isoformat()
+        doc["approved_via"] = "invite"
     await db.users.insert_one(doc)
-    await log_audit(user_id, "auth.register", body.email, {"status": "pending"})
+    await log_audit(user_id, "auth.register", body.email, {"status": doc["status"], "via_invite": auto_active})
 
     # Capture org_choice for downstream wiring — actual org create/join happens
     # at /auth/accept-invite (for admin invites) or on first login after
@@ -749,15 +801,56 @@ async def register(body: RegisterRequest, request: Request):
             {"id": user_id},
             {"$set": {"pending_org_create": body.org_name}},
         )
-    elif body.org_choice == "join" and body.org_invite_token:
+    elif body.org_choice == "join" and body.org_invite_token and not org_invite:
+        # Only stash a deferred join when we DIDN'T already fast-path.
         await db.users.update_one(
             {"id": user_id},
             {"$set": {"pending_org_invite_token": body.org_invite_token}},
         )
 
+    # -- Fast path: accept the invite on the spot ----------------------------
+    if listing_invite:
+        listing = await db.listings.find_one({"id": listing_invite["listing_id"]}, {"_id": 0})
+        if listing:
+            await db.listings.update_one(
+                {"id": listing_invite["listing_id"]},
+                {"$push": {"collaborators": {
+                    "user_id": user_id,
+                    "email": email_norm,
+                    "name": body.name,
+                    "role": listing_invite["role"],
+                    "invited_by": listing_invite.get("invited_by"),
+                    "invited_at": listing_invite.get("created_at"),
+                    "accepted_at": now_utc().isoformat(),
+                }}},
+            )
+        await db.listing_invites.update_one(
+            {"token": body.listing_invite_token},
+            {"$set": {"accepted_at": now_utc().isoformat()}},
+        )
+        await log_audit(user_id, "listing.collab.accept", listing_invite["listing_id"],
+                        {"role": listing_invite["role"], "via": "register"})
+
+    if org_invite:
+        await db.org_memberships.insert_one({
+            "id": str(uuid.uuid4()),
+            "org_id": org_invite["org_id"],
+            "user_id": user_id,
+            "role": org_invite["role"],
+            "joined_at": now_utc().isoformat(),
+            "invited_by": org_invite.get("invited_by"),
+        })
+        await db.org_invites.update_one(
+            {"token": body.org_invite_token},
+            {"$set": {"accepted_at": now_utc().isoformat()}},
+        )
+        await log_audit(user_id, "org.invite.accept", org_invite["org_id"], {"via": "register"})
+
+    # -- Notifications -------------------------------------------------------
+
     # 1) Notify the operator/admin inbox that a new request landed
     cfg_notify = os.environ.get("REQUEST_NOTIFY_EMAIL")
-    if cfg_notify:
+    if cfg_notify and not auto_active:
         ip = request.client.host if request.client else "unknown"
         admin_html = f"""
         <p>New access request on NextCapOS.</p>
@@ -777,28 +870,40 @@ async def register(body: RegisterRequest, request: Request):
             reply_to=body.email,
         ))
 
-    # 2) Confirm to the requester that we received it
-    requester_html = f"""
-    <p>Hi {body.name},</p>
-    <p>Thanks for requesting access to <strong>NextCapOS</strong>.</p>
-    <p>Your request has been received and is now in the queue for administrator review.
-    We'll email you the moment your account is approved — typically within one business day.</p>
-    <p style="margin-top:24px;font-size:13px;color:#666;">
-      <strong>Request details</strong><br>
-      Name: {body.name}<br>
-      Email: {body.email}<br>
-      Role: {body.role}<br>
-      Organization: {body.organization or '—'}
-    </p>
-    <p style="margin-top:24px;font-size:12px;color:#999;">
-      Didn't request access? You can safely ignore this email.
-    </p>
-    """
-    asyncio.create_task(send_email(
-        body.email,
-        "NextCapOS · access request received",
-        requester_html,
-    ))
+    # 2) Confirm to the requester that we received it (skip when fast-pathed)
+    if not auto_active:
+        requester_html = f"""
+        <p>Hi {body.name},</p>
+        <p>Thanks for requesting access to <strong>NextCapOS</strong>.</p>
+        <p>Your request has been received and is now in the queue for administrator review.
+        We'll email you the moment your account is approved — typically within one business day.</p>
+        <p style="margin-top:24px;font-size:13px;color:#666;">
+          <strong>Request details</strong><br>
+          Name: {body.name}<br>
+          Email: {body.email}<br>
+          Role: {body.role}<br>
+          Organization: {body.organization or '—'}
+        </p>
+        <p style="margin-top:24px;font-size:12px;color:#999;">
+          Didn't request access? You can safely ignore this email.
+        </p>
+        """
+        asyncio.create_task(send_email(
+            body.email,
+            "NextCapOS · access request received",
+            requester_html,
+        ))
+
+    if auto_active:
+        token = create_token(user_id, doc["role"])
+        return {
+            "ok": True,
+            "status": "active",
+            "token": token,
+            "user": UserPublic(**serialize_user(doc)).model_dump(),
+            "listing_id": listing_invite["listing_id"] if listing_invite else None,
+            "org_id": org_invite["org_id"] if org_invite else None,
+        }
 
     return {
         "ok": True,
@@ -6326,13 +6431,20 @@ async def create_org_invite(org_id: str, body: OrgInviteRequest, user=Depends(ge
     }
     await db.org_invites.insert_one(invite)
     accept_url = mail_link(f"/accept-org-invite?token={token}")
+    register_url = mail_link(f"/register?invite_token={token}&invite_kind=org")
     html = f"""
     <p>Hi,</p>
     <p><strong>{user.get('name', 'A teammate')}</strong> invited you to join
     <strong>{org['name']}</strong> on NextCapOS as a <strong>{body.role.replace('_', ' ')}</strong>.</p>
     <p><a href="{accept_url}">Accept the invitation &rsaquo;</a></p>
-    <p style="margin-top:24px;font-size:12px;color:#999;">
+    <p style="margin-top:18px;font-size:13px;color:#555;">
+      New to NextCapOS? <a href="{register_url}">Create your account &rsaquo;</a> — your invite will be applied automatically and you'll skip the access-request queue.
+    </p>
+    <p style="margin-top:18px;font-size:12px;color:#999;">
       This invite expires in 14 days. Didn't expect it? You can ignore this email.
+    </p>
+    <p style="margin-top:18px;font-size:11px;color:#aaa;font-family:monospace;word-break:break-all;">
+      If the buttons don't work, your invite token is:<br>{token}
     </p>
     """
     asyncio.create_task(send_email(email_norm, f"NextCapOS · join {org['name']}", html, reply_to=user.get("email")))
@@ -6456,6 +6568,7 @@ async def invite_listing_collaborator(lid: str, body: CollaboratorInviteRequest,
     }
     await db.listing_invites.insert_one(invite)
     accept_url = mail_link(f"/accept-listing-invite?token={token}")
+    register_url = mail_link(f"/register?invite_token={token}&invite_kind=listing")
     msg_block = f"<blockquote style='border-left:3px solid #ddd;margin:16px 0;padding:8px 14px;color:#444;'>{body.message}</blockquote>" if body.message else ""
     html = f"""
     <p>Hi,</p>
@@ -6464,8 +6577,14 @@ async def invite_listing_collaborator(lid: str, body: CollaboratorInviteRequest,
     <strong>{body.role}</strong>.</p>
     {msg_block}
     <p><a href="{accept_url}">Open the listing &rsaquo;</a></p>
-    <p style="margin-top:24px;font-size:12px;color:#999;">
+    <p style="margin-top:18px;font-size:13px;color:#555;">
+      New to NextCapOS? <a href="{register_url}">Create your account &rsaquo;</a> — your invite will be applied automatically and you'll skip the access-request queue.
+    </p>
+    <p style="margin-top:18px;font-size:12px;color:#999;">
       Owners and editors can edit the listing and upload to the Vault. Viewers can read only.
+    </p>
+    <p style="margin-top:18px;font-size:11px;color:#aaa;font-family:monospace;word-break:break-all;">
+      If the buttons don't work, your invite token is:<br>{token}
     </p>
     """
     asyncio.create_task(send_email(email_norm, f"NextCapOS · listing invitation · {listing.get('company_name', '')}", html, reply_to=user.get("email")))
@@ -6749,13 +6868,20 @@ async def resend_org_invite(org_id: str, iid: str, user=Depends(get_current_user
         raise HTTPException(status_code=400, detail="Invite already accepted")
     org = await db.organizations.find_one({"id": org_id}, {"_id": 0, "name": 1}) or {"name": "your team"}
     accept_url = mail_link(f"/accept-org-invite?token={inv['token']}")
+    register_url = mail_link(f"/register?invite_token={inv['token']}&invite_kind=org")
     html = f"""
     <p>Hi,</p>
     <p><strong>{user.get('name', 'A teammate')}</strong> invited you to join
     <strong>{org['name']}</strong> on NextCapOS as a <strong>{inv['role'].replace('_',' ')}</strong>.</p>
     <p><a href="{accept_url}">Accept the invitation &rsaquo;</a></p>
-    <p style="margin-top:24px;font-size:12px;color:#999;">
+    <p style="margin-top:18px;font-size:13px;color:#555;">
+      New to NextCapOS? <a href="{register_url}">Create your account &rsaquo;</a> — your invite will be applied automatically.
+    </p>
+    <p style="margin-top:18px;font-size:12px;color:#999;">
       If you didn't request this, you can ignore the email.
+    </p>
+    <p style="margin-top:18px;font-size:11px;color:#aaa;font-family:monospace;word-break:break-all;">
+      If the buttons don't work, your invite token is:<br>{inv['token']}
     </p>
     """
     asyncio.create_task(send_email(inv["email"], f"NextCapOS · join {org['name']} (resent)", html, reply_to=user.get("email")))
@@ -6773,6 +6899,7 @@ async def resend_listing_invite(lid: str, iid: str, user=Depends(get_current_use
     if inv.get("accepted_at"):
         raise HTTPException(status_code=400, detail="Invite already accepted")
     accept_url = mail_link(f"/accept-listing-invite?token={inv['token']}")
+    register_url = mail_link(f"/register?invite_token={inv['token']}&invite_kind=listing")
     msg_block = f"<blockquote style='border-left:3px solid #ddd;margin:16px 0;padding:8px 14px;color:#444;'>{inv.get('message')}</blockquote>" if inv.get("message") else ""
     html = f"""
     <p>Hi,</p>
@@ -6781,6 +6908,12 @@ async def resend_listing_invite(lid: str, iid: str, user=Depends(get_current_use
     <strong>{inv['role']}</strong>.</p>
     {msg_block}
     <p><a href="{accept_url}">Open the listing &rsaquo;</a></p>
+    <p style="margin-top:18px;font-size:13px;color:#555;">
+      New to NextCapOS? <a href="{register_url}">Create your account &rsaquo;</a> — your invite will be applied automatically.
+    </p>
+    <p style="margin-top:18px;font-size:11px;color:#aaa;font-family:monospace;word-break:break-all;">
+      If the buttons don't work, your invite token is:<br>{inv['token']}
+    </p>
     """
     asyncio.create_task(send_email(inv["email"], f"NextCapOS · listing invitation · {inv.get('listing_name','')} (resent)", html, reply_to=user.get("email")))
     await log_audit(user["id"], "listing.collab.invite.resend", lid, {"invite_id": iid, "email": inv["email"]})

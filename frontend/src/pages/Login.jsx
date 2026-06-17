@@ -157,7 +157,11 @@ export default function Login() {
 
           <div className="mt-6 text-xs text-[var(--wz-text-secondary)]">
             No account yet?{" "}
-            <Link to="/register" className="text-[var(--wz-gold)] hover:underline" data-testid="goto-register">
+            <Link
+              to={`/register${loc.search || ""}`}
+              className="text-[var(--wz-gold)] hover:underline"
+              data-testid="goto-register"
+            >
               Request access
             </Link>
           </div>
