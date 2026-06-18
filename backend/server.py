@@ -3694,17 +3694,16 @@ async def push_inquiry_to_zoho(inquiry_id: str, user=Depends(get_current_user)):
 # wiped (Rule 3A: immediate purge).
 # -----------------------------------------------------------------------------
 COMPOSIO_FILE_SOURCES = {
-    "googledrive":   {"label": "Google Drive",   "app": "googledrive",    "list": "GOOGLEDRIVE_LIST_FILES",     "download": "GOOGLEDRIVE_DOWNLOAD_FILE"},
-    "onedrive":      {"label": "OneDrive",       "app": "onedrive",       "list": "ONEDRIVE_LIST_FILES",        "download": "ONEDRIVE_DOWNLOAD_FILE"},
-    "sharepoint":    {"label": "SharePoint",     "app": "sharepoint",     "list": "SHAREPOINT_LIST_FILES",      "download": "SHAREPOINT_DOWNLOAD_FILE"},
-    "dropbox":       {"label": "Dropbox",        "app": "dropbox",        "list": "DROPBOX_LIST_FILES",         "download": "DROPBOX_DOWNLOAD_FILE"},
-    "box":           {"label": "Box",            "app": "box",            "list": "BOX_LIST_FILES",             "download": "BOX_DOWNLOAD_FILE"},
-    "zohoworkdrive": {"label": "Zoho WorkDrive", "app": "zoho_work_drive", "list": "ZOHOWORKDRIVE_LIST_FILES",  "download": "ZOHOWORKDRIVE_DOWNLOAD_FILE"},
+    "googledrive": {"label": "Google Drive", "app": "googledrive",  "list": "GOOGLEDRIVE_LIST_FILES",  "download": "GOOGLEDRIVE_DOWNLOAD_FILE"},
+    "onedrive":    {"label": "OneDrive",     "app": "one_drive",    "list": "ONE_DRIVE_LIST_FILES",    "download": "ONE_DRIVE_DOWNLOAD_FILE"},
+    "sharepoint":  {"label": "SharePoint",   "app": "share_point",  "list": "SHARE_POINT_LIST_FILES",  "download": "SHARE_POINT_DOWNLOAD_FILE"},
+    "dropbox":     {"label": "Dropbox",      "app": "dropbox",      "list": "DROPBOX_LIST_FILES",      "download": "DROPBOX_DOWNLOAD_FILE"},
+    "box":         {"label": "Box",          "app": "box",          "list": "BOX_LIST_FILES",          "download": "BOX_DOWNLOAD_FILE"},
 }
 
 
 class ExternalSourceCreate(BaseModel):
-    source_kind: Literal["googledrive", "onedrive", "sharepoint", "dropbox", "box", "zohoworkdrive"]
+    source_kind: Literal["googledrive", "onedrive", "sharepoint", "dropbox", "box"]
     folder_id: Optional[str] = None
     label: Optional[str] = None
 
@@ -3718,7 +3717,7 @@ async def _composio_action_execute(action_slug: str, connected_account_id: str, 
         r = await c.post(
             f"{COMPOSIO_BASE_URL}/api/v3/tools/execute/{action_slug}",
             headers={"x-api-key": COMPOSIO_API_KEY, "Content-Type": "application/json"},
-            json={"connectedAccountId": connected_account_id, "input": input_params or {}},
+            json={"connected_account_id": connected_account_id, "arguments": input_params or {}},
         )
     if r.status_code >= 400:
         # Upstream errors are usually informative — pass them through.
@@ -3741,6 +3740,8 @@ async def create_external_source(
 
     # Entity ID scopes the connection to listing-owner pair so the same seller
     # can connect different sources for different deals without cross-talk.
+    # Entity ID scopes the connection to listing-owner pair so the same seller
+    # can connect different sources for different deals without cross-talk.
     entity_id = f"nextcapos-{user['id']}-{lid}"
     redirect_url = f"https://app.composio.dev/connect/{cfg['app']}?entity={entity_id}"
     composio_connected_id = None
@@ -3751,29 +3752,59 @@ async def create_external_source(
     # provider login). The frontend renders an explanatory toast in that case.
     oauth_not_configured = False
 
+    # Composio v3 flow: first look up an existing auth_config for this toolkit
+    # (or fail loudly if none) — then POST /connected_accounts to initiate
+    # the OAuth dance for that user against that auth_config.
+    auth_config_id = None
     try:
         async with httpx.AsyncClient(timeout=15.0) as c:
-            r = await c.post(
-                f"{COMPOSIO_BASE_URL}/api/v3/connectedAccounts",
-                headers={"x-api-key": COMPOSIO_API_KEY, "Content-Type": "application/json"},
-                json={"appName": cfg["app"], "entityId": entity_id},
+            r = await c.get(
+                f"{COMPOSIO_BASE_URL}/api/v3/auth_configs?toolkit_slug={cfg['app']}",
+                headers={"x-api-key": COMPOSIO_API_KEY},
             )
             if r.status_code < 400:
-                payload = r.json()
-                redirect_url = payload.get("redirectUrl") or payload.get("redirect_url") or redirect_url
-                composio_connected_id = payload.get("id") or payload.get("connectedAccountId")
-            else:
-                # 4xx from Composio = config-side problem (no OAuth app, wrong
-                # toolkit slug, etc.). Surface a clear flag to the frontend.
-                oauth_not_configured = True
-                logger.warning(f"Composio init returned {r.status_code} for {body.source_kind}: {r.text[:200]}")
+                cfgs = (r.json() or {}).get("items") or []
+                if cfgs:
+                    auth_config_id = cfgs[0].get("id")
     except Exception as e:
-        logger.warning(f"Composio init for {body.source_kind} failed, using placeholder: {e}")
-        oauth_not_configured = True
+        logger.warning(f"Composio auth_configs lookup failed: {e}")
 
-    # If we couldn't get a real connectedAccount id back, the OAuth app for
-    # this toolkit almost certainly isn't configured in the Composio project
-    # — clicking the redirect would just dump the user on the dashboard.
+    if not auth_config_id:
+        # Without an auth_config the toolkit can't OAuth — surface the clear
+        # message and skip the initiate step.
+        oauth_not_configured = True
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as c:
+                r = await c.post(
+                    f"{COMPOSIO_BASE_URL}/api/v3/connected_accounts",
+                    headers={"x-api-key": COMPOSIO_API_KEY, "Content-Type": "application/json"},
+                    json={
+                        "auth_config": {"id": auth_config_id},
+                        "connection": {"user_id": entity_id},
+                    },
+                )
+                if r.status_code < 400:
+                    payload = r.json() or {}
+                    # v3 wraps the new account under various keys depending
+                    # on the release — try them all.
+                    ca = payload.get("connectedAccount") or payload.get("connected_account") or payload
+                    redirect_url = (
+                        ca.get("redirect_url") or ca.get("redirectUrl")
+                        or payload.get("redirect_url") or payload.get("redirectUrl")
+                        or redirect_url
+                    )
+                    composio_connected_id = ca.get("id") or payload.get("id")
+                else:
+                    oauth_not_configured = True
+                    logger.warning(f"Composio initiate {r.status_code} for {body.source_kind}: {r.text[:200]}")
+        except Exception as e:
+            logger.warning(f"Composio initiate for {body.source_kind} failed: {e}")
+            oauth_not_configured = True
+
+    # Final safety net: if we still don't have a connectedAccount id, treat
+    # this as "not configured" rather than silently routing the seller to
+    # the Composio dashboard.
     if not composio_connected_id:
         oauth_not_configured = True
 
@@ -3793,11 +3824,11 @@ async def create_external_source(
         "last_sync_at": None,
         "file_count": 0,
         "last_error": (
-            f"{cfg['label']} OAuth isn't configured in your Composio project yet. "
-            "Open dashboard.composio.dev → Toolkits → "
-            f"{cfg['label']} → Setup, enable default credentials (or paste your own "
-            "OAuth client_id + secret), then retry. The Connect button currently "
-            "lands on the Composio dashboard because no provider login is wired up."
+            f"{cfg['label']} OAuth isn't set up in your Composio project. "
+            f"Open dashboard.composio.dev → Auth Configs → New → pick \"{cfg['label']}\" "
+            "→ enable \"Use Composio managed auth\" (or paste your own client_id/secret) "
+            "→ Save. Also make sure your Composio API key has WRITE scopes "
+            "(the current key returns 401 on POST /connected_accounts). Then retry."
         ) if oauth_not_configured else None,
     }
     await db.listing_external_sources.insert_one(doc)
@@ -3854,7 +3885,7 @@ async def poll_external_source(lid: str, sid: str, user=Depends(get_current_user
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
             r = await c.get(
-                f"{COMPOSIO_BASE_URL}/api/v3/connectedAccounts/{src['composio_connected_id']}",
+                f"{COMPOSIO_BASE_URL}/api/v3/connected_accounts/{src['composio_connected_id']}",
                 headers={"x-api-key": COMPOSIO_API_KEY},
             )
             if r.status_code < 400:
@@ -4058,7 +4089,7 @@ async def disconnect_external_source(lid: str, sid: str, user=Depends(get_curren
         try:
             async with httpx.AsyncClient(timeout=10.0) as c:
                 await c.delete(
-                    f"{COMPOSIO_BASE_URL}/api/v3/connectedAccounts/{src['composio_connected_id']}",
+                    f"{COMPOSIO_BASE_URL}/api/v3/connected_accounts/{src['composio_connected_id']}",
                     headers={"x-api-key": COMPOSIO_API_KEY},
                 )
         except Exception as e:
@@ -4090,7 +4121,7 @@ async def _wipe_listing_external_sources(lid: str):
         try:
             async with httpx.AsyncClient(timeout=10.0) as c:
                 await c.delete(
-                    f"{COMPOSIO_BASE_URL}/api/v3/connectedAccounts/{src['composio_connected_id']}",
+                    f"{COMPOSIO_BASE_URL}/api/v3/connected_accounts/{src['composio_connected_id']}",
                     headers={"x-api-key": COMPOSIO_API_KEY},
                 )
         except Exception:

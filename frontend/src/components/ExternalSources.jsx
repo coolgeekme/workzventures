@@ -79,12 +79,12 @@ export default function ExternalSources({ listingId, viewAsPrincipal = false }) 
       });
       const src = r.data;
       if (src.oauth_not_configured) {
-        // Composio couldn't initiate a real OAuth handshake — the project
-        // doesn't have an OAuth app set up for this toolkit yet, so the
-        // redirect URL would dump the user on the Composio dashboard.
+        // Composio couldn't initiate a real OAuth handshake — either the
+        // project doesn't have an auth_config for this toolkit, OR the API
+        // key is read-only. The backend's last_error has the precise fix.
         toast.warning(`${src.label} not configured in Composio`, {
-          description: "Open dashboard.composio.dev → Toolkits → " + src.label + " → Setup, then retry.",
-          duration: 10000,
+          description: src.last_error || "Open dashboard.composio.dev → Auth Configs → New, set up this toolkit, then retry.",
+          duration: 15000,
         });
       } else {
         toast.success(`Opened ${src.label} login in a new tab`, {
