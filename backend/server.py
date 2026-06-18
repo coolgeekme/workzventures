@@ -1796,6 +1796,11 @@ async def download_listing_staged_file(lid: str, file_id: str, user=Depends(get_
 
 @api_router.delete("/listings/{lid}/staged-files/{file_id}")
 async def delete_listing_staged_file(lid: str, file_id: str, user=Depends(get_current_user)):
+    """Soft-delete the staged copy AND cascade-delete every cloned copy that
+    already lives inside open Vaults (including Preview Vaults). Without the
+    cascade, a seller who deletes a doc by mistake — or to retract a wrongly
+    uploaded confidential file — would still see it surface to every buyer
+    who'd already opened a Vault, because clones live in `deal_room_files`."""
     await _seller_listing_or_404(lid, user)
     res = await db.listing_staged_files.update_one(
         {"id": file_id, "listing_id": lid, "deleted_at": {"$exists": False}},
@@ -1803,8 +1808,25 @@ async def delete_listing_staged_file(lid: str, file_id: str, user=Depends(get_cu
     )
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="File not found")
-    await log_audit(user["id"], "listing.stagedfile.delete", lid, {"file_id": file_id})
-    return {"ok": True}
+
+    # Cascade — hard-delete the cloned copies (rows + GridFS bytes) so the
+    # bytes really leave the platform. Soft-deleting wouldn't help because
+    # GET /deal-rooms/{id} doesn't filter on deleted_at for room files.
+    clones = await db.deal_room_files.find(
+        {"cloned_from_listing_file": file_id}, {"_id": 0, "gridfs_id": 1, "id": 1, "room_id": 1}
+    ).to_list(500)
+    cascaded = 0
+    for c in clones:
+        try:
+            await gridfs_bucket.delete(ObjectId(c["gridfs_id"]))
+        except Exception:
+            pass  # gridfs entry may already be gone; continue with the row
+        await db.deal_room_files.delete_one({"id": c["id"]})
+        cascaded += 1
+
+    await log_audit(user["id"], "listing.stagedfile.delete", lid,
+                    {"file_id": file_id, "cascaded_clones": cascaded})
+    return {"ok": True, "cascaded_clones": cascaded}
 
 
 # -----------------------------------------------------------------------------
@@ -4500,12 +4522,46 @@ async def list_deal_rooms(user=Depends(get_current_user)):
     return rooms
 
 
+async def _purge_orphan_room_clones(rid: str) -> int:
+    """Retroactive self-heal: drop any deal_room_files row that was cloned from
+    a staged listing file whose source has since been deleted. Without this,
+    seller deletions made before the cascade-on-delete patch leak forever
+    into already-opened Vaults. Hard-deletes the GridFS bytes too so they
+    really leave the platform."""
+    clones = await db.deal_room_files.find(
+        {"room_id": rid, "cloned_from_listing_file": {"$ne": None, "$exists": True}},
+        {"_id": 0, "id": 1, "gridfs_id": 1, "cloned_from_listing_file": 1},
+    ).to_list(500)
+    if not clones:
+        return 0
+    source_ids = [c["cloned_from_listing_file"] for c in clones if c.get("cloned_from_listing_file")]
+    live_sources = await db.listing_staged_files.find(
+        {"id": {"$in": source_ids}, "deleted_at": {"$exists": False}},
+        {"_id": 0, "id": 1},
+    ).to_list(500)
+    live_set = {s["id"] for s in live_sources}
+    purged = 0
+    for c in clones:
+        if c.get("cloned_from_listing_file") in live_set:
+            continue
+        try:
+            await gridfs_bucket.delete(ObjectId(c["gridfs_id"]))
+        except Exception:
+            pass
+        await db.deal_room_files.delete_one({"id": c["id"]})
+        purged += 1
+    return purged
+
+
 @api_router.get("/deal-rooms/{rid}")
 async def get_deal_room(rid: str, user=Depends(get_current_user)):
     room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
     if not room:
         raise HTTPException(status_code=404, detail="Vault not found")
     await participant_check(room, user)
+    # Retroactive cleanup: purge clones whose staged source was deleted before
+    # the cascade-on-delete patch. Cheap (single $in query) and idempotent.
+    await _purge_orphan_room_clones(rid)
     room["files"] = await db.deal_room_files.find({"room_id": rid}, {"_id": 0, "content": 0, "pages": 0}).sort("uploaded_at", -1).to_list(500)
     room["requests"] = await db.deal_room_requests.find({"room_id": rid}, {"_id": 0}).sort("created_at", 1).to_list(200)
     room["findings"] = await db.deal_room_findings.find({"room_id": rid}, {"_id": 0}).sort("created_at", -1).to_list(200)
