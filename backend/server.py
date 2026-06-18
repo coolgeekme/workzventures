@@ -3770,6 +3770,119 @@ async def _composio_action_execute(action_slug: str, connected_account_id: str, 
     return r.json()
 
 
+# Per-toolkit Google/Microsoft/etc API endpoints used by the proxy-execute
+# fallback when Composio's predefined `*_DOWNLOAD_FILE` action fails (e.g.,
+# Drive's known "Missing presigned URL" bug in the R2 staging step —
+# composio issues #3471 / #3477). Proxy execute injects auth server-side
+# and returns either `data` (small JSON/text) or `binary_data: {url, ...}`
+# which we then fetch with a follow-up HTTP GET.
+PROXY_DOWNLOAD_ENDPOINTS = {
+    # Google Drive: regular files use ?alt=media; native Docs/Sheets/Slides
+    # need /export with a target mimeType (handled in the helper below).
+    "googledrive": {"path": "/drive/v3/files/{file_id}", "query": [("alt", "media")]},
+    # Microsoft Graph: shared base URL for OneDrive + SharePoint document libs.
+    "onedrive":    {"path": "/v1.0/me/drive/items/{file_id}/content", "query": []},
+    "sharepoint":  {"path": "/v1.0/me/drive/items/{file_id}/content", "query": []},
+    # Box content endpoint (returns 302 → presigned S3; proxy follows it).
+    "box":         {"path": "/2.0/files/{file_id}/content", "query": []},
+}
+
+# Google Workspace native mime types → export target. Composio cannot read
+# these via ?alt=media (they have no binary form), so we ask Drive to export
+# to a downloadable Office equivalent before mirroring.
+GOOGLE_DRIVE_EXPORT_MAP = {
+    "application/vnd.google-apps.document":
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.google-apps.spreadsheet":
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.google-apps.presentation":
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.google-apps.drawing": "application/pdf",
+}
+
+
+async def _composio_proxy_download(
+    source_kind: str, connected_account_id: str, file_id: str,
+    mime_type: str | None = None, user_id: str | None = None,
+) -> bytes | None:
+    """Fallback download path: call the toolkit's native HTTP API via
+    Composio's proxy execute (POST /api/v3.1/tools/execute/proxy). Returns
+    raw bytes on success, None on any failure. Designed to be wrapped in
+    try/except by the caller — never raises for upstream errors so the
+    list-sync loop can record per-file errors without aborting.
+
+    Why this exists: Composio's predefined `GOOGLEDRIVE_DOWNLOAD_FILE`
+    action stages content via R2 and intermittently returns "Missing
+    presigned URL in upload response". Proxy execute talks directly to
+    Google's `/drive/v3/files/{id}?alt=media` endpoint and skips R2.
+    Dropbox is intentionally omitted — its download endpoint requires a
+    `Dropbox-API-Arg` request header rather than a query param, and the
+    standard predefined action handles it reliably."""
+    if source_kind not in PROXY_DOWNLOAD_ENDPOINTS:
+        return None
+    if not COMPOSIO_API_KEY:
+        return None
+    cfg = PROXY_DOWNLOAD_ENDPOINTS[source_kind]
+    endpoint = cfg["path"].format(file_id=file_id)
+    query_params = list(cfg["query"])
+    # Google Drive: detect native types and route through /export instead.
+    if source_kind == "googledrive" and mime_type and mime_type.startswith("application/vnd.google-apps."):
+        export_target = GOOGLE_DRIVE_EXPORT_MAP.get(mime_type)
+        if not export_target:
+            return None  # unsupported Google native type
+        endpoint = f"/drive/v3/files/{file_id}/export"
+        query_params = [("mimeType", export_target)]
+    parameters = [{"name": k, "value": v, "type": "query"} for k, v in query_params]
+    payload: dict = {
+        "endpoint": endpoint,
+        "method": "GET",
+        "connected_account_id": connected_account_id,
+        "parameters": parameters,
+    }
+    if user_id:
+        payload["user_id"] = user_id
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as c:
+            r = await c.post(
+                f"{COMPOSIO_BASE_URL}/api/v3.1/tools/execute/proxy",
+                headers={"x-api-key": COMPOSIO_API_KEY, "Content-Type": "application/json"},
+                json=payload,
+            )
+        if r.status_code >= 400:
+            logger.warning(f"proxy download {source_kind}/{file_id} failed {r.status_code}: {r.text[:200]}")
+            return None
+        body = r.json()
+    except Exception as e:
+        logger.warning(f"proxy download {source_kind}/{file_id} crashed: {e}")
+        return None
+
+    # Composio's proxy returns binary content via either:
+    #   1) `binary_data: { url, content_type, size, expires_at }` — large files
+    #   2) `data` as a raw string when content was small enough to inline
+    bin_meta = body.get("binary_data") or {}
+    bin_url = bin_meta.get("url") if isinstance(bin_meta, dict) else None
+    if bin_url:
+        try:
+            async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as c:
+                rr = await c.get(bin_url)
+                if rr.status_code < 400:
+                    return rr.content
+                logger.warning(f"proxy fetch binary url failed {rr.status_code}: {rr.text[:200]}")
+        except Exception as e:
+            logger.warning(f"proxy fetch binary url crashed: {e}")
+        return None
+    data_field = body.get("data")
+    if isinstance(data_field, str) and data_field:
+        # Try base64 first (likely if it came from a binary endpoint), fall
+        # back to raw bytes encoding.
+        import base64 as _b64
+        try:
+            return _b64.b64decode(data_field, validate=True)
+        except Exception:
+            return data_field.encode("utf-8", errors="replace")
+    return None
+
+
 @api_router.post("/listings/{lid}/external-sources")
 async def create_external_source(
     lid: str, body: ExternalSourceCreate, user=Depends(get_current_user)
@@ -4180,34 +4293,49 @@ async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
                 user_id=src.get("entity_id"),
             )
             dl_resp = _normalise_composio_response(raw_dl)
-            if not dl_resp.get("successful"):
-                errors.append(f"{name}: download successful=false ({str(dl_resp.get('error'))[:100]})")
-                continue
-            dl_raw = dl_resp.get("data") or {}
-            # Drive's DOWNLOAD_FILE returns either `file` (a string of bytes,
-            # possibly base64), or a presigned URL. Other connectors use
-            # `content_base64`, `data`, or just `file_content`. Try all.
-            b64 = (
-                dl_raw.get("content_base64") or dl_raw.get("file_content")
-                or (dl_raw.get("file") if isinstance(dl_raw.get("file"), str) else None)
-            )
-            url = dl_raw.get("download_url") or dl_raw.get("url")
-            if not url and isinstance(dl_raw.get("file"), dict):
-                url = dl_raw["file"].get("url") or dl_raw["file"].get("download_url")
             blob: bytes | None = None
-            if b64:
-                import base64 as _b64
-                try:
-                    blob = _b64.b64decode(b64)
-                except Exception:
-                    blob = None
-            if blob is None and url:
-                async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as c:
-                    rr = await c.get(url)
-                    if rr.status_code < 400:
-                        blob = rr.content
-            if not blob:
-                errors.append(f"{name}: no bytes in download response")
+            action_error: str | None = None
+            if not dl_resp.get("successful"):
+                action_error = str(dl_resp.get("error"))[:160]
+            else:
+                dl_raw = dl_resp.get("data") or {}
+                # Drive's DOWNLOAD_FILE returns either `file` (a string of bytes,
+                # possibly base64), or a presigned URL. Other connectors use
+                # `content_base64`, `data`, or just `file_content`. Try all.
+                b64 = (
+                    dl_raw.get("content_base64") or dl_raw.get("file_content")
+                    or (dl_raw.get("file") if isinstance(dl_raw.get("file"), str) else None)
+                )
+                url = dl_raw.get("download_url") or dl_raw.get("url")
+                if not url and isinstance(dl_raw.get("file"), dict):
+                    url = dl_raw["file"].get("url") or dl_raw["file"].get("download_url")
+                if b64:
+                    import base64 as _b64
+                    try:
+                        blob = _b64.b64decode(b64)
+                    except Exception:
+                        blob = None
+                if blob is None and url:
+                    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as c:
+                        rr = await c.get(url)
+                        if rr.status_code < 400:
+                            blob = rr.content
+            # FALLBACK: predefined action couldn't deliver bytes (known
+            # Composio bug — "Missing presigned URL in upload response" on
+            # Drive; sporadic on other connectors). Try Proxy Execute next,
+            # which talks to the underlying API (Google / MS Graph / Box)
+            # directly and skips Composio's R2 staging path entirely.
+            if blob is None:
+                blob = await _composio_proxy_download(
+                    src["source_kind"], src["composio_connected_id"],
+                    external_id, mime_type=mime, user_id=src.get("entity_id"),
+                )
+            if blob is None:
+                # Surface the original action error if we have one, else a generic.
+                errors.append(
+                    f"{name}: download failed via action + proxy"
+                    + (f" (action error: {action_error})" if action_error else "")
+                )
                 continue
             if len(blob) > 50 * 1024 * 1024:
                 errors.append(f"{name}: exceeds 50 MB cap, skipped")
