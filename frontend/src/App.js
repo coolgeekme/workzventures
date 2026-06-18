@@ -42,10 +42,30 @@ import PublicListingPreview from "./pages/PublicListingPreview";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
 
+// Rule 2: routes accessible to collab-only users. Anything else redirects to
+// /app/listings — their single landing surface. Server-side endpoints are
+// independently gated via _listing_for_*_or_404 so URL-typing won't expose
+// data; this is purely a UX redirect.
+const COLLAB_ALLOWED_PATHS = [
+  "/app/listings",
+  "/app/rooms",
+  "/app/security",
+  "/app/org",
+];
+
+function isCollabAllowed(pathname) {
+  return COLLAB_ALLOWED_PATHS.some(
+    (p) => pathname === p || pathname.startsWith(p + "/"),
+  );
+}
+
 function Protected({ children }) {
   const { user } = useAuth();
   const location = useLocation();
   if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
+  if (user.account_scope === "collaborator" && !isCollabAllowed(location.pathname)) {
+    return <Navigate to="/app/listings" replace />;
+  }
   return <Layout>{children}</Layout>;
 }
 
@@ -53,6 +73,7 @@ function AdminOnly({ children }) {
   const { user } = useAuth();
   const location = useLocation();
   if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
+  if (user.account_scope === "collaborator") return <Navigate to="/app/listings" replace />;
   if (user.role !== "admin") return <Navigate to="/app/dashboard" replace />;
   return <Layout>{children}</Layout>;
 }

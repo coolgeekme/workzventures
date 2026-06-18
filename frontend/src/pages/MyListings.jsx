@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "../lib/api";
+import { useAuth } from "../lib/auth";
 import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X, UsersThree, Eye, EyeSlash, ShareNetwork, Buildings, Vault } from "@phosphor-icons/react";
 import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
 import ListingCollaborators from "../components/ListingCollaborators";
@@ -21,6 +22,8 @@ const emptyForm = {
 };
 
 export default function MyListings() {
+  const { user } = useAuth();
+  const isCollabOnly = user?.account_scope === "collaborator";
   const [listings, setListings] = useState([]);
   const [show, setShow] = useState(false);
   const [form, setForm] = useState(emptyForm);
@@ -85,15 +88,23 @@ export default function MyListings() {
     <div data-testid="listings-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
       <div className="flex items-end justify-between mb-8">
         <div>
-          <div className="overline mb-3" style={{ color: "var(--wz-amber)" }}>Seller workspace</div>
-          <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium">My listings</h1>
+          <div className="overline mb-3" style={{ color: isCollabOnly ? "var(--wz-gold)" : "var(--wz-amber)" }}>
+            {isCollabOnly ? "Collaborator workspace" : "Seller workspace"}
+          </div>
+          <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium">
+            {isCollabOnly ? "My collaborations" : "My listings"}
+          </h1>
           <p className="text-sm text-[var(--wz-text-secondary)] mt-2 max-w-xl">
-            Add portfolio companies for sale. Flip a listing to <span className="text-[var(--wz-positive)]">Live</span> to expose it on the buyer marketplace.
+            {isCollabOnly
+              ? "Listings you've been invited to collaborate on. You can use every in-listing tool — Vault, Data Room, Co-pilot, Preview-as-Buyer."
+              : <>Add portfolio companies for sale. Flip a listing to <span className="text-[var(--wz-positive)]">Live</span> to expose it on the buyer marketplace.</>}
           </p>
         </div>
-        <button data-testid="add-listing" onClick={() => setShow(!show)} className="wz-btn wz-btn-gold flex items-center gap-2">
-          <Plus size={14} /> New listing
-        </button>
+        {!isCollabOnly && (
+          <button data-testid="add-listing" onClick={() => setShow(!show)} className="wz-btn wz-btn-gold flex items-center gap-2">
+            <Plus size={14} /> New listing
+          </button>
+        )}
       </div>
 
       {show && (

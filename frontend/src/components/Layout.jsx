@@ -69,6 +69,11 @@ const ADMIN_NAV = [
   { to: "/app/audit", label: "Audit Logs", icon: ListChecks, group: "Platform (Admin)" },
 ];
 
+const COLLAB_NAV = [
+  { to: "/app/listings", label: "My Collaborations", icon: Tag, group: "Listings" },
+  { to: "/app/security", label: "Security", icon: ShieldCheck, group: "Account" },
+];
+
 // Agent role = buyer + seller workspace combined. Pulls from both BUYER_NAV
 // and SELLER_NAV (de-duped) so a broker can act as either side without
 // swapping accounts. Org is surfaced under Platform.
@@ -83,7 +88,11 @@ const AGENT_NAV = (() => {
   return items;
 })();
 
-function navFor(role) {
+function navFor(role, accountScope) {
+  // Rule 2: collaborator-only accounts get a stripped-down nav regardless of
+  // their declared role. They land on the single listing(s) they collaborate
+  // on and have no access to platform-wide tools.
+  if (accountScope === "collaborator") return COLLAB_NAV;
   if (role === "seller") return SELLER_NAV;
   if (role === "admin") return ADMIN_NAV;
   // For "agent", caller should pass the agent's current workspace mode
@@ -138,7 +147,8 @@ export default function Layout({ children }) {
   }, []);
 
   useEffect(() => {
-    if (!user || !(user.role === "seller" || user.role === "admin")) return;
+    if (!user || user.account_scope === "collaborator") return;
+    if (!(user.role === "seller" || user.role === "admin")) return;
     let cancelled = false;
     const fetchCounts = async () => {
       try {
@@ -155,11 +165,20 @@ export default function Layout({ children }) {
   // For role="agent" the nav, chrome accents and pills follow whichever
   // workspace mode the agent is currently in. Other roles are unaffected.
   const effectiveRole = user?.role === "agent" ? agentMode : user?.role;
-  const NAV = navFor(effectiveRole);
+  // Rule 2/3: collab-only users (no owned listings, no org-admin) get a
+  // restricted nav + upgrade CTA. Computed live on the backend per request.
+  const isCollabOnly = user?.account_scope === "collaborator";
+  const NAV = navFor(effectiveRole, user?.account_scope);
   const groups = [...new Set(NAV.map((n) => n.group))];
   const isSeller = effectiveRole === "seller";
-  const isAgent = user?.role === "agent";
-  const rolePillClass = effectiveRole === "seller" ? "pill-amber" : effectiveRole === "admin" ? "pill-positive" : "pill-gold";
+  const isAgent = user?.role === "agent" && !isCollabOnly;
+  const rolePillClass = isCollabOnly
+    ? "pill"
+    : effectiveRole === "seller"
+      ? "pill-amber"
+      : effectiveRole === "admin"
+        ? "pill-positive"
+        : "pill-gold";
 
   return (
     <div className="min-h-screen lg:grid lg:grid-cols-[260px_1fr] grain" data-testid="app-shell">
@@ -169,24 +188,45 @@ export default function Layout({ children }) {
       {/* Desktop sidebar (>= lg) */}
       <aside className="hidden lg:flex border-r border-[var(--wz-border)] flex-col" data-testid="sidebar">
         <div className="px-6 pt-7 pb-5 border-b border-[var(--wz-border)]">
-          <Link to="/app/dashboard" className="flex items-center gap-3" data-testid="brand-link">
+          <Link to="/app/listings" className="flex items-center gap-3" data-testid="brand-link">
             <Logo size="md" testid="sidebar-logo" />
             <div>
               <div className="font-display font-medium tracking-tighter text-lg leading-none">NextCapOS</div>
               <div className="overline mt-1">
-                {isAgent
-                  ? `Agent · ${isSeller ? "Sell-side" : "Buy-side"} mode`
-                  : isSeller
-                    ? "Sell-side console"
-                    : user?.role === "admin"
-                      ? "Admin · platform"
-                      : "Buy-side console"}
+                {isCollabOnly
+                  ? "Collaborator · listing-scoped"
+                  : isAgent
+                    ? `Agent · ${isSeller ? "Sell-side" : "Buy-side"} mode`
+                    : isSeller
+                      ? "Sell-side console"
+                      : user?.role === "admin"
+                        ? "Admin · platform"
+                        : "Buy-side console"}
               </div>
             </div>
           </Link>
         </div>
 
         <nav className="flex-1 px-3 py-4 overflow-y-auto">
+          {isCollabOnly && (
+            <div
+              data-testid="collab-upgrade-cta"
+              className="mb-5 mx-1 p-4 border border-[var(--wz-gold)]/40 bg-[var(--wz-gold)]/5"
+            >
+              <div className="overline mb-2 text-[var(--wz-gold)]">Become a full member</div>
+              <p className="text-xs text-[var(--wz-text-secondary)] leading-relaxed mb-3">
+                You&apos;re collaborating on listings as a guest. Unlock Buyer Discovery,
+                Outreach, Newsletter, your own Vault and more.
+              </p>
+              <a
+                href="mailto:team@nextcapos.com?subject=Upgrade%20to%20full%20member"
+                data-testid="collab-upgrade-link"
+                className="text-[10px] font-mono-wz uppercase tracking-widest text-[var(--wz-gold)] hover:underline"
+              >
+                Contact sales &rsaquo;
+              </a>
+            </div>
+          )}
           {groups.map((g) => (
             <div key={g} className="mb-5">
               <div className="overline px-3 mb-2">{g}</div>
@@ -269,13 +309,15 @@ export default function Layout({ children }) {
               UTC {time.toISOString().substring(11, 19)}
             </span>
             <span className={`pill ${rolePillClass}`}>
-              {isAgent
-                ? `Agent · ${isSeller ? "Sell-side" : "Buy-side"}`
-                : isSeller
-                  ? "NextCapOS · Sell-side"
-                  : user?.role === "admin"
-                    ? "NextCapOS · Admin"
-                    : "NextCapOS · Buy-side"}
+              {isCollabOnly
+                ? "NextCapOS · Collaborator"
+                : isAgent
+                  ? `Agent · ${isSeller ? "Sell-side" : "Buy-side"}`
+                  : isSeller
+                    ? "NextCapOS · Sell-side"
+                    : user?.role === "admin"
+                      ? "NextCapOS · Admin"
+                      : "NextCapOS · Buy-side"}
             </span>
             <ThemeToggle testId="theme-toggle-btn-desktop" />
           </div>

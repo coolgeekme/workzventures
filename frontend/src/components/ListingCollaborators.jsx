@@ -150,7 +150,9 @@ export default function ListingCollaborators({ listingId, sellerId, currentAcces
           <div className="border border-[var(--wz-border)] divide-y divide-[var(--wz-border)]">
             {data.collaborators.map((c) => {
               const isOwner = c.user_id === sellerId;
-              const canEdit = !readOnly && !isOwner;
+              // Server tells us whether the current viewer can manage this row
+              // (Rule 1B: principal owner OR original inviter only).
+              const canEdit = !readOnly && !isOwner && c.can_manage;
               return (
                 <div key={c.user_id} data-testid={`collab-${c.user_id}`} className="flex items-center justify-between p-3 gap-3">
                   <div className="min-w-0">
@@ -178,7 +180,7 @@ export default function ListingCollaborators({ listingId, sellerId, currentAcces
                         <option value="viewer">Viewer</option>
                       </select>
                     ) : (
-                      <span className="text-xs text-[var(--wz-text-tertiary)]">{c.role}</span>
+                      <span className="text-xs text-[var(--wz-text-tertiary)]" title={!isOwner && !readOnly ? "Only the principal or the person who invited this collaborator can change their role" : undefined}>{c.role}</span>
                     )}
                     {canEdit && (
                       <button
@@ -210,7 +212,7 @@ export default function ListingCollaborators({ listingId, sellerId, currentAcces
                     {iv.role} · expires {new Date(iv.expires_at).toLocaleDateString()}
                   </div>
                 </div>
-                {!readOnly && (
+                {!readOnly && iv.can_manage && (
                   <div className="flex items-center gap-2 shrink-0">
                     <button
                       onClick={() => resendInvite(iv.id, iv.email)}
@@ -230,6 +232,11 @@ export default function ListingCollaborators({ listingId, sellerId, currentAcces
                       <X size={12} /> Cancel
                     </button>
                   </div>
+                )}
+                {!readOnly && !iv.can_manage && (
+                  <span className="text-[10px] font-mono-wz uppercase tracking-widest text-[var(--wz-text-tertiary)]" title="Only the principal or the user who sent this invite can resend or cancel it">
+                    locked
+                  </span>
                 )}
               </div>
             ))}

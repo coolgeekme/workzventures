@@ -62,7 +62,16 @@ const MORE_ADMIN = [
   { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp },
 ];
 
-function tabsFor(role) {
+const COLLAB_TABS = [
+  { to: "/app/listings", label: "Listings", icon: Tag },
+  { to: "/app/rooms", label: "Vault", icon: Files },
+  { to: "/app/org", label: "Org", icon: ChartBar },
+  { to: "/app/security", label: "Security", icon: ShieldCheck },
+];
+const MORE_COLLAB = []; // collab-only users have no platform-wide tools
+
+function tabsFor(role, accountScope) {
+  if (accountScope === "collaborator") return { primary: COLLAB_TABS, more: MORE_COLLAB };
   if (role === "seller") return { primary: SELLER_TABS, more: MORE_SELLER };
   if (role === "admin") return { primary: ADMIN_TABS, more: MORE_ADMIN };
   return { primary: BUYER_TABS, more: MORE_BUYER };
@@ -72,9 +81,10 @@ export default function BottomTabBar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
-  const { primary, more } = tabsFor(user?.role);
-  const accent = user?.role === "seller" ? "var(--wz-amber)" : user?.role === "admin" ? "var(--wz-positive)" : "var(--wz-gold)";
-  const rolePillClass = user?.role === "seller" ? "pill-amber" : user?.role === "admin" ? "pill-positive" : "pill-gold";
+  const { primary, more } = tabsFor(user?.role, user?.account_scope);
+  const isCollabOnly = user?.account_scope === "collaborator";
+  const accent = isCollabOnly ? "var(--wz-gold)" : user?.role === "seller" ? "var(--wz-amber)" : user?.role === "admin" ? "var(--wz-positive)" : "var(--wz-gold)";
+  const rolePillClass = isCollabOnly ? "pill" : user?.role === "seller" ? "pill-amber" : user?.role === "admin" ? "pill-positive" : "pill-gold";
 
   return (
     <>

@@ -96,6 +96,11 @@ class UserPublic(BaseModel):
     created_at: datetime
     is_demo: bool = False
     demo_data_retention_hours: Optional[int] = None
+    # Computed at serialize time: "collaborator" if the user has zero owned
+    # listings AND zero org_admin memberships AND isn't an admin. Drives the
+    # restricted nav + the "Become a full member" upgrade CTA. Principals
+    # (owners, agents, sellers with their own deals) get "principal".
+    account_scope: Literal["collaborator", "principal"] = "principal"
 
 
 class RegisterRequest(BaseModel):
@@ -262,7 +267,38 @@ def serialize_user(doc: dict) -> dict:
         else datetime.fromisoformat(doc["created_at"]),
         "is_demo": is_demo,
         "demo_data_retention_hours": 48 if is_demo else None,
+        # Default "principal" — overwritten by serialize_user_with_scope().
+        # Sync call sites that don't need the live computation (e.g. JWT
+        # refresh of stale token data) get the safe default.
+        "account_scope": "principal",
     }
+
+
+async def _compute_account_scope(user_id: str, role: str) -> str:
+    """
+    "collaborator" iff the user owns ZERO listings AND holds ZERO org_admin
+    memberships AND isn't an admin. Drives the restricted nav + upgrade CTA.
+    Principals (anyone who owns at least one listing OR admins an org OR is
+    a platform admin) get "principal".
+    """
+    if role == "admin":
+        return "principal"
+    owned = await db.listings.count_documents({"seller_id": user_id})
+    if owned > 0:
+        return "principal"
+    org_admin = await db.org_memberships.count_documents(
+        {"user_id": user_id, "role": "org_admin"}
+    )
+    if org_admin > 0:
+        return "principal"
+    return "collaborator"
+
+
+async def serialize_user_with_scope(doc: dict) -> dict:
+    """Like serialize_user but with the live account_scope computed."""
+    base = serialize_user(doc)
+    base["account_scope"] = await _compute_account_scope(doc["id"], base["role"])
+    return base
 
 
 async def get_current_user(
@@ -900,7 +936,7 @@ async def register(body: RegisterRequest, request: Request):
             "ok": True,
             "status": "active",
             "token": token,
-            "user": UserPublic(**serialize_user(doc)).model_dump(),
+            "user": UserPublic(**await serialize_user_with_scope(doc)).model_dump(),
             "listing_id": listing_invite["listing_id"] if listing_invite else None,
             "org_id": org_invite["org_id"] if org_invite else None,
         }
@@ -1085,12 +1121,12 @@ async def login(body: LoginRequest, request: Request):
     await _record_login_attempt(email_norm, ok=True, ip=ip)
     token = create_token(user["id"], user["role"])
     await log_audit(user["id"], "auth.login", body.email)
-    return TokenResponse(token=token, user=UserPublic(**serialize_user(user)))
+    return TokenResponse(token=token, user=UserPublic(**await serialize_user_with_scope(user)))
 
 
 @api_router.get("/auth/me", response_model=UserPublic)
 async def me(user=Depends(get_current_user)):
-    return UserPublic(**serialize_user(user))
+    return UserPublic(**await serialize_user_with_scope(user))
 
 
 # -----------------------------------------------------------------------------
@@ -1411,7 +1447,7 @@ async def accept_invite(body: AcceptInviteRequest):
     )
     token = create_token(user_id, doc["role"])
     await log_audit(user_id, "auth.accept_invite", inv["id"], {"email": inv["email"], "role": inv["role"]})
-    return TokenResponse(token=token, user=UserPublic(**serialize_user(doc)))
+    return TokenResponse(token=token, user=UserPublic(**await serialize_user_with_scope(doc)))
 
 
 # -----------------------------------------------------------------------------
@@ -6531,13 +6567,26 @@ async def accept_org_invite(token: str, user=Depends(get_current_user)):
 @api_router.get("/listings/{lid}/collaborators")
 async def list_listing_collaborators(lid: str, user=Depends(get_current_user)):
     listing = await _listing_for_view_or_404(lid, user)
+    collabs = listing.get("collaborators", []) or []
+    pending = await db.listing_invites.find(
+        {"listing_id": lid, "accepted_at": None}, {"_id": 0, "token": 0}
+    ).sort("created_at", -1).to_list(50)
+    # Decorate every row with `can_manage` so the UI can hide role / remove /
+    # resend / cancel controls in one place. Rule 1B: principal owner OR
+    # original inviter only (admin overrides everything).
+    for c in collabs:
+        c["can_manage"] = _can_manage_collab_member(listing, user, c.get("user_id"))
+    for iv in pending:
+        iv["can_manage"] = _can_manage_pending_invite(listing, user, iv)
     return {
         "owner_id": listing.get("seller_id"),
         "org_id": listing.get("org_id"),
-        "collaborators": listing.get("collaborators", []) or [],
-        "pending_invites": await db.listing_invites.find(
-            {"listing_id": lid, "accepted_at": None}, {"_id": 0, "token": 0}
-        ).sort("created_at", -1).to_list(50),
+        "collaborators": collabs,
+        "pending_invites": pending,
+        # The viewer's own perspective — handy for client-side feature gates
+        # (e.g. show or hide the "Invite a collaborator" form for non-managers).
+        "viewer_is_principal": listing.get("seller_id") == user["id"],
+        "viewer_id": user["id"],
     }
 
 
@@ -6592,11 +6641,43 @@ async def invite_listing_collaborator(lid: str, body: CollaboratorInviteRequest,
     return {"ok": True, "invite_id": invite["id"], "token": token, "accept_url": accept_url}
 
 
+def _can_manage_collab_member(listing: dict, current_user: dict, member_id: str) -> bool:
+    """
+    Inviter-or-principal rule (Rule 1B):
+      - Principal owner of the listing can manage every collaborator.
+      - Otherwise, the caller can only manage collaborators THEY personally
+        invited (matches `invited_by` on the collaborator entry).
+      - Platform admin always allowed.
+    """
+    if current_user.get("role") == "admin":
+        return True
+    if listing.get("seller_id") == current_user["id"]:
+        return True
+    for c in listing.get("collaborators") or []:
+        if c.get("user_id") == member_id and c.get("invited_by") == current_user["id"]:
+            return True
+    return False
+
+
+def _can_manage_pending_invite(listing: dict, current_user: dict, invite: dict) -> bool:
+    """Same rule as _can_manage_collab_member but against a pending invite doc."""
+    if current_user.get("role") == "admin":
+        return True
+    if listing.get("seller_id") == current_user["id"]:
+        return True
+    return invite.get("invited_by") == current_user["id"]
+
+
 @api_router.delete("/listings/{lid}/collaborators/{member_id}")
 async def remove_listing_collaborator(lid: str, member_id: str, user=Depends(get_current_user)):
     listing = await _listing_for_edit_or_404(lid, user)
     if listing.get("seller_id") == member_id:
         raise HTTPException(status_code=400, detail="Cannot remove the principal owner")
+    if not _can_manage_collab_member(listing, user, member_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the principal owner or the person who invited this collaborator can remove them.",
+        )
     res = await db.listings.update_one(
         {"id": lid},
         {"$pull": {"collaborators": {"user_id": member_id}}},
@@ -6615,11 +6696,18 @@ class CollaboratorRolePatch(BaseModel):
 async def update_listing_collaborator_role(
     lid: str, member_id: str, body: CollaboratorRolePatch, user=Depends(get_current_user),
 ):
-    """Change an existing collaborator's role. The principal owner's role is
-    immutable (use remove + re-invite if that ever needs to change)."""
+    """Change an existing collaborator's role. Only the principal owner of the
+    listing, or the user who originally invited this collaborator, can
+    mutate the role (Rule 1B). The principal owner's own role is
+    immutable — use remove + re-invite if that ever needs to change."""
     listing = await _listing_for_edit_or_404(lid, user)
     if listing.get("seller_id") == member_id:
         raise HTTPException(status_code=400, detail="Cannot change the principal owner's role")
+    if not _can_manage_collab_member(listing, user, member_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the principal owner or the person who invited this collaborator can change their role.",
+        )
     res = await db.listings.update_one(
         {"id": lid, "collaborators.user_id": member_id},
         {"$set": {"collaborators.$.role": body.role}},
@@ -6633,10 +6721,9 @@ async def update_listing_collaborator_role(
 
 @api_router.delete("/listings/{lid}/collaborators/invites/{iid}")
 async def revoke_listing_invite(lid: str, iid: str, user=Depends(get_current_user)):
-    """Cancel a pending listing-collaborator invite. Only listing editors can
-    revoke. Already-accepted invites can't be revoked (use DELETE on the
-    collaborator instead)."""
-    await _listing_for_edit_or_404(lid, user)
+    """Cancel a pending listing-collaborator invite. Only the principal owner
+    or the user who created the invite can revoke (Rule 1B)."""
+    listing = await _listing_for_edit_or_404(lid, user)
     inv = await db.listing_invites.find_one({"id": iid, "listing_id": lid}, {"_id": 0})
     if not inv:
         raise HTTPException(status_code=404, detail="Invite not found")
@@ -6644,6 +6731,11 @@ async def revoke_listing_invite(lid: str, iid: str, user=Depends(get_current_use
         raise HTTPException(
             status_code=400,
             detail="Invite already accepted — remove the collaborator instead.",
+        )
+    if not _can_manage_pending_invite(listing, user, inv):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the principal owner or the user who sent this invite can cancel it.",
         )
     await db.listing_invites.delete_one({"id": iid, "listing_id": lid})
     await log_audit(user["id"], "listing.invite.revoke", lid,
@@ -6935,13 +7027,19 @@ async def resend_org_invite(org_id: str, iid: str, user=Depends(get_current_user
 
 @api_router.post("/listings/{lid}/collaborators/{iid}/resend")
 async def resend_listing_invite(lid: str, iid: str, user=Depends(get_current_user)):
-    """Re-fire the email for a pending listing-collaborator invite."""
-    await _listing_for_edit_or_404(lid, user)
+    """Re-fire the email for a pending listing-collaborator invite. Only the
+    principal owner or the inviter can resend (Rule 1B)."""
+    listing = await _listing_for_edit_or_404(lid, user)
     inv = await db.listing_invites.find_one({"id": iid, "listing_id": lid}, {"_id": 0})
     if not inv:
         raise HTTPException(status_code=404, detail="Invite not found")
     if inv.get("accepted_at"):
         raise HTTPException(status_code=400, detail="Invite already accepted")
+    if not _can_manage_pending_invite(listing, user, inv):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the principal owner or the user who sent this invite can resend it.",
+        )
     accept_url = mail_link(f"/accept-listing-invite?token={inv['token']}")
     register_url = mail_link(f"/register?invite_token={inv['token']}&invite_kind=listing")
     msg_block = f"<blockquote style='border-left:3px solid #ddd;margin:16px 0;padding:8px 14px;color:#444;'>{inv.get('message')}</blockquote>" if inv.get("message") else ""
