@@ -4032,6 +4032,49 @@ async def _mirror_one_file(lid: str, sid: str, src_kind: str, raw_name: str,
     return file_id
 
 
+# Per-toolkit input parameter mapping for the folder-id field. Google Drive
+# expects `folderId` (camelCase), Box uses `folder_id`, SharePoint uses
+# `folderPath` etc. Without this map the user-supplied folder ID is silently
+# ignored and the action lists from the drive's root.
+FOLDER_PARAM_KEY = {
+    "googledrive": "folderId",
+    "one_drive":   "folder_id",
+    "share_point": "folder_id",
+    "dropbox":     "path",
+    "box":         "folder_id",
+}
+
+
+def _normalise_composio_response(resp: dict) -> dict:
+    """Composio v3 `/tools/execute` wraps the action's native output. Peel the
+    layers so callers always see `{successful, data, error}` at the top."""
+    if not isinstance(resp, dict):
+        return {"successful": False, "data": None, "error": "non-dict response"}
+    # Some toolkit responses come back as { data: { successful, data, error } }
+    # others as { successful, data, error } directly. Normalise.
+    if "successful" in resp and "data" in resp:
+        return resp
+    inner = resp.get("data") or resp.get("response_data") or {}
+    if isinstance(inner, dict) and "successful" in inner:
+        return inner
+    # Last resort: treat the whole thing as data if it has no envelope at all.
+    return {"successful": True, "data": resp, "error": None}
+
+
+def _extract_files_array(data_obj) -> list:
+    """Pull the file-list array out of an action's `data` payload. Different
+    connectors use different keys — try them in the order we've seen."""
+    if isinstance(data_obj, list):
+        return data_obj
+    if not isinstance(data_obj, dict):
+        return []
+    for key in ("files", "entries", "value", "items", "fileList", "results"):
+        v = data_obj.get(key)
+        if isinstance(v, list):
+            return v
+    return []
+
+
 async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
     """The actual sync work — runs in a background task so the HTTP request
     returns immediately and Cloudflare's 100s gateway timeout never fires.
@@ -4043,14 +4086,30 @@ async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
     if not src or src["status"] != "active":
         return
     cfg = COMPOSIO_FILE_SOURCES[src["source_kind"]]
+    folder_key = FOLDER_PARAM_KEY.get(src["source_kind"], "folder_id")
     list_input: dict = {}
     if src.get("folder_id"):
-        list_input["folder_id"] = src["folder_id"]
+        # Use the per-toolkit canonical key (e.g. `folderId` for Drive).
+        list_input[folder_key] = src["folder_id"]
+    # Google Drive's LIST_FILES caps default pageSize at 100 and includes a
+    # `q` filter; passing pageSize ensures we ask for the full first batch.
+    if src["source_kind"] == "googledrive":
+        list_input["pageSize"] = 100
+        # If user gave us a folder ID, also build the standard query to
+        # filter children of that folder. Drive accepts EITHER folderId OR a
+        # `q` parameter — folderId is the convenience shortcut. Without
+        # either, Drive returns ALL files in the user's drive (root + nested).
 
     pulled = 0
     errors: list[str] = []
+    sample_response: str | None = None  # for debugging — captured below
     try:
-        list_resp = await _composio_action_execute(cfg["list"], src["composio_connected_id"], list_input)
+        raw_resp = await _composio_action_execute(cfg["list"], src["composio_connected_id"], list_input)
+        # Stash a truncated sample so the seller can paste it back to us when
+        # debugging "0 files pulled" — without this we'd have no visibility
+        # into what each toolkit actually returns.
+        sample_response = json.dumps(raw_resp, default=str)[:1200]
+        list_resp = _normalise_composio_response(raw_resp)
     except HTTPException as e:
         await db.listing_external_sources.update_one(
             {"id": sid},
@@ -4066,10 +4125,16 @@ async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
         )
         return
 
-    raw = list_resp.get("data") or list_resp.get("response_data") or list_resp
-    files_meta = raw.get("files") or raw.get("entries") or raw.get("value") or raw.get("items") or []
-    if isinstance(raw, list):
-        files_meta = raw
+    if not list_resp.get("successful"):
+        await db.listing_external_sources.update_one(
+            {"id": sid},
+            {"$set": {"syncing": False, "last_sync_at": now_utc().isoformat(),
+                      "last_error": f"list returned successful=false: {str(list_resp.get('error'))[:280]}",
+                      "last_response_sample": sample_response}},
+        )
+        return
+
+    files_meta = _extract_files_array(list_resp.get("data"))
 
     for f in files_meta[:100]:
         external_id = f.get("id") or f.get("file_id") or f.get("ID")
@@ -4084,10 +4149,22 @@ async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
         if existing:
             continue
         try:
-            dl = await _composio_action_execute(cfg["download"], src["composio_connected_id"], {"file_id": external_id})
-            dl_raw = dl.get("data") or dl.get("response_data") or dl
-            b64 = dl_raw.get("content_base64") or dl_raw.get("data") or dl_raw.get("file_content")
+            raw_dl = await _composio_action_execute(cfg["download"], src["composio_connected_id"], {"file_id": external_id})
+            dl_resp = _normalise_composio_response(raw_dl)
+            if not dl_resp.get("successful"):
+                errors.append(f"{name}: download successful=false ({str(dl_resp.get('error'))[:100]})")
+                continue
+            dl_raw = dl_resp.get("data") or {}
+            # Drive's DOWNLOAD_FILE returns either `file` (a string of bytes,
+            # possibly base64), or a presigned URL. Other connectors use
+            # `content_base64`, `data`, or just `file_content`. Try all.
+            b64 = (
+                dl_raw.get("content_base64") or dl_raw.get("file_content")
+                or (dl_raw.get("file") if isinstance(dl_raw.get("file"), str) else None)
+            )
             url = dl_raw.get("download_url") or dl_raw.get("url")
+            if not url and isinstance(dl_raw.get("file"), dict):
+                url = dl_raw["file"].get("url") or dl_raw["file"].get("download_url")
             blob: bytes | None = None
             if b64:
                 import base64 as _b64
@@ -4124,11 +4201,21 @@ async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
     new_count = await db.listing_staged_files.count_documents(
         {"listing_id": lid, "source.sid": sid, "deleted_at": {"$exists": False}}
     )
+    final_error = "; ".join(errors[:3]) if errors else None
+    # If we got 0 files AND no errors, the list call probably parsed wrong —
+    # surface the raw sample so we can see what shape it actually was.
+    if pulled == 0 and not final_error and not files_meta:
+        final_error = (
+            "List returned 0 files. If your folder actually has files, paste this "
+            "back to your engineer to fix the response parser: "
+            f"{sample_response[:600] if sample_response else '(no sample captured)'}"
+        )
     await db.listing_external_sources.update_one(
         {"id": sid},
         {"$set": {"syncing": False, "last_sync_at": now_utc().isoformat(),
                   "file_count": new_count,
-                  "last_error": "; ".join(errors[:3]) if errors else None}},
+                  "last_error": final_error,
+                  "last_response_sample": sample_response}},
     )
     await log_audit(user_id, "listing.source.sync", lid,
                     {"sid": sid, "pulled": pulled, "total": new_count, "errors": len(errors)})

@@ -217,7 +217,7 @@ export default function ExternalSources({ listingId, viewAsPrincipal = false }) 
                   {s.folder_id ? ` · folder ${s.folder_id}` : ""}
                 </div>
                 {s.last_error && (
-                  <div className="text-[10px] mt-1 text-[var(--wz-danger)] flex items-start gap-1">
+                  <div className="text-[10px] mt-1 text-[var(--wz-danger)] flex items-start gap-1 break-all">
                     <Warning size={10} className="mt-0.5 shrink-0" /> {s.last_error}
                   </div>
                 )}
