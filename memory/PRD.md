@@ -390,6 +390,20 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
   - `readOnly` mode (View-as-principal preview) suppresses all role selects, remove buttons, and resend/revoke buttons.
 - **Tested** (iter-18): backend pytest `tests/test_collab_role_revoke.py` 9/9 pass + frontend Playwright 4/4 pass.
 
+## What's been implemented (2026-06-17 — iter-19 Collab account scope + Rule 1B inviter-or-principal gating)
+- **Problem solved**: Any editor on a listing could change anyone's role / revoke anyone's invite — not the pricing-tier story the user wants. Also, collaborator-only users were seeing the full app nav and could navigate to Buyer Discovery, Outreach, Newsletter etc. that they shouldn't have access to.
+- **Backend** (`server.py`):
+  - `UserPublic.account_scope: 'collaborator' | 'principal'`, computed live each `/auth/me` (or login/register/accept-invite) call via `_compute_account_scope(user_id, role)` — returns `principal` for admins, anyone owning ≥1 listing, or any org_admin; otherwise `collaborator`. No schema change — fully reactive: a collab-only user creating their first listing flips to `principal` on the next call.
+  - `_can_manage_collab_member(listing, user, member_id)` and `_can_manage_pending_invite(listing, user, invite)` helpers encode Rule 1B (principal owner OR original inviter only; admin always allowed). Applied to PATCH role, DELETE collaborator, DELETE invite (revoke), POST invite resend — all now return HTTP 403 with a clear message if Rule 1B is violated.
+  - `GET /api/listings/{lid}/collaborators` now decorates every collaborator row and pending invite with `can_manage: bool`, plus top-level `viewer_is_principal` + `viewer_id` for client convenience. Single Mongo read, no N+1.
+- **Frontend**:
+  - `Layout.jsx` — new `COLLAB_NAV` (My Collaborations + Security), `navFor(role, accountScope)` picks it for collab-only users. Adds a `collab-upgrade-cta` block with mailto link to `team@nextcapos.com`. Topbar pill reads `NextCapOS · Collaborator`, sidebar subtitle reads `Collaborator · listing-scoped`.
+  - `App.js` — `Protected` wrapper redirects collab-only users away from any non-allow-listed path. `COLLAB_ALLOWED_PATHS = ['/app/listings','/app/rooms','/app/security','/app/org']` (the last so a collab can accept an org invite that would promote them).
+  - `BottomTabBar.jsx` — same gating for mobile (COLLAB_TABS).
+  - `MyListings.jsx` — `New listing` button (data-testid `add-listing`) is REMOVED from the DOM for collab-only users; page H1 retitles to "My collaborations" with `Collaborator workspace` overline.
+  - `ListingCollaborators.jsx` — gates per-row role select, Remove, Resend, and Cancel buttons by the server-supplied `can_manage` flag. Pending invites the viewer can't manage display a small `locked` pill instead.
+- **Tested** (iter-19): backend pytest `tests/test_collab_rule_1b_scope.py` 17/17 PASS + 1 skipped. Frontend Playwright 5/5 PASS (nav, CTA, pill+subtitle, MyListings retitle, route guard for 10 restricted paths). Also tightened iter-18's `test_editor_collaborator_can_patch_role_and_revoke_invites` which had grown stale under Rule 1B — now explicitly asserts the 403 for non-inviter editors.
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)

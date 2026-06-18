@@ -292,27 +292,42 @@ def test_revoke_nonexistent_invite_404(seller_token, seller_listing_id):
 # ---------------------------------------------------------------------------
 
 def test_editor_collaborator_can_patch_role_and_revoke_invites(seller_token, seller_listing_id):
+    # Rule 1B: an editor can only manage members THEY personally invited (plus the
+    # principal owner can manage everyone). This test exercises the inviter path:
+    # an editor invites Carol, then PATCHes Carol's role + revokes a separate
+    # invite they created. The editor can NOT mutate a Mira-invited collaborator.
     # Step 1: invite + register an "agent" as editor — they get an active user + jwt
     agent_id, agent_email, agent_jwt = _materialize_collab(
         seller_token, seller_listing_id, role="editor"
     )
 
-    # Step 2: as Mira, create a SECOND collab (viewer) so the agent has someone to PATCH
-    target_id, target_email, _ = _materialize_collab(
+    # Step 2: as Mira (principal), create a SECOND collab (viewer) — the agent
+    # MUST NOT be able to patch this one (Rule 1B).
+    mira_invited_id, _, _ = _materialize_collab(
         seller_token, seller_listing_id, role="viewer"
     )
-
-    # Step 3: agent PATCHes target's role to editor
     r = requests.patch(
-        f"{API}/listings/{seller_listing_id}/collaborators/{target_id}",
+        f"{API}/listings/{seller_listing_id}/collaborators/{mira_invited_id}",
         headers=_auth(agent_jwt),
         json={"role": "editor"},
         timeout=20,
     )
-    assert r.status_code == 200, f"agent PATCH should succeed: {r.status_code} {r.text}"
+    assert r.status_code == 403, f"agent must NOT PATCH a Mira-invited collab under Rule 1B: {r.status_code} {r.text}"
+
+    # Step 3: now the agent invites THEIR OWN collab + PATCHes — should succeed.
+    own_target_id, _, _ = _materialize_collab(
+        agent_jwt, seller_listing_id, role="viewer"
+    )
+    r = requests.patch(
+        f"{API}/listings/{seller_listing_id}/collaborators/{own_target_id}",
+        headers=_auth(agent_jwt),
+        json={"role": "editor"},
+        timeout=20,
+    )
+    assert r.status_code == 200, f"agent PATCH on their own invitee should succeed: {r.status_code} {r.text}"
     assert r.json().get("role") == "editor"
 
-    # Step 4: agent creates a NEW invite (already supported), then revokes it
+    # Step 4: agent creates a NEW invite, then revokes it (they're the inviter).
     new_email = _rand_email()
     inv = _create_invite(agent_jwt, seller_listing_id, new_email, role="viewer")
     iid = inv["invite_id"]
@@ -322,5 +337,5 @@ def test_editor_collaborator_can_patch_role_and_revoke_invites(seller_token, sel
         headers=_auth(agent_jwt),
         timeout=20,
     )
-    assert r.status_code == 200, f"agent revoke should succeed: {r.status_code} {r.text}"
+    assert r.status_code == 200, f"agent revoke of own invite should succeed: {r.status_code} {r.text}"
     assert r.json().get("ok") is True
