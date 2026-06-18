@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X, UsersThree, Eye, EyeSlash, ShareNetwork, Buildings, Vault } from "@phosphor-icons/react";
+import ExternalSources from "../components/ExternalSources";
 import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
 import ListingCollaborators from "../components/ListingCollaborators";
 import ShareLinkModal from "../components/ShareLinkModal";
@@ -592,10 +593,20 @@ function ListingDataRoom({ listingId, listingName, viewAsPrincipal = false }) {
               files.map((f) => (
                 <div key={f.id} className="py-2 flex items-center justify-between gap-3 text-sm" data-testid={`dataroom-file-row-${f.id}`}>
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium truncate">{f.filename}</span>
                       <span className="pill text-[10px]">{f.folder}</span>
                       {f.encrypted && <span className="pill pill-positive text-[10px]">AES-256</span>}
+                      {f.source?.kind && (
+                        <span
+                          className="pill text-[10px]"
+                          style={{ borderColor: "var(--wz-gold)", color: "var(--wz-gold)" }}
+                          data-testid={`source-badge-${f.id}`}
+                          title={`Mirrored from ${f.source.kind}`}
+                        >
+                          via {f.source.kind}
+                        </span>
+                      )}
                     </div>
                     <div className="text-[10px] font-mono-wz text-[var(--wz-text-tertiary)] mt-0.5">
                       {(f.size_bytes / 1024).toFixed(1)} KB · {f.page_count || 0} pg · {new Date(f.uploaded_at).toLocaleString()}
@@ -625,6 +636,10 @@ function ListingDataRoom({ listingId, listingName, viewAsPrincipal = false }) {
               ))
             )}
           </div>
+
+          {/* External file sources (Composio-mirrored) — render under the
+              same expander so sellers see uploads + sources as one surface. */}
+          <ExternalSources listingId={listingId} viewAsPrincipal={viewAsPrincipal} />
         </div>
       )}
     </div>

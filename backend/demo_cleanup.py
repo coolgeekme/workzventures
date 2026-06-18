@@ -37,6 +37,7 @@ USER_OWNED_COLLECTIONS: List[str] = [
     "watchlist",
     "agent_activity",
     "composio_connections",
+    "listing_external_sources",
 ]
 
 

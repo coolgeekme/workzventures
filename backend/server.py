@@ -1611,6 +1611,7 @@ async def create_listing(body: ListingCreate, user=Depends(get_current_user), or
 @api_router.patch("/listings/{lid}")
 async def update_listing(lid: str, body: ListingCreate, user=Depends(get_current_user)):
     await _listing_for_edit_or_404(lid, user)
+    prev = await db.listings.find_one({"id": lid}, {"_id": 0, "status": 1})
     res = await db.listings.update_one(
         {"id": lid},
         {"$set": body.model_dump()},
@@ -1618,6 +1619,11 @@ async def update_listing(lid: str, body: ListingCreate, user=Depends(get_current
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Listing not found")
     await log_audit(user["id"], "listing.update", lid)
+    # Rule 3A: closing a listing immediately revokes every external OAuth
+    # connection and wipes mirrored bytes — the seller's source platforms
+    # should never retain a live token for an archived deal.
+    if prev and prev.get("status") != "closed" and body.status == "closed":
+        await _wipe_listing_external_sources(lid)
     return {"ok": True}
 
 
@@ -1629,6 +1635,8 @@ async def delete_listing(lid: str, user=Depends(get_current_user)):
     _, role = await _resolve_listing_access(user, listing)
     if role not in ("owner", "org_admin", "admin"):
         raise HTTPException(status_code=403, detail="Only the principal owner or org admin can delete")
+    # Same wipe rule as close — full delete should evict OAuth too.
+    await _wipe_listing_external_sources(lid)
     await db.listings.delete_one({"id": lid})
     await log_audit(user["id"], "listing.delete", lid)
     return {"ok": True}
@@ -3667,6 +3675,407 @@ async def push_inquiry_to_zoho(inquiry_id: str, user=Depends(get_current_user)):
             else "Local sync recorded; Composio Proxy Execute did not confirm — verify Zoho Auth Config in Composio dashboard."
         ),
     }
+
+
+# -----------------------------------------------------------------------------
+# LISTING EXTERNAL FILE SOURCES (Composio-mirrored)
+#
+# Architecture (per user choice "Mirror first"):
+#   Seller connects ONE of six file sources (Google Drive, OneDrive,
+#   SharePoint, Dropbox, Box, Zoho WorkDrive) per listing via Composio OAuth.
+#   When the connection turns ACTIVE we pull file metadata + bytes through
+#   Composio actions and persist into the SAME listing_staged_files schema as
+#   manual uploads — so the existing Vault clone path, Copilot indexer, NDA
+#   gating and audit all keep working unchanged. Collaborators and buyers
+#   read the mirrored copy through the existing /staged-files endpoints with
+#   no extra OAuth (Rule: "one seller-side login, many readers").
+#
+# On listing close/archive the connection is revoked and mirrored bytes are
+# wiped (Rule 3A: immediate purge).
+# -----------------------------------------------------------------------------
+COMPOSIO_FILE_SOURCES = {
+    "googledrive":   {"label": "Google Drive",   "app": "googledrive",    "list": "GOOGLEDRIVE_LIST_FILES",     "download": "GOOGLEDRIVE_DOWNLOAD_FILE"},
+    "onedrive":      {"label": "OneDrive",       "app": "onedrive",       "list": "ONEDRIVE_LIST_FILES",        "download": "ONEDRIVE_DOWNLOAD_FILE"},
+    "sharepoint":    {"label": "SharePoint",     "app": "sharepoint",     "list": "SHAREPOINT_LIST_FILES",      "download": "SHAREPOINT_DOWNLOAD_FILE"},
+    "dropbox":       {"label": "Dropbox",        "app": "dropbox",        "list": "DROPBOX_LIST_FILES",         "download": "DROPBOX_DOWNLOAD_FILE"},
+    "box":           {"label": "Box",            "app": "box",            "list": "BOX_LIST_FILES",             "download": "BOX_DOWNLOAD_FILE"},
+    "zohoworkdrive": {"label": "Zoho WorkDrive", "app": "zoho_work_drive", "list": "ZOHOWORKDRIVE_LIST_FILES",  "download": "ZOHOWORKDRIVE_DOWNLOAD_FILE"},
+}
+
+
+class ExternalSourceCreate(BaseModel):
+    source_kind: Literal["googledrive", "onedrive", "sharepoint", "dropbox", "box", "zohoworkdrive"]
+    folder_id: Optional[str] = None
+    label: Optional[str] = None
+
+
+async def _composio_action_execute(action_slug: str, connected_account_id: str, input_params: dict | None = None) -> dict:
+    """Thin wrapper around POST /api/v3/tools/execute/{slug}. Raises HTTPException
+    with the upstream body on failure so we surface useful messages."""
+    if not COMPOSIO_API_KEY:
+        raise HTTPException(status_code=400, detail="Composio API key not configured")
+    async with httpx.AsyncClient(timeout=60.0) as c:
+        r = await c.post(
+            f"{COMPOSIO_BASE_URL}/api/v3/tools/execute/{action_slug}",
+            headers={"x-api-key": COMPOSIO_API_KEY, "Content-Type": "application/json"},
+            json={"connectedAccountId": connected_account_id, "input": input_params or {}},
+        )
+    if r.status_code >= 400:
+        # Upstream errors are usually informative — pass them through.
+        raise HTTPException(status_code=502, detail=f"Composio action {action_slug} failed: {r.text[:400]}")
+    return r.json()
+
+
+@api_router.post("/listings/{lid}/external-sources")
+async def create_external_source(
+    lid: str, body: ExternalSourceCreate, user=Depends(get_current_user)
+):
+    """Seller initiates an OAuth-backed Composio connection for one file source.
+    The caller must be a listing editor or principal owner."""
+    await _listing_for_edit_or_404(lid, user)
+    cfg = COMPOSIO_FILE_SOURCES.get(body.source_kind)
+    if not cfg:
+        raise HTTPException(status_code=400, detail="Unknown source kind")
+    if not COMPOSIO_API_KEY:
+        raise HTTPException(status_code=400, detail="Composio API key not configured")
+
+    # Entity ID scopes the connection to listing-owner pair so the same seller
+    # can connect different sources for different deals without cross-talk.
+    entity_id = f"nextcapos-{user['id']}-{lid}"
+    redirect_url = f"https://app.composio.dev/connect/{cfg['app']}?entity={entity_id}"
+    composio_connected_id = None
+    status_label = "pending"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as c:
+            r = await c.post(
+                f"{COMPOSIO_BASE_URL}/api/v3/connectedAccounts",
+                headers={"x-api-key": COMPOSIO_API_KEY, "Content-Type": "application/json"},
+                json={"appName": cfg["app"], "entityId": entity_id},
+            )
+            if r.status_code < 400:
+                payload = r.json()
+                redirect_url = payload.get("redirectUrl") or payload.get("redirect_url") or redirect_url
+                composio_connected_id = payload.get("id") or payload.get("connectedAccountId")
+    except Exception as e:
+        logger.warning(f"Composio init for {body.source_kind} failed, using placeholder: {e}")
+
+    sid = str(uuid.uuid4())
+    doc = {
+        "id": sid,
+        "listing_id": lid,
+        "source_kind": body.source_kind,
+        "label": body.label or cfg["label"],
+        "folder_id": body.folder_id,  # null = "root" / "all of my drive"
+        "entity_id": entity_id,
+        "composio_connected_id": composio_connected_id,
+        "redirect_url": redirect_url,
+        "status": status_label,
+        "created_by": user["id"],
+        "created_at": now_utc().isoformat(),
+        "last_sync_at": None,
+        "file_count": 0,
+        "last_error": None,
+    }
+    await db.listing_external_sources.insert_one(doc)
+    # Also drop a row in the legacy composio_connections collection so the
+    # existing /composio/connections list keeps showing it.
+    await db.composio_connections.insert_one({
+        "id": sid,
+        "user_id": user["id"],
+        "app": cfg["app"],
+        "entity_id": entity_id,
+        "status": status_label,
+        "redirect_url": redirect_url,
+        "listing_id": lid,
+        "created_at": doc["created_at"],
+    })
+    await log_audit(user["id"], "listing.source.connect.init", lid,
+                    {"source_kind": body.source_kind, "sid": sid})
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/listings/{lid}/external-sources")
+async def list_external_sources(lid: str, user=Depends(get_current_user)):
+    """List file sources connected to a listing. Viewer just needs read access
+    on the listing (collaborators + buyers in active Vaults included)."""
+    await _listing_for_view_or_404(lid, user)
+    rows = await db.listing_external_sources.find(
+        {"listing_id": lid, "deleted_at": {"$exists": False}}, {"_id": 0, "redirect_url": 0}
+    ).sort("created_at", -1).to_list(50)
+    return {"sources": rows, "supported": [
+        {"kind": k, "label": v["label"]} for k, v in COMPOSIO_FILE_SOURCES.items()
+    ]}
+
+
+@api_router.post("/listings/{lid}/external-sources/{sid}/poll")
+async def poll_external_source(lid: str, sid: str, user=Depends(get_current_user)):
+    """Ask Composio whether the OAuth dance finished. Called by the frontend
+    every few seconds after opening the connect window. Marks the source
+    ACTIVE on success so the sync button unlocks."""
+    await _listing_for_edit_or_404(lid, user)
+    src = await db.listing_external_sources.find_one(
+        {"id": sid, "listing_id": lid, "deleted_at": {"$exists": False}}, {"_id": 0}
+    )
+    if not src:
+        raise HTTPException(status_code=404, detail="Source not found")
+    if src["status"] == "active":
+        return {"status": "active", "source": src}
+    if not src.get("composio_connected_id"):
+        return {"status": src["status"]}
+
+    new_status = src["status"]
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.get(
+                f"{COMPOSIO_BASE_URL}/api/v3/connectedAccounts/{src['composio_connected_id']}",
+                headers={"x-api-key": COMPOSIO_API_KEY},
+            )
+            if r.status_code < 400:
+                payload = r.json()
+                upstream = (payload.get("status") or "").upper()
+                if upstream == "ACTIVE":
+                    new_status = "active"
+                elif upstream in ("FAILED", "EXPIRED", "REVOKED"):
+                    new_status = "failed"
+    except Exception as e:
+        logger.warning(f"Composio poll failed: {e}")
+
+    if new_status != src["status"]:
+        await db.listing_external_sources.update_one(
+            {"id": sid}, {"$set": {"status": new_status}}
+        )
+        await db.composio_connections.update_one(
+            {"id": sid}, {"$set": {"status": new_status}}
+        )
+        await log_audit(user["id"], "listing.source.status", lid,
+                        {"sid": sid, "status": new_status})
+    src["status"] = new_status
+    return {"status": new_status, "source": src}
+
+
+async def _mirror_one_file(lid: str, sid: str, src_kind: str, raw_name: str,
+                            data: bytes, content_type: str, external_id: str,
+                            user_id: str) -> str:
+    """Persist a single externally-pulled file using the SAME schema as manual
+    uploads so the Vault clone + Copilot indexer just work. Returns file_id."""
+    file_id = str(uuid.uuid4())
+    filename = raw_name or f"{src_kind}-{file_id}"
+    plaintext_sha = sha256_hex(data)
+
+    storage_bytes = data
+    encrypted = False
+    encryption_alg = None
+    if encryption_configured():
+        try:
+            aad = f"listing:{lid}:{file_id}".encode("utf-8")
+            enc = encrypt_bytes(data, associated_data=aad)
+            storage_bytes = enc["envelope"]
+            encrypted = True
+            encryption_alg = enc["alg"]
+        except Exception as e:
+            logger.warning(f"At-rest encryption failed for external file, storing plaintext: {e}")
+
+    gridfs_id = await listing_files_bucket.upload_from_stream(
+        filename, io.BytesIO(storage_bytes),
+        metadata={
+            "listing_id": lid, "file_id": file_id, "uploaded_by": user_id,
+            "content_type": content_type, "encrypted": encrypted,
+            "encryption_alg": encryption_alg, "source": src_kind, "source_sid": sid,
+        },
+    )
+
+    pages = extract_pages_from_bytes(filename, data)
+    flat = pages_to_flat_text(pages)
+
+    await db.listing_staged_files.insert_one({
+        "id": file_id, "listing_id": lid, "filename": filename, "folder": "other",
+        "content_type": content_type, "size_bytes": len(data),
+        "page_count": len(pages), "pages": pages, "content": flat,
+        "char_count": len(flat), "gridfs_id": str(gridfs_id), "storage": "listing_gridfs",
+        "encrypted": encrypted, "encryption_alg": encryption_alg,
+        "sha256_hex": plaintext_sha, "uploaded_by": user_id,
+        "uploaded_at": now_utc().isoformat(),
+        # External-source provenance (so the UI badges it and the cleanup
+        # job knows which files to wipe on disconnect / listing close).
+        "source": {"kind": src_kind, "sid": sid, "external_id": external_id},
+    })
+    return file_id
+
+
+@api_router.post("/listings/{lid}/external-sources/{sid}/sync")
+async def sync_external_source(lid: str, sid: str, user=Depends(get_current_user)):
+    """Pull files from a connected source into the listing data room.
+    Listing editors only. Idempotent on external_id: re-running won't dup."""
+    await _listing_for_edit_or_404(lid, user)
+    src = await db.listing_external_sources.find_one(
+        {"id": sid, "listing_id": lid, "deleted_at": {"$exists": False}}, {"_id": 0}
+    )
+    if not src:
+        raise HTTPException(status_code=404, detail="Source not found")
+    if src["status"] != "active":
+        raise HTTPException(status_code=400, detail=f"Source is {src['status']}, not active. Complete OAuth first.")
+
+    cfg = COMPOSIO_FILE_SOURCES[src["source_kind"]]
+    list_input: dict = {}
+    if src.get("folder_id"):
+        # Action schemas vary slightly per toolkit (folder_id / folderId /
+        # parentId / q). We pass folder_id as the canonical key and Composio
+        # tolerates extra keys for connectors that don't use it.
+        list_input["folder_id"] = src["folder_id"]
+
+    try:
+        list_resp = await _composio_action_execute(cfg["list"], src["composio_connected_id"], list_input)
+    except HTTPException as e:
+        await db.listing_external_sources.update_one(
+            {"id": sid}, {"$set": {"last_error": str(e.detail)[:300], "last_sync_at": now_utc().isoformat()}}
+        )
+        raise
+
+    # Composio "execute" responses can wrap the payload under .data, .response_data
+    # or surface the raw provider response. Normalise into a list of {id, name,
+    # mime_type}. The exact key per toolkit varies — try the common shapes.
+    raw = list_resp.get("data") or list_resp.get("response_data") or list_resp
+    files_meta = raw.get("files") or raw.get("entries") or raw.get("value") or raw.get("items") or []
+    if isinstance(raw, list):  # some connectors return a bare list
+        files_meta = raw
+
+    pulled = 0
+    errors = []
+    for f in files_meta[:100]:  # cap per sync, sellers can re-sync for more
+        external_id = f.get("id") or f.get("file_id") or f.get("ID")
+        name = f.get("name") or f.get("filename") or f.get("title") or external_id
+        mime = f.get("mime_type") or f.get("mimeType") or f.get("content_type") or "application/octet-stream"
+        if not external_id:
+            continue
+        # Skip if we already mirrored this external_id under this source.
+        existing = await db.listing_staged_files.find_one(
+            {"listing_id": lid, "source.sid": sid, "source.external_id": external_id, "deleted_at": {"$exists": False}},
+            {"_id": 0, "id": 1},
+        )
+        if existing:
+            continue
+        try:
+            dl = await _composio_action_execute(cfg["download"], src["composio_connected_id"], {"file_id": external_id})
+            dl_raw = dl.get("data") or dl.get("response_data") or dl
+            # Pull bytes from common envelope shapes:
+            b64 = dl_raw.get("content_base64") or dl_raw.get("data") or dl_raw.get("file_content")
+            url = dl_raw.get("download_url") or dl_raw.get("url")
+            blob: bytes | None = None
+            if b64:
+                import base64 as _b64
+                try:
+                    blob = _b64.b64decode(b64)
+                except Exception:
+                    blob = None
+            if blob is None and url:
+                async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as c:
+                    rr = await c.get(url)
+                    if rr.status_code < 400:
+                        blob = rr.content
+            if not blob:
+                errors.append(f"{name}: no bytes in download response")
+                continue
+            if len(blob) > 50 * 1024 * 1024:
+                errors.append(f"{name}: exceeds 50 MB cap, skipped")
+                continue
+            await _mirror_one_file(lid, sid, src["source_kind"], name, blob, mime, external_id, user["id"])
+            pulled += 1
+        except HTTPException as e:
+            errors.append(f"{name}: {str(e.detail)[:140]}")
+        except Exception as e:
+            errors.append(f"{name}: {str(e)[:140]}")
+
+    new_count = await db.listing_staged_files.count_documents(
+        {"listing_id": lid, "source.sid": sid, "deleted_at": {"$exists": False}}
+    )
+    await db.listing_external_sources.update_one(
+        {"id": sid},
+        {"$set": {"last_sync_at": now_utc().isoformat(), "file_count": new_count,
+                  "last_error": "; ".join(errors[:3]) if errors else None}},
+    )
+    await log_audit(user["id"], "listing.source.sync", lid,
+                    {"sid": sid, "pulled": pulled, "total": new_count, "errors": len(errors)})
+    return {"ok": True, "pulled": pulled, "total": new_count, "errors": errors}
+
+
+async def _wipe_external_source_files(lid: str, sid: str):
+    """Delete every mirrored file (rows + GridFS bytes) belonging to a source."""
+    cur = db.listing_staged_files.find(
+        {"listing_id": lid, "source.sid": sid, "deleted_at": {"$exists": False}},
+        {"gridfs_id": 1, "id": 1},
+    )
+    async for f in cur:
+        try:
+            await listing_files_bucket.delete(ObjectId(f["gridfs_id"]))
+        except Exception:
+            pass
+    await db.listing_staged_files.update_many(
+        {"listing_id": lid, "source.sid": sid},
+        {"$set": {"deleted_at": now_utc().isoformat()}},
+    )
+
+
+@api_router.delete("/listings/{lid}/external-sources/{sid}")
+async def disconnect_external_source(lid: str, sid: str, user=Depends(get_current_user)):
+    """Disconnect a file source and wipe every mirrored byte. Best-effort
+    revoke on Composio's side; we always delete locally even if upstream
+    revoke fails so the seller's data is purged on schedule."""
+    await _listing_for_edit_or_404(lid, user)
+    src = await db.listing_external_sources.find_one(
+        {"id": sid, "listing_id": lid, "deleted_at": {"$exists": False}}, {"_id": 0}
+    )
+    if not src:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    if src.get("composio_connected_id"):
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as c:
+                await c.delete(
+                    f"{COMPOSIO_BASE_URL}/api/v3/connectedAccounts/{src['composio_connected_id']}",
+                    headers={"x-api-key": COMPOSIO_API_KEY},
+                )
+        except Exception as e:
+            logger.warning(f"Composio revoke failed (continuing local wipe): {e}")
+
+    await _wipe_external_source_files(lid, sid)
+    await db.listing_external_sources.update_one(
+        {"id": sid}, {"$set": {"deleted_at": now_utc().isoformat()}}
+    )
+    await db.composio_connections.update_one(
+        {"id": sid}, {"$set": {"status": "revoked", "revoked_at": now_utc().isoformat()}}
+    )
+    await log_audit(user["id"], "listing.source.disconnect", lid, {"sid": sid})
+    return {"ok": True}
+
+
+async def _wipe_listing_external_sources(lid: str):
+    """Listing-close hook: revoke every connected source and wipe its files.
+    Called from the status-flip path so closing a deal evicts the seller's
+    OAuth grants automatically (Rule 3A)."""
+    sources = await db.listing_external_sources.find(
+        {"listing_id": lid, "deleted_at": {"$exists": False}}, {"_id": 0}
+    ).to_list(100)
+    for src in sources:
+        if src.get("composio_connected_id"):
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as c:
+                    await c.delete(
+                        f"{COMPOSIO_BASE_URL}/api/v3/connectedAccounts/{src['composio_connected_id']}",
+                        headers={"x-api-key": COMPOSIO_API_KEY},
+                    )
+            except Exception:
+                pass
+        await _wipe_external_source_files(lid, src["id"])
+    await db.listing_external_sources.update_many(
+        {"listing_id": lid, "deleted_at": {"$exists": False}},
+        {"$set": {"deleted_at": now_utc().isoformat()}},
+    )
+    await db.composio_connections.update_many(
+        {"listing_id": lid, "status": {"$ne": "revoked"}},
+        {"$set": {"status": "revoked", "revoked_at": now_utc().isoformat()}},
+    )
 
 
 # -----------------------------------------------------------------------------
