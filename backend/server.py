@@ -3756,24 +3756,31 @@ async def create_external_source(
     # (or fail loudly if none) — then POST /connected_accounts to initiate
     # the OAuth dance for that user against that auth_config.
     auth_config_id = None
+    # Distinguish "bad key" (10401) from "no auth_config for this toolkit"
+    # so the frontend toast tells the user the right fix.
+    failure_reason = None  # None | "invalid_key" | "no_auth_config" | "init_failed"
     try:
         async with httpx.AsyncClient(timeout=15.0) as c:
             r = await c.get(
                 f"{COMPOSIO_BASE_URL}/api/v3/auth_configs?toolkit_slug={cfg['app']}",
                 headers={"x-api-key": COMPOSIO_API_KEY},
             )
-            if r.status_code < 400:
+            if r.status_code == 401:
+                failure_reason = "invalid_key"
+            elif r.status_code < 400:
                 cfgs = (r.json() or {}).get("items") or []
                 if cfgs:
                     auth_config_id = cfgs[0].get("id")
+                else:
+                    failure_reason = "no_auth_config"
+            else:
+                failure_reason = "init_failed"
+                logger.warning(f"Composio auth_configs {r.status_code} for {cfg['app']}: {r.text[:200]}")
     except Exception as e:
         logger.warning(f"Composio auth_configs lookup failed: {e}")
+        failure_reason = "init_failed"
 
-    if not auth_config_id:
-        # Without an auth_config the toolkit can't OAuth — surface the clear
-        # message and skip the initiate step.
-        oauth_not_configured = True
-    else:
+    if auth_config_id and failure_reason is None:
         try:
             async with httpx.AsyncClient(timeout=15.0) as c:
                 r = await c.post(
@@ -3784,10 +3791,10 @@ async def create_external_source(
                         "connection": {"user_id": entity_id},
                     },
                 )
-                if r.status_code < 400:
+                if r.status_code == 401:
+                    failure_reason = "invalid_key"
+                elif r.status_code < 400:
                     payload = r.json() or {}
-                    # v3 wraps the new account under various keys depending
-                    # on the release — try them all.
                     ca = payload.get("connectedAccount") or payload.get("connected_account") or payload
                     redirect_url = (
                         ca.get("redirect_url") or ca.get("redirectUrl")
@@ -3796,25 +3803,44 @@ async def create_external_source(
                     )
                     composio_connected_id = ca.get("id") or payload.get("id")
                 else:
-                    oauth_not_configured = True
+                    failure_reason = "init_failed"
                     logger.warning(f"Composio initiate {r.status_code} for {body.source_kind}: {r.text[:200]}")
         except Exception as e:
             logger.warning(f"Composio initiate for {body.source_kind} failed: {e}")
-            oauth_not_configured = True
+            failure_reason = "init_failed"
 
-    # Final safety net: if we still don't have a connectedAccount id, treat
-    # this as "not configured" rather than silently routing the seller to
-    # the Composio dashboard.
-    if not composio_connected_id:
-        oauth_not_configured = True
+    if not composio_connected_id and failure_reason is None:
+        failure_reason = "init_failed"
+    oauth_not_configured = failure_reason is not None
 
     sid = str(uuid.uuid4())
+    error_messages = {
+        "invalid_key": (
+            "Composio API key is invalid or has been rotated. The current key in "
+            "the backend env returns 401. Generate a fresh key at dashboard.composio.dev "
+            "→ Settings → API Keys with read+write scopes, paste it into your env "
+            "(COMPOSIO_API_KEY in production, /app/backend/.env in preview), and "
+            "redeploy. Pre-existing connections will keep working — only new connect "
+            "attempts need the new key."
+        ),
+        "no_auth_config": (
+            f"{cfg['label']} has no Auth Config in your Composio project yet. "
+            f"Open dashboard.composio.dev → Auth Configs → New → pick \"{cfg['label']}\" "
+            "→ enable \"Use Composio managed auth\" (or paste your own client_id/secret) "
+            "→ Save. Then click Connect again."
+        ),
+        "init_failed": (
+            f"Composio refused to initiate the {cfg['label']} OAuth handshake. "
+            "Check the backend logs for the upstream error, verify the auth_config "
+            "is set to \"active\", and confirm your API key still has write scopes."
+        ),
+    }
     doc = {
         "id": sid,
         "listing_id": lid,
         "source_kind": body.source_kind,
         "label": body.label or cfg["label"],
-        "folder_id": body.folder_id,  # null = "root" / "all of my drive"
+        "folder_id": body.folder_id,
         "entity_id": entity_id,
         "composio_connected_id": composio_connected_id,
         "redirect_url": redirect_url,
@@ -3823,13 +3849,7 @@ async def create_external_source(
         "created_at": now_utc().isoformat(),
         "last_sync_at": None,
         "file_count": 0,
-        "last_error": (
-            f"{cfg['label']} OAuth isn't set up in your Composio project. "
-            f"Open dashboard.composio.dev → Auth Configs → New → pick \"{cfg['label']}\" "
-            "→ enable \"Use Composio managed auth\" (or paste your own client_id/secret) "
-            "→ Save. Also make sure your Composio API key has WRITE scopes "
-            "(the current key returns 401 on POST /connected_accounts). Then retry."
-        ) if oauth_not_configured else None,
+        "last_error": error_messages.get(failure_reason) if oauth_not_configured else None,
     }
     await db.listing_external_sources.insert_one(doc)
     # Also drop a row in the legacy composio_connections collection so the
