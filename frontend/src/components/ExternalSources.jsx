@@ -78,14 +78,24 @@ export default function ExternalSources({ listingId, viewAsPrincipal = false }) 
         source_kind: picker, folder_id: folderId || null,
       });
       const src = r.data;
-      toast.success(`Opened ${src.label} login in a new tab`, {
-        description: "Complete the OAuth handshake — we'll detect it automatically.",
-      });
-      if (src.redirect_url) window.open(src.redirect_url, "_blank", "noopener,noreferrer");
+      if (src.oauth_not_configured) {
+        // Composio couldn't initiate a real OAuth handshake — the project
+        // doesn't have an OAuth app set up for this toolkit yet, so the
+        // redirect URL would dump the user on the Composio dashboard.
+        toast.warning(`${src.label} not configured in Composio`, {
+          description: "Open dashboard.composio.dev → Toolkits → " + src.label + " → Setup, then retry.",
+          duration: 10000,
+        });
+      } else {
+        toast.success(`Opened ${src.label} login in a new tab`, {
+          description: "Complete the OAuth handshake — we'll detect it automatically.",
+        });
+        if (src.redirect_url) window.open(src.redirect_url, "_blank", "noopener,noreferrer");
+      }
       setPicker("");
       setFolderId("");
       await load();
-      startPolling(src.id);
+      if (!src.oauth_not_configured) startPolling(src.id);
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Connection failed");
     } finally {

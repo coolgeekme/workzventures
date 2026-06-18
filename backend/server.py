@@ -3745,6 +3745,11 @@ async def create_external_source(
     redirect_url = f"https://app.composio.dev/connect/{cfg['app']}?entity={entity_id}"
     composio_connected_id = None
     status_label = "pending"
+    # `oauth_not_configured` flips to True when Composio's response indicates
+    # the toolkit's OAuth app isn't set up in the project (we'd otherwise
+    # silently land the user on Composio's dashboard instead of the real
+    # provider login). The frontend renders an explanatory toast in that case.
+    oauth_not_configured = False
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as c:
@@ -3757,8 +3762,20 @@ async def create_external_source(
                 payload = r.json()
                 redirect_url = payload.get("redirectUrl") or payload.get("redirect_url") or redirect_url
                 composio_connected_id = payload.get("id") or payload.get("connectedAccountId")
+            else:
+                # 4xx from Composio = config-side problem (no OAuth app, wrong
+                # toolkit slug, etc.). Surface a clear flag to the frontend.
+                oauth_not_configured = True
+                logger.warning(f"Composio init returned {r.status_code} for {body.source_kind}: {r.text[:200]}")
     except Exception as e:
         logger.warning(f"Composio init for {body.source_kind} failed, using placeholder: {e}")
+        oauth_not_configured = True
+
+    # If we couldn't get a real connectedAccount id back, the OAuth app for
+    # this toolkit almost certainly isn't configured in the Composio project
+    # — clicking the redirect would just dump the user on the dashboard.
+    if not composio_connected_id:
+        oauth_not_configured = True
 
     sid = str(uuid.uuid4())
     doc = {
@@ -3775,7 +3792,13 @@ async def create_external_source(
         "created_at": now_utc().isoformat(),
         "last_sync_at": None,
         "file_count": 0,
-        "last_error": None,
+        "last_error": (
+            f"{cfg['label']} OAuth isn't configured in your Composio project yet. "
+            "Open dashboard.composio.dev → Toolkits → "
+            f"{cfg['label']} → Setup, enable default credentials (or paste your own "
+            "OAuth client_id + secret), then retry. The Connect button currently "
+            "lands on the Composio dashboard because no provider login is wired up."
+        ) if oauth_not_configured else None,
     }
     await db.listing_external_sources.insert_one(doc)
     # Also drop a row in the legacy composio_connections collection so the
@@ -3791,8 +3814,10 @@ async def create_external_source(
         "created_at": doc["created_at"],
     })
     await log_audit(user["id"], "listing.source.connect.init", lid,
-                    {"source_kind": body.source_kind, "sid": sid})
+                    {"source_kind": body.source_kind, "sid": sid,
+                     "oauth_not_configured": oauth_not_configured})
     doc.pop("_id", None)
+    doc["oauth_not_configured"] = oauth_not_configured
     return doc
 
 
