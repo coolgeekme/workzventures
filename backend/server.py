@@ -6705,6 +6705,80 @@ async def health():
     return {"service": "workz-ventures", "ok": True}
 
 
+@api_router.get("/health")
+async def deep_health():
+    """Deployment + integration self-check. Hit this in production to verify
+    you're running the latest code AND that downstream integrations are
+    actually reachable with the configured credentials. Safe to expose
+    publicly — no secrets in the response."""
+    # Server build marker — set DEPLOY_SHA in env or fall back to the latest
+    # local git commit so production tells you exactly which build is live.
+    deploy_sha = os.environ.get("DEPLOY_SHA")
+    if not deploy_sha:
+        try:
+            import subprocess
+            deploy_sha = subprocess.check_output(
+                ["git", "log", "-1", "--format=%h"],
+                cwd=os.path.dirname(os.path.abspath(__file__ + "/../")),
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+            ).decode().strip()
+        except Exception:
+            deploy_sha = "unknown"
+
+    checks: dict = {
+        "service": "nextcapos",
+        "ok": True,
+        "deploy_sha": deploy_sha,
+        "code_markers": {
+            # If these markers are present in the current code, you know
+            # the running build includes the latest Composio fixes.
+            "uses_connected_accounts_link": True,
+            "supports_5_file_sources": len(COMPOSIO_FILE_SOURCES),
+            "auto_expire_pending_sources": True,
+        },
+        "integrations": {},
+    }
+
+    # Composio check — single GET that proves the key is valid + that
+    # auth_configs are visible. Doesn't require a write scope.
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            r = await c.get(
+                f"{COMPOSIO_BASE_URL}/api/v3/auth_configs",
+                headers={"x-api-key": COMPOSIO_API_KEY} if COMPOSIO_API_KEY else {},
+            )
+            if r.status_code == 200:
+                items = (r.json() or {}).get("items") or []
+                checks["integrations"]["composio"] = {
+                    "ok": True,
+                    "auth_configs_visible": len(items),
+                }
+            elif r.status_code == 401:
+                checks["integrations"]["composio"] = {
+                    "ok": False, "reason": "invalid_api_key",
+                }
+                checks["ok"] = False
+            else:
+                checks["integrations"]["composio"] = {
+                    "ok": False, "reason": f"http_{r.status_code}",
+                }
+                checks["ok"] = False
+    except Exception as e:
+        checks["integrations"]["composio"] = {"ok": False, "reason": str(e)[:80]}
+        checks["ok"] = False
+
+    # Mongo ping — confirms the DB connection is alive.
+    try:
+        await db.command("ping")
+        checks["integrations"]["mongo"] = {"ok": True}
+    except Exception as e:
+        checks["integrations"]["mongo"] = {"ok": False, "reason": str(e)[:80]}
+        checks["ok"] = False
+
+    return checks
+
+
 @api_router.get("/demo/retention-info")
 async def demo_retention_info(user=Depends(get_current_user)):
     """Public-to-the-authenticated-user introspection of demo retention policy."""
