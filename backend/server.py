@@ -3784,29 +3784,35 @@ async def create_external_source(
         try:
             async with httpx.AsyncClient(timeout=15.0) as c:
                 r = await c.post(
-                    f"{COMPOSIO_BASE_URL}/api/v3/connected_accounts",
+                    f"{COMPOSIO_BASE_URL}/api/v3/connected_accounts/link",
                     headers={"x-api-key": COMPOSIO_API_KEY, "Content-Type": "application/json"},
                     json={
-                        "auth_config": {"id": auth_config_id},
-                        "connection": {"user_id": entity_id},
+                        "auth_config_id": auth_config_id,
+                        "user_id": entity_id,
                     },
                 )
                 if r.status_code == 401:
                     failure_reason = "invalid_key"
-                elif r.status_code < 400:
+                elif r.status_code in (200, 201):
                     payload = r.json() or {}
-                    ca = payload.get("connectedAccount") or payload.get("connected_account") or payload
+                    # /link response shape (per Composio v3 latest):
+                    #   { link_token, redirect_url, expires_at,
+                    #     connected_account_id, experimental: {...} }
                     redirect_url = (
-                        ca.get("redirect_url") or ca.get("redirectUrl")
-                        or payload.get("redirect_url") or payload.get("redirectUrl")
+                        payload.get("redirect_url")
+                        or payload.get("redirectUrl")
                         or redirect_url
                     )
-                    composio_connected_id = ca.get("id") or payload.get("id")
+                    composio_connected_id = (
+                        payload.get("connected_account_id")
+                        or payload.get("connectedAccountId")
+                        or payload.get("id")
+                    )
                 else:
                     failure_reason = "init_failed"
-                    logger.warning(f"Composio initiate {r.status_code} for {body.source_kind}: {r.text[:200]}")
+                    logger.warning(f"Composio /link {r.status_code} for {body.source_kind}: {r.text[:200]}")
         except Exception as e:
-            logger.warning(f"Composio initiate for {body.source_kind} failed: {e}")
+            logger.warning(f"Composio /link for {body.source_kind} failed: {e}")
             failure_reason = "init_failed"
 
     if not composio_connected_id and failure_reason is None:
