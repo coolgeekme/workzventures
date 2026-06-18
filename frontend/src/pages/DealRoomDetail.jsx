@@ -6,9 +6,10 @@ import { useAuth } from "../lib/auth";
 import {
   FileText, Files, MagnifyingGlass, ListChecks, ShieldCheck,
   CloudArrowUp, CheckCircle, Warning, ArrowLeft, ChatCircleDots, PaperPlaneTilt,
-  Certificate,
+  Certificate, Clock,
 } from "@phosphor-icons/react";
 import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
+import VaultActivity from "../components/VaultActivity";
 
 const FOLDERS = [
   { v: "financials", l: "Financials" },
@@ -325,6 +326,7 @@ export default function DealRoomDetail() {
           { v: "drl", l: "DRL", icon: ListChecks, count: room.requests.length },
           { v: "findings", l: "Findings", icon: MagnifyingGlass, count: room.findings.length },
           { v: "copilot", l: "Co-pilot", icon: ChatCircleDots, count: messages.length },
+          { v: "activity", l: "Activity", icon: Clock, count: null },
         ].map((t) => {
           const Icon = t.icon;
           return (
@@ -337,7 +339,9 @@ export default function DealRoomDetail() {
               }`}
             >
               <Icon size={14} /> {t.l}
-              <span className="font-mono-wz text-[10px] text-[var(--wz-text-tertiary)]">{t.count}</span>
+              {t.count !== null && (
+                <span className="font-mono-wz text-[10px] text-[var(--wz-text-tertiary)]">{t.count}</span>
+              )}
             </button>
           );
         })}
@@ -694,6 +698,11 @@ export default function DealRoomDetail() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* TAB: Activity — Bitcoin-anchored audit trail of every Vault action */}
+      {tab === "activity" && (
+        <VaultActivity roomId={id} accentClass={accentClass} />
       )}
     </div>
   );

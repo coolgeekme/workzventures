@@ -233,6 +233,16 @@ NextCapOS ships four first-class roles, each with a tailored console.
 - Citation-grounded answers; refuses to invent sources.
 - Self-heals: pulls any newly-staged or newly-synced docs on each question.
 
+### Vault Activity tab (Bitcoin-anchored audit trail)
+- Dedicated tab in every Vault showing every action taken on it: vault opens, NDA signatures, file uploads (manual + Composio-synced), downloads, Co-pilot questions, AI Findings runs.
+- Filter chips: All · NDA · Files · Co-pilot · Findings · Vault access (with live counts).
+- Per-event detail: actor name + role + org, time-ago, action label, filename / signed name / question excerpt where relevant.
+- Synced files render a small **provider badge** (Google Drive · OneDrive · SharePoint · Dropbox · Box) for provenance transparency.
+- Same view for buyer + seller — institutional VDR default; full transparency is a trust signal.
+- Hash-chained + periodically anchored to Bitcoin via OpenTimestamps — tampering with any past entry breaks the chain.
+- Auto-polls every 30s while the tab is mounted.
+- Endpoint: `GET /api/deal-rooms/{rid}/activity?since=ISO&limit=200`.
+
 ### Preview Vault (QA mode)
 - Seller can preview the buyer experience without an inquiry; flagged `is_preview: true`, excluded from real deal metrics.
 - Gold dashed banner explains the QA context.

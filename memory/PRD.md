@@ -421,6 +421,36 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Tested** (iter-20): backend pytest `tests/test_external_sources.py` 9/9 PASS — supported list, init+row, RBAC (buyer 403 / editor 200), poll on pending, sync-blocked-on-non-active, soft-delete, and wipe-on-close (verified via direct Mongo read). Frontend Playwright 7/7 PASS — panel render, picker options, connect button gating, pending row appears, button gating per status, disconnect removes row, view-as-principal suppresses all actions.
 - **Known limitation**: Sync end-to-end (actual byte pull from a real SharePoint/Drive folder) requires a real ACTIVE OAuth, which can't be exercised in CI. The /sync endpoint is wired to handle every documented Composio response envelope (`data`, `response_data`, `files`/`entries`/`value`/`items`, base64 + presigned URL downloads) but real upstream behaviour will likely need per-toolkit tuning in Phase 2.
 
+## What's been implemented (2026-06-18 — iter-22)
+
+### P0 — Vault Activity Tab (Bitcoin-anchored audit trail UI)
+- **Backend**:
+  - `GET /api/deal-rooms/{rid}/activity?since=ISO&limit=200` — hydrated, room-scoped audit timeline. Curated `ACTIONS` whitelist covers `dealroom.open`, `dealroom.view`, `dealroom.nda.accept`, `dealroom.file.upload`, `dealroom.file.add`, `dealroom.file.download`, `dealroom.file.preview`, `dealroom.file.delete`, `dealroom.preview.open`, `vault.copilot.ask`, `dealroom.findings.generate`. Filters by `target == rid` OR by `target ∈ this room's file_ids` to catch file-scoped events. Single round-trip actor hydration from `users` collection. Returns `{vault_id, events[], counts: {total, by_action, by_actor}, as_of}` with category buckets + human labels mapped server-side.
+  - **`dealroom.view` audit event** — rate-limited to once-per-hour-per-user on `GET /deal-rooms/{rid}` so polling/page-refreshes don't flood the timeline. Skipped for preview vaults.
+  - **`dealroom.file.add` audit event** — fires per-file inside `_clone_listing_files_into_room(only_missing=True)` so Composio-synced docs arriving AFTER vault open get their own timeline entry with `meta.via = "googledrive" | "onedrive" | "sharepoint" | "dropbox" | "box"`.
+  - **`deal_room_files.source` provenance field** — clone path now carries the source stamp from the staged file into the room file, enabling per-row provider badges.
+- **Frontend**:
+  - `components/VaultActivity.jsx` — new self-contained activity timeline. Filter chips (All / NDA / Files / Co-pilot / Findings / Vault access), per-event icon + actor + time-ago + detail (filename / signed name / question excerpt), provider badges (Google Drive / OneDrive / SharePoint / Dropbox / Box) on synced files. Auto-polls every 30s. Show-all expander after 50 events. Footer trust statement explains Bitcoin anchoring.
+  - `pages/DealRoomDetail.jsx` — added 5th tab "Activity" with `Clock` icon (no count badge); mounts `<VaultActivity roomId={id} accentClass={accentClass} />` lazily on tab activation.
+- **Tested** (iter-22): `tests/test_vault_activity.py` 4 PASS + 1 skipped — basic shape, required-fields hydration, no cross-room bleed (buyer + seller see same events), `since` cutoff strict-filter. Outsider-403 test is conditional on admin auto-approval flow.
+
+### P0 — Composio download fallback via Proxy Execute (iter-22)
+- **Problem**: Composio's `GOOGLEDRIVE_DOWNLOAD_FILE` (and other predefined `*_DOWNLOAD_FILE` actions) intermittently fail with `"Missing presigned URL in upload response"` because their R2 staging step doesn't return a presigned URL (known Composio bugs #3471 / #3477).
+- **Backend** (`_composio_proxy_download`):
+  - New helper calls `POST /api/v3.1/tools/execute/proxy` on Composio with the connected account's auth injected server-side.
+  - Per-toolkit endpoint map for Google Drive (`/drive/v3/files/{id}?alt=media`), OneDrive + SharePoint (Graph `/v1.0/me/drive/items/{id}/content`), Box (`/2.0/files/{id}/content`). Dropbox keeps the predefined action (its API needs a special `Dropbox-API-Arg` header that proxy can't pass).
+  - **Google Workspace native types** (Docs / Sheets / Slides / Drawings) are auto-routed through `/drive/v3/files/{id}/export?mimeType=...` to DOCX / XLSX / PPTX / PDF before mirroring — these formats have no binary form so `?alt=media` would 415.
+  - Handles both response shapes Composio returns: `binary_data.url` (large files staged to a CDN URL) and inline `data` (base64 or raw bytes).
+  - Wired as a **fallback** inside `_run_external_source_sync` — primary `*_DOWNLOAD_FILE` action runs first, proxy kicks in only on `successful: false` or no-bytes responses.
+- **Verified**: User confirmed Drive folder sync that previously returned `"Missing presigned URL..."` now mirrors all files correctly via the proxy fallback.
+
+### P0 — Vault file backfill self-heal (iter-22)
+- **Problem**: Files synced from Composio AFTER a Vault was opened were invisible inside that Vault — `_clone_listing_files_into_room` only ran at `open-room` time.
+- **Backend**:
+  - `_clone_listing_files_into_room(..., only_missing=True)` — new idempotent mode that diffs `cloned_from_listing_file` set and only inserts missing rows.
+  - Self-heal call sites added to `GET /deal-rooms/{rid}` (catches refresh), `POST /deal-rooms/{rid}/copilot` (catches AI-question-before-refresh), and end of `_run_external_source_sync` (eager backfill into every active/preview vault on the listing).
+- **Tested**: `tests/test_vault_backfill.py` 2 PASS — pre-open clones at open-room; post-open arrival backfills on GET + buyer can decrypt + download the backfilled bytes; repeated GET doesn't duplicate.
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)

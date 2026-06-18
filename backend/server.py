@@ -2169,9 +2169,31 @@ async def _clone_listing_files_into_room(listing_id: str, room_id: str, user_id:
             "uploaded_at": now_utc().isoformat(),
             "matched_request_id": None,
             "cloned_from_listing_file": s["id"],
+            # Carry external-source provenance so the Activity tab can render
+            # a "Synced from Google Drive" badge and the audit log can attribute
+            # the file to its origin connector.
+            "source": s.get("source"),
         }
         await db.deal_room_files.insert_one(doc)
         cloned += 1
+        # Emit a per-file audit event ONLY for incremental backfills (files
+        # arriving via Composio sync after the Vault is already open). The
+        # initial open-room clone is already covered by `dealroom.open`, so
+        # logging every file there would just duplicate noise.
+        if only_missing:
+            try:
+                source_meta = s.get("source") or {}
+                await log_audit(
+                    user_id, "dealroom.file.add", room_id,
+                    {
+                        "filename": s["filename"],
+                        "file_id": new_file_id,
+                        "via": source_meta.get("kind") or "manual",
+                        "source_sid": source_meta.get("sid"),
+                    },
+                )
+            except Exception as e:
+                logger.debug(f"dealroom.file.add audit skipped for {new_file_id}: {e}")
     return cloned
 
 
@@ -4876,7 +4898,155 @@ async def get_deal_room(rid: str, user=Depends(get_current_user)):
     room["files"] = await db.deal_room_files.find({"room_id": rid}, {"_id": 0, "content": 0, "pages": 0}).sort("uploaded_at", -1).to_list(500)
     room["requests"] = await db.deal_room_requests.find({"room_id": rid}, {"_id": 0}).sort("created_at", 1).to_list(200)
     room["findings"] = await db.deal_room_findings.find({"room_id": rid}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    # Activity audit: log a `dealroom.view` event but rate-limit to once-per-hour
+    # per user so the timeline isn't flooded by page reloads / polling. Skip for
+    # preview vaults (QA mode) to keep their audit clean.
+    if room.get("status") != "preview":
+        try:
+            from datetime import timedelta as _td
+            recent = await db.audit_logs.find_one(
+                {"action": "dealroom.view", "actor_id": user["id"], "target": rid,
+                 "timestamp": {"$gte": (now_utc() - _td(hours=1)).isoformat()}},
+                {"_id": 0, "id": 1},
+            )
+            if not recent:
+                await log_audit(user["id"], "dealroom.view", rid,
+                                {"role": user.get("role"), "status": room.get("status")})
+        except Exception as e:
+            logger.debug(f"dealroom.view audit skipped: {e}")
     return room
+
+
+@api_router.get("/deal-rooms/{rid}/activity")
+async def get_deal_room_activity(
+    rid: str,
+    since: Optional[str] = None,
+    limit: int = 200,
+    user=Depends(get_current_user),
+):
+    """Return the Vault Activity timeline — every audit event scoped to this
+    Vault, hydrated with actor metadata so the UI can render a rich timeline.
+
+    Visibility: both buyer and seller see the same set of events for full
+    transparency (an industry default for institutional VDRs).
+
+    Query params:
+      - `since`: ISO-8601 cutoff. Used for incremental polling so the UI only
+        fetches what's new since its last fetch.
+      - `limit`: max events to return (capped at 500).
+    """
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    await participant_check(room, user)
+
+    limit = max(1, min(int(limit or 200), 500))
+
+    # Curated action vocabulary the Activity tab surfaces. Adding to this list
+    # automatically lights up new event types in the UI without code changes.
+    ACTIONS = [
+        "dealroom.open", "dealroom.view",
+        "dealroom.nda.accept",
+        "dealroom.file.upload", "dealroom.file.add", "dealroom.file.download",
+        "dealroom.file.preview", "dealroom.file.delete",
+        "dealroom.preview.open",
+        "vault.copilot.ask",
+        "dealroom.findings.generate",
+    ]
+    file_ids = [f["id"] for f in await db.deal_room_files.find(
+        {"room_id": rid}, {"_id": 0, "id": 1}
+    ).to_list(1000)]
+
+    query: dict = {
+        "$or": [
+            {"target": rid, "action": {"$in": ACTIONS}},
+            # File-level downloads/uploads log target_id=file_id sometimes; cover both.
+            {"target": {"$in": file_ids}, "action": {"$in": ACTIONS}} if file_ids else
+                {"_": "__unreachable__"},
+        ],
+    }
+    if since:
+        query["timestamp"] = {"$gt": since}
+
+    rows = await db.audit_logs.find(query, {"_id": 0}).sort("timestamp", -1).limit(limit).to_list(limit)
+
+    # Hydrate actors in one round-trip
+    actor_ids = list({r.get("actor_id") for r in rows if r.get("actor_id")})
+    actors_by_id: dict[str, dict] = {}
+    if actor_ids:
+        for u in await db.users.find(
+            {"id": {"$in": actor_ids}},
+            {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1, "organization": 1},
+        ).to_list(len(actor_ids)):
+            actors_by_id[u["id"]] = u
+
+    # Category buckets mapped from raw audit actions — the frontend uses these
+    # for filter chips and icon selection. Keep the mapping in one place.
+    CATEGORY = {
+        "dealroom.open":         "vault",
+        "dealroom.preview.open": "vault",
+        "dealroom.view":         "vault",
+        "dealroom.nda.accept":   "nda",
+        "dealroom.file.upload":  "file",
+        "dealroom.file.add":     "file",
+        "dealroom.file.download": "file",
+        "dealroom.file.preview":  "file",
+        "dealroom.file.delete":   "file",
+        "vault.copilot.ask":      "copilot",
+        "dealroom.findings.generate":  "findings",
+    }
+    LABEL = {
+        "dealroom.open":         "Opened the Vault",
+        "dealroom.preview.open": "Created a preview Vault",
+        "dealroom.view":         "Viewed the Vault",
+        "dealroom.nda.accept":   "Signed the NDA",
+        "dealroom.file.upload":  "Uploaded a file",
+        "dealroom.file.add":     "File added to the Vault",
+        "dealroom.file.download": "Downloaded a file",
+        "dealroom.file.preview":  "Previewed a file",
+        "dealroom.file.delete":   "Removed a file",
+        "vault.copilot.ask":      "Asked the AI Co-pilot",
+        "dealroom.findings.generate":  "Generated AI Findings",
+    }
+
+    events = []
+    counts_by_action: dict[str, int] = {}
+    counts_by_actor: dict[str, int] = {}
+    for r in rows:
+        actor = actors_by_id.get(r.get("actor_id") or "", {})
+        cat = CATEGORY.get(r.get("action"), "other")
+        events.append({
+            "id": r.get("id"),
+            "seq": r.get("seq"),
+            "action": r.get("action"),
+            "category": cat,
+            "label": LABEL.get(r.get("action"), r.get("action")),
+            "actor": {
+                "id": actor.get("id") or r.get("actor_id"),
+                "name": actor.get("name") or "Unknown",
+                "email": actor.get("email"),
+                "role": actor.get("role"),
+                "organization": actor.get("organization"),
+            },
+            "target_id": r.get("target") or r.get("target_id"),
+            "meta": r.get("meta") or {},
+            "created_at": r.get("timestamp") or r.get("created_at"),
+            "content_hash": r.get("content_hash"),
+        })
+        counts_by_action[r.get("action")] = counts_by_action.get(r.get("action"), 0) + 1
+        if actor.get("email"):
+            counts_by_actor[actor["email"]] = counts_by_actor.get(actor["email"], 0) + 1
+
+    return {
+        "vault_id": rid,
+        "events": events,
+        "counts": {
+            "total": len(events),
+            "by_action": counts_by_action,
+            "by_actor": counts_by_actor,
+        },
+        "as_of": now_utc().isoformat(),
+    }
 
 
 @api_router.post("/deal-rooms/{rid}/accept-nda")
