@@ -3730,19 +3730,28 @@ class ExternalSourceCreate(BaseModel):
     label: Optional[str] = None
 
 
-async def _composio_action_execute(action_slug: str, connected_account_id: str, input_params: dict | None = None) -> dict:
+async def _composio_action_execute(action_slug: str, connected_account_id: str, input_params: dict | None = None, user_id: str | None = None) -> dict:
     """Thin wrapper around POST /api/v3/tools/execute/{slug}. Raises HTTPException
-    with the upstream body on failure so we surface useful messages."""
+    with the upstream body on failure so we surface useful messages.
+
+    Composio v3 requires `user_id` (the entity_id used at connect time) in
+    addition to `connected_account_id` — see error code 1811. We always
+    pass it now so action execution never fails on this requirement."""
     if not COMPOSIO_API_KEY:
         raise HTTPException(status_code=400, detail="Composio API key not configured")
+    payload: dict = {
+        "connected_account_id": connected_account_id,
+        "arguments": input_params or {},
+    }
+    if user_id:
+        payload["user_id"] = user_id
     async with httpx.AsyncClient(timeout=60.0) as c:
         r = await c.post(
             f"{COMPOSIO_BASE_URL}/api/v3/tools/execute/{action_slug}",
             headers={"x-api-key": COMPOSIO_API_KEY, "Content-Type": "application/json"},
-            json={"connected_account_id": connected_account_id, "arguments": input_params or {}},
+            json=payload,
         )
     if r.status_code >= 400:
-        # Upstream errors are usually informative — pass them through.
         raise HTTPException(status_code=502, detail=f"Composio action {action_slug} failed: {r.text[:400]}")
     return r.json()
 
@@ -4104,7 +4113,10 @@ async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
     errors: list[str] = []
     sample_response: str | None = None  # for debugging — captured below
     try:
-        raw_resp = await _composio_action_execute(cfg["list"], src["composio_connected_id"], list_input)
+        raw_resp = await _composio_action_execute(
+            cfg["list"], src["composio_connected_id"], list_input,
+            user_id=src.get("entity_id"),
+        )
         # Stash a truncated sample so the seller can paste it back to us when
         # debugging "0 files pulled" — without this we'd have no visibility
         # into what each toolkit actually returns.
@@ -4149,7 +4161,10 @@ async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
         if existing:
             continue
         try:
-            raw_dl = await _composio_action_execute(cfg["download"], src["composio_connected_id"], {"file_id": external_id})
+            raw_dl = await _composio_action_execute(
+                cfg["download"], src["composio_connected_id"], {"file_id": external_id},
+                user_id=src.get("entity_id"),
+            )
             dl_resp = _normalise_composio_response(raw_dl)
             if not dl_resp.get("successful"):
                 errors.append(f"{name}: download successful=false ({str(dl_resp.get('error'))[:100]})")
