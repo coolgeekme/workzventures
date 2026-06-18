@@ -4053,21 +4053,28 @@ async def disconnect_external_source(lid: str, sid: str, user=Depends(get_curren
 async def _wipe_listing_external_sources(lid: str):
     """Listing-close hook: revoke every connected source and wipe its files.
     Called from the status-flip path so closing a deal evicts the seller's
-    OAuth grants automatically (Rule 3A)."""
+    OAuth grants automatically (Rule 3A). Composio revokes are fired in
+    parallel so a listing with 6 connected sources doesn't stack 6×10s timeouts."""
     sources = await db.listing_external_sources.find(
         {"listing_id": lid, "deleted_at": {"$exists": False}}, {"_id": 0}
     ).to_list(100)
-    for src in sources:
-        if src.get("composio_connected_id"):
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as c:
-                    await c.delete(
-                        f"{COMPOSIO_BASE_URL}/api/v3/connectedAccounts/{src['composio_connected_id']}",
-                        headers={"x-api-key": COMPOSIO_API_KEY},
-                    )
-            except Exception:
-                pass
-        await _wipe_external_source_files(lid, src["id"])
+
+    async def _revoke(src):
+        if not src.get("composio_connected_id"):
+            return
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as c:
+                await c.delete(
+                    f"{COMPOSIO_BASE_URL}/api/v3/connectedAccounts/{src['composio_connected_id']}",
+                    headers={"x-api-key": COMPOSIO_API_KEY},
+                )
+        except Exception:
+            pass
+
+    if sources:
+        await asyncio.gather(*(_revoke(s) for s in sources))
+        for src in sources:
+            await _wipe_external_source_files(lid, src["id"])
     await db.listing_external_sources.update_many(
         {"listing_id": lid, "deleted_at": {"$exists": False}},
         {"$set": {"deleted_at": now_utc().isoformat()}},

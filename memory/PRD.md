@@ -404,6 +404,23 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
   - `ListingCollaborators.jsx` — gates per-row role select, Remove, Resend, and Cancel buttons by the server-supplied `can_manage` flag. Pending invites the viewer can't manage display a small `locked` pill instead.
 - **Tested** (iter-19): backend pytest `tests/test_collab_rule_1b_scope.py` 17/17 PASS + 1 skipped. Frontend Playwright 5/5 PASS (nav, CTA, pill+subtitle, MyListings retitle, route guard for 10 restricted paths). Also tightened iter-18's `test_editor_collaborator_can_patch_role_and_revoke_invites` which had grown stale under Rule 1B — now explicitly asserts the 403 for non-inviter editors.
 
+## What's been implemented (2026-06-18 — iter-20 External File Source Mirror · Phase 1, Composio)
+- **Goal**: One seller-side OAuth grants the whole deal team (collaborators + buyers) read access to docs that live in SharePoint / OneDrive / Google Drive / Dropbox / Box / Zoho WorkDrive — without each viewer authing their own account. Per user picks: (1c) all six connectors, (2a) mirror-first architecture, (3a) immediate wipe on close, (4a) manual upload stays alongside, (5) Composio API key configured.
+- **Backend** (`server.py` — `LISTING EXTERNAL FILE SOURCES` block):
+  - `COMPOSIO_FILE_SOURCES` map: per-toolkit `app` slug + `list` + `download` action slugs.
+  - `_composio_action_execute()` thin wrapper around `POST /api/v3/tools/execute/{slug}` with proper upstream-error passthrough (HTTP 502).
+  - `POST /api/listings/{lid}/external-sources` — listing editors initiate a Composio connectedAccount, get a redirect_url, source row stored as `pending`. Falls back gracefully if Composio init returns null in dev.
+  - `GET /api/listings/{lid}/external-sources` — listing viewers see connected sources + the catalog of 6 supported services. `redirect_url` is stripped on this read so collabs/buyers can't crawl OAuth links.
+  - `POST /api/listings/{lid}/external-sources/{sid}/poll` — frontend polls every 4s after Connect; status flips to `active` / `failed` based on the upstream `connectedAccounts/{id}` GET.
+  - `POST /api/listings/{lid}/external-sources/{sid}/sync` — when active, lists folder contents + downloads each file (cap 100 per sync, ≤50 MB each); idempotent on `(sid, external_id)`. Files land in the EXISTING `listing_staged_files` schema with a `source: {kind, sid, external_id}` provenance object — so Vault clone + Copilot indexer + NDA gating + audit all keep working with zero changes.
+  - `DELETE /api/listings/{lid}/external-sources/{sid}` — revokes the Composio connection (best-effort) and wipes every mirrored byte locally.
+  - `_wipe_listing_external_sources(lid)` — fires on listing status → `closed` (PATCH hook) AND on full delete. Parallelised Composio revokes via `asyncio.gather` so a 6-source listing doesn't stack 60s of timeouts.
+- **Frontend**:
+  - New `components/ExternalSources.jsx` — picker for the 6 services + optional folder ID input + connect button; per-row status pill, Sync/Reopen-OAuth/Disconnect buttons gated by source status. Background polling every 4s while a source is pending. Suppresses every action when `viewAsPrincipal` is set (matches existing read-only pattern).
+  - `MyListings.jsx` — imports + mounts `<ExternalSources>` inside the listing-data-room expander. Staged file rows get a `via {source.kind}` gold pill (data-testid `source-badge-{file_id}`) when mirrored, so principals can tell mirrored docs apart from manual uploads at a glance.
+- **Tested** (iter-20): backend pytest `tests/test_external_sources.py` 9/9 PASS — supported list, init+row, RBAC (buyer 403 / editor 200), poll on pending, sync-blocked-on-non-active, soft-delete, and wipe-on-close (verified via direct Mongo read). Frontend Playwright 7/7 PASS — panel render, picker options, connect button gating, pending row appears, button gating per status, disconnect removes row, view-as-principal suppresses all actions.
+- **Known limitation**: Sync end-to-end (actual byte pull from a real SharePoint/Drive folder) requires a real ACTIVE OAuth, which can't be exercised in CI. The /sync endpoint is wired to handle every documented Composio response envelope (`data`, `response_data`, `files`/`entries`/`value`/`items`, base64 + presigned URL downloads) but real upstream behaviour will likely need per-toolkit tuning in Phase 2.
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)
