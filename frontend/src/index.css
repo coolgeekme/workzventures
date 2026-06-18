@@ -129,6 +129,37 @@ body {
     border-color: var(--wz-gold);
 }
 
+/* Native <option> children of any select inherit transparent from
+   .wz-input, which makes the dropdown popup unreadable (white-on-white
+   in dark mode, and missing hover affordance in light mode). Force a
+   concrete surface + text colour from CSS variables so the popup is
+   legible in BOTH themes. The :checked / :hover state uses the gold
+   accent to mirror our focus colour. */
+select.wz-input,
+select {
+    background-color: var(--wz-surface);
+}
+select.wz-input option,
+select option {
+    background-color: var(--wz-surface);
+    color: var(--wz-text);
+    padding: 6px 8px;
+}
+select.wz-input option:checked,
+select option:checked,
+select.wz-input option:hover,
+select option:hover {
+    background-color: var(--wz-gold);
+    color: var(--wz-bg);
+}
+/* Firefox-specific: option:hover doesn't fire reliably; ensure
+   the highlighted item still uses the gold accent. */
+select.wz-input option:focus,
+select option:focus {
+    background-color: var(--wz-gold);
+    color: var(--wz-bg);
+}
+
 .wz-btn {
     background: var(--wz-btn-primary-bg);
     color: var(--wz-btn-primary-fg);
