@@ -4032,52 +4032,51 @@ async def _mirror_one_file(lid: str, sid: str, src_kind: str, raw_name: str,
     return file_id
 
 
-@api_router.post("/listings/{lid}/external-sources/{sid}/sync")
-async def sync_external_source(lid: str, sid: str, user=Depends(get_current_user)):
-    """Pull files from a connected source into the listing data room.
-    Listing editors only. Idempotent on external_id: re-running won't dup."""
-    await _listing_for_edit_or_404(lid, user)
+async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
+    """The actual sync work — runs in a background task so the HTTP request
+    returns immediately and Cloudflare's 100s gateway timeout never fires.
+    Progress is observable via the `syncing` flag + `last_sync_at` on the
+    source doc; the frontend polls /external-sources to follow along."""
     src = await db.listing_external_sources.find_one(
         {"id": sid, "listing_id": lid, "deleted_at": {"$exists": False}}, {"_id": 0}
     )
-    if not src:
-        raise HTTPException(status_code=404, detail="Source not found")
-    if src["status"] != "active":
-        raise HTTPException(status_code=400, detail=f"Source is {src['status']}, not active. Complete OAuth first.")
-
+    if not src or src["status"] != "active":
+        return
     cfg = COMPOSIO_FILE_SOURCES[src["source_kind"]]
     list_input: dict = {}
     if src.get("folder_id"):
-        # Action schemas vary slightly per toolkit (folder_id / folderId /
-        # parentId / q). We pass folder_id as the canonical key and Composio
-        # tolerates extra keys for connectors that don't use it.
         list_input["folder_id"] = src["folder_id"]
 
+    pulled = 0
+    errors: list[str] = []
     try:
         list_resp = await _composio_action_execute(cfg["list"], src["composio_connected_id"], list_input)
     except HTTPException as e:
         await db.listing_external_sources.update_one(
-            {"id": sid}, {"$set": {"last_error": str(e.detail)[:300], "last_sync_at": now_utc().isoformat()}}
+            {"id": sid},
+            {"$set": {"syncing": False, "last_sync_at": now_utc().isoformat(),
+                      "last_error": f"list failed: {str(e.detail)[:280]}"}},
         )
-        raise
+        return
+    except Exception as e:
+        await db.listing_external_sources.update_one(
+            {"id": sid},
+            {"$set": {"syncing": False, "last_sync_at": now_utc().isoformat(),
+                      "last_error": f"list crashed: {str(e)[:280]}"}},
+        )
+        return
 
-    # Composio "execute" responses can wrap the payload under .data, .response_data
-    # or surface the raw provider response. Normalise into a list of {id, name,
-    # mime_type}. The exact key per toolkit varies — try the common shapes.
     raw = list_resp.get("data") or list_resp.get("response_data") or list_resp
     files_meta = raw.get("files") or raw.get("entries") or raw.get("value") or raw.get("items") or []
-    if isinstance(raw, list):  # some connectors return a bare list
+    if isinstance(raw, list):
         files_meta = raw
 
-    pulled = 0
-    errors = []
-    for f in files_meta[:100]:  # cap per sync, sellers can re-sync for more
+    for f in files_meta[:100]:
         external_id = f.get("id") or f.get("file_id") or f.get("ID")
         name = f.get("name") or f.get("filename") or f.get("title") or external_id
         mime = f.get("mime_type") or f.get("mimeType") or f.get("content_type") or "application/octet-stream"
         if not external_id:
             continue
-        # Skip if we already mirrored this external_id under this source.
         existing = await db.listing_staged_files.find_one(
             {"listing_id": lid, "source.sid": sid, "source.external_id": external_id, "deleted_at": {"$exists": False}},
             {"_id": 0, "id": 1},
@@ -4087,7 +4086,6 @@ async def sync_external_source(lid: str, sid: str, user=Depends(get_current_user
         try:
             dl = await _composio_action_execute(cfg["download"], src["composio_connected_id"], {"file_id": external_id})
             dl_raw = dl.get("data") or dl.get("response_data") or dl
-            # Pull bytes from common envelope shapes:
             b64 = dl_raw.get("content_base64") or dl_raw.get("data") or dl_raw.get("file_content")
             url = dl_raw.get("download_url") or dl_raw.get("url")
             blob: bytes | None = None
@@ -4108,8 +4106,16 @@ async def sync_external_source(lid: str, sid: str, user=Depends(get_current_user
             if len(blob) > 50 * 1024 * 1024:
                 errors.append(f"{name}: exceeds 50 MB cap, skipped")
                 continue
-            await _mirror_one_file(lid, sid, src["source_kind"], name, blob, mime, external_id, user["id"])
+            await _mirror_one_file(lid, sid, src["source_kind"], name, blob, mime, external_id, user_id)
             pulled += 1
+            # Live progress: update file_count after every successful pull
+            # so the UI can show a counter ticking up.
+            new_count_so_far = await db.listing_staged_files.count_documents(
+                {"listing_id": lid, "source.sid": sid, "deleted_at": {"$exists": False}}
+            )
+            await db.listing_external_sources.update_one(
+                {"id": sid}, {"$set": {"file_count": new_count_so_far}}
+            )
         except HTTPException as e:
             errors.append(f"{name}: {str(e.detail)[:140]}")
         except Exception as e:
@@ -4120,12 +4126,39 @@ async def sync_external_source(lid: str, sid: str, user=Depends(get_current_user
     )
     await db.listing_external_sources.update_one(
         {"id": sid},
-        {"$set": {"last_sync_at": now_utc().isoformat(), "file_count": new_count,
+        {"$set": {"syncing": False, "last_sync_at": now_utc().isoformat(),
+                  "file_count": new_count,
                   "last_error": "; ".join(errors[:3]) if errors else None}},
     )
-    await log_audit(user["id"], "listing.source.sync", lid,
+    await log_audit(user_id, "listing.source.sync", lid,
                     {"sid": sid, "pulled": pulled, "total": new_count, "errors": len(errors)})
-    return {"ok": True, "pulled": pulled, "total": new_count, "errors": errors}
+
+
+@api_router.post("/listings/{lid}/external-sources/{sid}/sync")
+async def sync_external_source(lid: str, sid: str, user=Depends(get_current_user)):
+    """Kick off a background sync. Returns immediately so Cloudflare's 100s
+    gateway timeout never fires regardless of folder size. Frontend polls
+    /external-sources to see `syncing` flip back to False + file_count
+    tick up live."""
+    await _listing_for_edit_or_404(lid, user)
+    src = await db.listing_external_sources.find_one(
+        {"id": sid, "listing_id": lid, "deleted_at": {"$exists": False}}, {"_id": 0}
+    )
+    if not src:
+        raise HTTPException(status_code=404, detail="Source not found")
+    if src["status"] != "active":
+        raise HTTPException(status_code=400, detail=f"Source is {src['status']}, not active. Complete OAuth first.")
+    if src.get("syncing"):
+        raise HTTPException(status_code=409, detail="Sync already in progress for this source")
+
+    # Mark as syncing BEFORE returning so the very next GET sees the flag.
+    await db.listing_external_sources.update_one(
+        {"id": sid}, {"$set": {"syncing": True, "last_error": None}}
+    )
+    # Fire and forget — the task runs detached. Exceptions inside set the
+    # source's last_error so they're surfaced to the UI rather than lost.
+    asyncio.create_task(_run_external_source_sync(lid, sid, user["id"]))
+    return {"ok": True, "started": True, "syncing": True}
 
 
 async def _wipe_external_source_files(lid: str, sid: str):

@@ -116,15 +116,47 @@ export default function ExternalSources({ listingId, viewAsPrincipal = false }) 
     setBusy(sid);
     try {
       const r = await api.post(`/listings/${listingId}/external-sources/${sid}/sync`);
-      toast.success(`Pulled ${r.data?.pulled || 0} file${r.data?.pulled === 1 ? "" : "s"}`, {
-        description: r.data?.errors?.length ? `${r.data.errors.length} errors — see panel.` : `${r.data?.total} total mirrored.`,
-      });
-      await load();
+      if (r.data?.started) {
+        toast.info("Sync started in the background", {
+          description: "We'll keep pulling files. Stay on this page to watch the counter, or come back later.",
+        });
+        // Start polling — sync runs detached in the backend, so we follow
+        // along via /external-sources GET (which reflects file_count + syncing).
+        startSyncPolling(sid);
+      } else {
+        toast.success(`Pulled ${r.data?.pulled || 0} file${r.data?.pulled === 1 ? "" : "s"}`, {
+          description: r.data?.errors?.length ? `${r.data.errors.length} errors — see panel.` : `${r.data?.total} total mirrored.`,
+        });
+        await load();
+      }
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Sync failed");
     } finally {
       setBusy(null);
     }
+  };
+
+  // Poll the sources list every 3s while a sync is in flight. Stops when the
+  // backend flips `syncing` back to false.
+  const startSyncPolling = (sid) => {
+    if (pollRefs.current[`sync-${sid}`]) return;
+    const tick = async () => {
+      try {
+        const r = await api.get(`/listings/${listingId}/external-sources`);
+        const src = (r.data?.sources || []).find((s) => s.id === sid);
+        setData((d) => ({ ...d, sources: r.data?.sources || d.sources }));
+        if (!src || !src.syncing) {
+          clearInterval(pollRefs.current[`sync-${sid}`]);
+          delete pollRefs.current[`sync-${sid}`];
+          if (src?.last_error) {
+            toast.error("Sync completed with errors", { description: src.last_error });
+          } else if (src) {
+            toast.success(`Sync complete · ${src.file_count} file${src.file_count === 1 ? "" : "s"} mirrored`);
+          }
+        }
+      } catch { /* retry next tick */ }
+    };
+    pollRefs.current[`sync-${sid}`] = setInterval(tick, 3000);
   };
 
   const disconnect = async (src) => {
@@ -146,8 +178,10 @@ export default function ExternalSources({ listingId, viewAsPrincipal = false }) 
     if (!loaded) return;
     data.sources.forEach((s) => {
       if (s.status === "pending") startPolling(s.id);
+      // Resume sync polling if the user navigated away mid-sync and came back.
+      if (s.syncing) startSyncPolling(s.id);
     });
-  }, [loaded, data.sources.map((s) => s.status).join(",")]);
+  }, [loaded, data.sources.map((s) => `${s.status}:${s.syncing}`).join(",")]);
 
   const unconnected = data.supported.filter(
     (s) => !data.sources.some((c) => c.source_kind === s.kind && c.status !== "failed"),
@@ -203,12 +237,13 @@ export default function ExternalSources({ listingId, viewAsPrincipal = false }) 
                   {s.status === "active" && (
                     <button
                       onClick={() => sync(s.id)}
-                      disabled={busy === s.id}
+                      disabled={busy === s.id || s.syncing}
                       data-testid={`source-sync-${s.id}`}
                       className="text-xs text-[var(--wz-text-secondary)] hover:text-[var(--wz-gold)] flex items-center gap-1 disabled:opacity-50"
                       title="Pull files into the Vault"
                     >
-                      <ArrowsClockwise size={12} /> {busy === s.id ? "Syncing…" : "Sync now"}
+                      <ArrowsClockwise size={12} className={s.syncing ? "animate-spin" : ""} />
+                      {s.syncing ? `Syncing… (${s.file_count})` : busy === s.id ? "Starting…" : "Sync now"}
                     </button>
                   )}
                   <button
