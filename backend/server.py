@@ -2078,17 +2078,31 @@ async def delete_private_locker_file(fid: str, user=Depends(get_current_user)):
     return {"ok": True}
 
 
-async def _clone_listing_files_into_room(listing_id: str, room_id: str, user_id: str) -> int:
-    """Copy every active staged file on a listing into a newly opened Vault. Re-encrypts
-    with the vault's AAD so the cipher stays bound to its room. Returns number cloned."""
+async def _clone_listing_files_into_room(listing_id: str, room_id: str, user_id: str, *, only_missing: bool = False) -> int:
+    """Copy every active staged file on a listing into a Vault. Re-encrypts
+    with the vault's AAD so the cipher stays bound to its room. Returns number cloned.
+
+    `only_missing=True` skips staged files that have already been cloned into this
+    room (detected via `cloned_from_listing_file`). Use this for incremental
+    backfills (e.g. after an external-source sync drops new files into a listing
+    whose Vaults are already open)."""
     staged = await db.listing_staged_files.find(
         {"listing_id": listing_id, "deleted_at": {"$exists": False}},
         {"_id": 0},
     ).sort("uploaded_at", 1).to_list(500)
     if not staged:
         return 0
+    already_cloned: set[str] = set()
+    if only_missing:
+        existing = await db.deal_room_files.find(
+            {"room_id": room_id, "cloned_from_listing_file": {"$ne": None, "$exists": True}},
+            {"_id": 0, "cloned_from_listing_file": 1},
+        ).to_list(1000)
+        already_cloned = {e["cloned_from_listing_file"] for e in existing if e.get("cloned_from_listing_file")}
     cloned = 0
     for s in staged:
+        if only_missing and s["id"] in already_cloned:
+            continue
         try:
             grid_out = await listing_files_bucket.open_download_stream(ObjectId(s["gridfs_id"]))
         except Exception as e:
@@ -4232,6 +4246,27 @@ async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
                   "last_error": final_error,
                   "last_response_sample": sample_response}},
     )
+    # Eager backfill: clone any new staged files into already-open Vaults for
+    # this listing so buyers + Copilot see the synced docs without waiting for
+    # the next get_deal_room hit. Bounded — only pulls open vault rows.
+    if pulled > 0:
+        try:
+            open_rooms = await db.deal_rooms.find(
+                {"listing_id": lid, "status": {"$in": ["pending_nda", "active", "preview"]},
+                 "deleted_at": {"$exists": False}},
+                {"_id": 0, "id": 1, "seller_id": 1},
+            ).to_list(200)
+            for r in open_rooms:
+                try:
+                    added = await _clone_listing_files_into_room(
+                        lid, r["id"], r.get("seller_id") or user_id, only_missing=True
+                    )
+                    if added:
+                        logger.info(f"sync backfill: cloned {added} file(s) into room {r['id']}")
+                except Exception as e:
+                    logger.warning(f"sync backfill failed for room {r.get('id')}: {e}")
+        except Exception as e:
+            logger.warning(f"sync backfill enumeration failed for listing {lid}: {e}")
     await log_audit(user_id, "listing.source.sync", lid,
                     {"sid": sid, "pulled": pulled, "total": new_count, "errors": len(errors)})
 
@@ -4697,6 +4732,19 @@ async def get_deal_room(rid: str, user=Depends(get_current_user)):
     # Retroactive cleanup: purge clones whose staged source was deleted before
     # the cascade-on-delete patch. Cheap (single $in query) and idempotent.
     await _purge_orphan_room_clones(rid)
+    # Self-heal: pick up any staged listing files added (manually or via Composio
+    # external sync) AFTER this Vault was opened. Without this, files synced from
+    # Google Drive / SharePoint / etc. after open-room would never reach the
+    # Vault. Cheap when nothing new to clone (single $in query + early bail).
+    if room.get("listing_id") and room.get("status") in ("pending_nda", "active", "preview"):
+        try:
+            backfilled = await _clone_listing_files_into_room(
+                room["listing_id"], rid, room.get("seller_id") or user["id"], only_missing=True
+            )
+            if backfilled:
+                logger.info(f"backfilled {backfilled} staged file(s) into room {rid}")
+        except Exception as e:
+            logger.warning(f"get_deal_room: backfill clone failed for {rid}: {e}")
     room["files"] = await db.deal_room_files.find({"room_id": rid}, {"_id": 0, "content": 0, "pages": 0}).sort("uploaded_at", -1).to_list(500)
     room["requests"] = await db.deal_room_requests.find({"room_id": rid}, {"_id": 0}).sort("created_at", 1).to_list(200)
     room["findings"] = await db.deal_room_findings.find({"room_id": rid}, {"_id": 0}).sort("created_at", -1).to_list(200)
@@ -5300,6 +5348,16 @@ async def ask_copilot(rid: str, body: CopilotAsk, user=Depends(get_current_user)
         "created_at": now_utc().isoformat(),
     }
     await db.deal_room_messages.insert_one(user_msg)
+
+    # Self-heal: pick up any staged listing files (manual or external-source synced)
+    # added after this Vault was opened, so the Copilot's context window is fresh.
+    if room.get("listing_id") and room.get("status") in ("pending_nda", "active", "preview"):
+        try:
+            await _clone_listing_files_into_room(
+                room["listing_id"], rid, room.get("seller_id") or user["id"], only_missing=True
+            )
+        except Exception as e:
+            logger.warning(f"copilot: backfill clone failed for {rid}: {e}")
 
     # Build context from files
     files = await db.deal_room_files.find({"room_id": rid}, {"_id": 0}).sort("uploaded_at", 1).to_list(30)
