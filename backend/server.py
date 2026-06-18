@@ -3881,8 +3881,32 @@ async def create_external_source(
 @api_router.get("/listings/{lid}/external-sources")
 async def list_external_sources(lid: str, user=Depends(get_current_user)):
     """List file sources connected to a listing. Viewer just needs read access
-    on the listing (collaborators + buyers in active Vaults included)."""
+    on the listing (collaborators + buyers in active Vaults included).
+
+    Self-healing: pending sources older than 1h are auto-purged here so a
+    half-finished OAuth attempt doesn't permanently occupy the "Connect"
+    slot for that toolkit. ACTIVE sources are never auto-touched.
+    """
     await _listing_for_view_or_404(lid, user)
+    stale_cutoff = (now_utc() - timedelta(hours=1)).isoformat()
+    stale = await db.listing_external_sources.find(
+        {"listing_id": lid, "status": "pending",
+         "created_at": {"$lt": stale_cutoff},
+         "deleted_at": {"$exists": False}},
+        {"_id": 0, "id": 1},
+    ).to_list(50)
+    if stale:
+        stale_ids = [s["id"] for s in stale]
+        await db.listing_external_sources.update_many(
+            {"id": {"$in": stale_ids}},
+            {"$set": {"deleted_at": now_utc().isoformat(),
+                      "status": "expired"}},
+        )
+        await db.composio_connections.update_many(
+            {"id": {"$in": stale_ids}},
+            {"$set": {"status": "expired"}},
+        )
+
     rows = await db.listing_external_sources.find(
         {"listing_id": lid, "deleted_at": {"$exists": False}}, {"_id": 0, "redirect_url": 0}
     ).sort("created_at", -1).to_list(50)
