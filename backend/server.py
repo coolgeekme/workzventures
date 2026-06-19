@@ -3320,6 +3320,190 @@ Return STRICT JSON:
 """
 
 
+def _render_newsletter_html(
+    data: dict,
+    *,
+    recipient_name: Optional[str] = None,
+    sender_name: Optional[str] = None,
+    sender_org: Optional[str] = None,
+    kind: str = "broadcast",
+) -> str:
+    """Build the email-safe HTML payload for a newsletter using the NextCapOS
+    Bloomberg-blue / warm-paper brand palette. Pure inline CSS so Gmail, Outlook,
+    Apple Mail, etc. render it the same. No external assets — everything is
+    inline so deliverability isn't tripped by image hosting."""
+    title = (data.get("title") or "Your NextCapOS digest").strip()
+    tagline = (data.get("issue_tagline") or ("Personal digest" if kind == "personal" else "Broadcast")).strip()
+    spotlights = data.get("deal_spotlights") or []
+    market = (data.get("market_analysis") or "").strip()
+    updates = data.get("portfolio_updates") or []
+    note = (data.get("editor_note") or "").strip()
+    frontend = (os.environ.get("FRONTEND_URL") or "").rstrip("/")
+
+    # Defensive escapes for any field that contains user-provided text.
+    import html as _h
+    def e(s):
+        return _h.escape(str(s or ""), quote=True)
+
+    spotlight_blocks = "".join(
+        f"""
+        <tr><td style="padding:14px 0;border-bottom:1px solid #E5E0D6;">
+          <div style="font-family:Georgia,'Times New Roman',serif;font-size:16px;font-weight:600;color:#0B1B3D;line-height:1.35;">{e(s.get('headline'))}</div>
+          <div style="margin-top:6px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13.5px;color:#3D4760;line-height:1.55;">{e(s.get('summary'))}</div>
+        </td></tr>
+        """
+        for s in spotlights[:5]
+    ) or """<tr><td style="padding:14px 0;color:#7A8299;font-size:13px;font-style:italic;">No deal spotlights in this issue.</td></tr>"""
+
+    updates_block = ""
+    if updates:
+        items = "".join(
+            f"""<li style="margin:5px 0;font-size:13.5px;color:#3D4760;line-height:1.55;">{e(u)}</li>"""
+            for u in updates[:8]
+        )
+        updates_block = f"""
+        <tr><td style="padding:22px 0 0 0;">
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:10px;color:#7A8299;letter-spacing:0.18em;text-transform:uppercase;font-weight:600;margin-bottom:8px;">Portfolio updates</div>
+          <ul style="margin:0;padding-left:18px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">{items}</ul>
+        </td></tr>
+        """
+
+    market_block = ""
+    if market:
+        market_block = f"""
+        <tr><td style="padding:22px 0 0 0;">
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:10px;color:#7A8299;letter-spacing:0.18em;text-transform:uppercase;font-weight:600;margin-bottom:8px;">Market analysis</div>
+          <p style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13.5px;color:#3D4760;line-height:1.65;">{e(market)}</p>
+        </td></tr>
+        """
+
+    note_block = ""
+    if note:
+        note_block = f"""
+        <tr><td style="padding:24px 0 0 0;border-top:1px solid #E5E0D6;margin-top:22px;">
+          <p style="margin:18px 0 0 0;font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:13.5px;color:#5A6275;line-height:1.6;">&ldquo;{e(note)}&rdquo;</p>
+          <p style="margin:6px 0 0 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;color:#7A8299;">— {e(sender_name or 'The NextCapOS editorial team')}</p>
+        </td></tr>
+        """
+
+    sender_line = ""
+    if kind == "broadcast" and sender_name:
+        org_part = f" · {e(sender_org)}" if sender_org else ""
+        sender_line = f"""<div style="margin-top:4px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;color:#7A8299;">From {e(sender_name)}{org_part}</div>"""
+
+    greeting = ""
+    if recipient_name:
+        greeting = f"""<p style="margin:0 0 18px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;color:#3D4760;">Hi {e(recipient_name)},</p>"""
+
+    cta_block = ""
+    if frontend:
+        cta_block = f"""
+        <tr><td style="padding:28px 0 0 0;text-align:left;">
+          <a href="{frontend}/app/newsletter"
+             style="display:inline-block;padding:12px 22px;background:#0B1B3D;color:#FAFAF7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;text-decoration:none;letter-spacing:0.05em;border-radius:2px;">
+            Open in NextCapOS &rsaquo;
+          </a>
+        </td></tr>
+        """
+
+    return f"""<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{e(title)}</title>
+</head>
+<body style="margin:0;padding:0;background:#F4EFE5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1A1F33;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F4EFE5;">
+    <tr><td align="center" style="padding:32px 16px;">
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#FAFAF7;border:1px solid #E5E0D6;border-radius:4px;">
+        <!-- HEADER: NextCapOS wordmark band -->
+        <tr><td style="padding:24px 32px 12px 32px;border-bottom:1px solid #E5E0D6;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td>
+                <div style="font-family:Georgia,'Times New Roman',serif;font-size:22px;font-weight:700;letter-spacing:-0.01em;color:#0B1B3D;line-height:1;">
+                  NextCap<span style="color:#1D4ED8;">OS</span>
+                </div>
+                <div style="margin-top:4px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:9.5px;letter-spacing:0.22em;text-transform:uppercase;color:#7A8299;font-weight:600;">
+                  Institutional buy &amp; sell-side
+                </div>
+              </td>
+              <td align="right" style="vertical-align:top;">
+                <div style="font-family:'SF Mono',Menlo,Monaco,Consolas,monospace;font-size:10px;color:#7A8299;letter-spacing:0.1em;text-transform:uppercase;">{e(tagline)}</div>
+              </td>
+            </tr>
+          </table>
+        </td></tr>
+        <!-- BODY -->
+        <tr><td style="padding:28px 32px 32px 32px;">
+          {greeting}
+          <h1 style="margin:0 0 4px 0;font-family:Georgia,'Times New Roman',serif;font-size:26px;line-height:1.2;color:#0B1B3D;font-weight:700;letter-spacing:-0.015em;">{e(title)}</h1>
+          {sender_line}
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;">
+            <tr><td>
+              <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:10px;color:#7A8299;letter-spacing:0.18em;text-transform:uppercase;font-weight:600;margin-bottom:4px;">Deal spotlights</div>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">{spotlight_blocks}</table>
+            </td></tr>
+            {market_block}
+            {updates_block}
+            {note_block}
+            {cta_block}
+          </table>
+        </td></tr>
+        <!-- FOOTER -->
+        <tr><td style="padding:18px 32px 24px 32px;border-top:1px solid #E5E0D6;background:#F4EFE5;border-radius:0 0 4px 4px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:10.5px;color:#7A8299;line-height:1.6;">
+                Sent by <strong style="color:#0B1B3D;">NextCapOS</strong> · the institutional buy &amp; sell-side OS for M&amp;A.<br>
+                Manage your preferences at <a href="{frontend}/app/newsletter" style="color:#1D4ED8;text-decoration:none;">{frontend.replace('https://','').replace('http://','') or 'nextcapos.com'}/app/newsletter</a>.
+              </td>
+            </tr>
+          </table>
+        </td></tr>
+      </table>
+      <div style="margin-top:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:10px;color:#A8AEC0;text-align:center;letter-spacing:0.05em;">
+        You're receiving this because you opted in to NextCapOS newsletters.
+      </div>
+    </td></tr>
+  </table>
+</body></html>
+"""
+
+
+def _newsletter_plain_text(data: dict) -> str:
+    """Fallback plain-text body for clients that block HTML."""
+    parts = [
+        (data.get("title") or "Your NextCapOS digest"),
+        "=" * min(60, len(data.get("title") or "")),
+        "",
+    ]
+    if data.get("issue_tagline"):
+        parts.append(data["issue_tagline"])
+        parts.append("")
+    if data.get("deal_spotlights"):
+        parts.append("DEAL SPOTLIGHTS")
+        for s in data["deal_spotlights"][:5]:
+            parts.append(f"• {s.get('headline','')}")
+            if s.get("summary"):
+                parts.append(f"  {s['summary']}")
+        parts.append("")
+    if data.get("market_analysis"):
+        parts.append("MARKET ANALYSIS")
+        parts.append(data["market_analysis"])
+        parts.append("")
+    if data.get("portfolio_updates"):
+        parts.append("PORTFOLIO UPDATES")
+        for u in data["portfolio_updates"][:8]:
+            parts.append(f"• {u}")
+        parts.append("")
+    if data.get("editor_note"):
+        parts.append(f"— {data['editor_note']}")
+    parts.append("")
+    parts.append("Sent by NextCapOS · the institutional buy & sell-side OS for M&A.")
+    return "\n".join(parts)
+
+
 @api_router.get("/newsletter/preferences")
 async def get_prefs(user=Depends(get_current_user)):
     return {
@@ -3415,9 +3599,34 @@ async def personal_newsletter(body: NewsletterDraftRequest, user=Depends(get_cur
         "created_at": now_utc().isoformat(),
     }
     await db.newsletters.insert_one(doc)
+    # Actually send the email via Resend (no longer mocked). Personal digest =
+    # 1 recipient → safe to send inline. Errors are recorded on the doc but
+    # don't fail the request — the digest still lives in the user's history.
+    html = _render_newsletter_html(
+        data,
+        recipient_name=user.get("name"),
+        sender_name="NextCapOS",
+        sender_org="NextCapOS",
+        kind="personal",
+    )
+    text = _newsletter_plain_text(data)
+    subj = (data.get("title") or "Your NextCapOS digest").strip()[:180]
+    send_result = await send_email(user["email"], f"{subj} · NextCapOS", html, text=text)
+    delivery_meta = {
+        "sent_ok": bool(send_result.get("ok")),
+        "skipped": bool(send_result.get("skipped")),
+        "provider_id": send_result.get("id"),
+        "error": send_result.get("error") or send_result.get("body"),
+    }
+    await db.newsletters.update_one(
+        {"id": doc["id"]},
+        {"$set": {"delivery": delivery_meta, "delivered_to": [user["email"]]}},
+    )
+    doc["delivery"] = delivery_meta
     duration = int((now_utc() - started).total_seconds() * 1000)
     await log_agent_activity("newsletter-agent", "personal:delivered", "completed", user_id=user["id"], duration_ms=duration)
-    await log_audit(user["id"], "newsletter.personal", doc["id"])
+    await log_audit(user["id"], "newsletter.personal", doc["id"],
+                    {"sent_ok": delivery_meta["sent_ok"], "skipped": delivery_meta["skipped"]})
     doc.pop("_id", None)
     return doc
 
@@ -3444,24 +3653,68 @@ async def approve_newsletter(nid: str, user=Depends(get_current_user)):
 
 @api_router.post("/newsletter/{nid}/dispatch")
 async def dispatch_newsletter(nid: str, user=Depends(get_current_user)):
-    """MOCKED email dispatch (Resend integration mocked per user choice).
-    Broadcast → opted-in buyers count, or hand-picked recipient_ids if set.
-    Personal → already delivered (recipients=1)."""
+    """Dispatch a broadcast newsletter to opted-in buyers (or a hand-picked
+    recipient subset). Real Resend send — no longer mocked. Larger fan-outs
+    (>3 recipients) run in the background to avoid ingress timeouts; small
+    sends finish inline so the seller gets immediate confirmation."""
     nl = await db.newsletters.find_one({"id": nid, "user_id": user["id"]}, {"_id": 0})
     if not nl:
         raise HTTPException(status_code=404, detail="Newsletter not found")
     if nl.get("kind") == "personal":
         return {"ok": True, "recipients": 1, "note": "personal digest already delivered"}
+
     picked = nl.get("recipient_ids") or []
     if picked:
-        # only count IDs that are opted-in buyers (defense-in-depth)
-        recipients = await db.users.count_documents(
-            {"id": {"$in": picked}, "role": "buyer", "newsletter_opt_in": True}
-        )
-        scope_note = f"hand-picked ({len(picked)} selected, {recipients} eligible opted-in)"
+        # Only count IDs that are opted-in buyers (defense-in-depth on stale picks)
+        recip_docs = await db.users.find(
+            {"id": {"$in": picked}, "role": "buyer", "newsletter_opt_in": True},
+            {"_id": 0, "email": 1, "name": 1},
+        ).to_list(500)
+        scope_note = f"hand-picked ({len(picked)} selected, {len(recip_docs)} eligible opted-in)"
     else:
-        recipients = await db.users.count_documents({"newsletter_opt_in": True, "role": "buyer"})
+        recip_docs = await db.users.find(
+            {"newsletter_opt_in": True, "role": "buyer"},
+            {"_id": 0, "email": 1, "name": 1},
+        ).to_list(500)
         scope_note = "broadcast to all opted-in buyers"
+
+    recipients = len(recip_docs)
+    data = nl.get("data") or {}
+    subj = (data.get("title") or "NextCapOS digest").strip()[:180]
+    text = _newsletter_plain_text(data)
+
+    async def _fanout_send():
+        """Send one email per recipient (each with personalized greeting) so
+        Gmail/Outlook show one recipient per message — no bcc clumping, better
+        deliverability, and the per-recipient name on the greeting line."""
+        delivered, failed = [], []
+        for r in recip_docs:
+            html = _render_newsletter_html(
+                data,
+                recipient_name=r.get("name"),
+                sender_name=nl.get("sender_name"),
+                sender_org=nl.get("sender_org"),
+                kind="broadcast",
+            )
+            res = await send_email(r["email"], f"{subj} · NextCapOS", html, text=text)
+            if res.get("ok"):
+                delivered.append(r["email"])
+            elif res.get("skipped"):
+                failed.append({"email": r["email"], "reason": "RESEND_API_KEY missing"})
+            else:
+                failed.append({"email": r["email"],
+                               "reason": (res.get("error") or res.get("body") or "send failed")[:240]})
+        await db.newsletters.update_one(
+            {"id": nid},
+            {"$set": {
+                "delivered_to": delivered,
+                "delivery_failures": failed,
+                "delivery_finished_at": now_utc().isoformat(),
+            }},
+        )
+
+    # Flip status + recipients counter BEFORE fan-out so the UI shows
+    # "dispatched" immediately. Counters refine after delivery completes.
     await db.newsletters.update_one(
         {"id": nid},
         {"$set": {
@@ -3469,11 +3722,40 @@ async def dispatch_newsletter(nid: str, user=Depends(get_current_user)):
             "dispatched_at": now_utc().isoformat(),
             "recipients": recipients,
             "dispatch_scope": scope_note,
+            "delivered_to": [],
+            "delivery_failures": [],
         }},
     )
-    await log_audit(user["id"], "newsletter.dispatch", nid, {"recipients": recipients, "scope": scope_note})
-    await log_agent_activity("newsletter-agent", f"dispatch:{nid}", "completed", user_id=user["id"])
-    return {"ok": True, "recipients": recipients, "note": f"MOCKED email dispatch · {scope_note}"}
+    await log_audit(user["id"], "newsletter.dispatch", nid,
+                    {"recipients": recipients, "scope": scope_note})
+    await log_agent_activity("newsletter-agent", f"dispatch:{nid}", "completed",
+                             user_id=user["id"])
+
+    if recipients == 0:
+        return {"ok": True, "recipients": 0,
+                "note": "No opted-in recipients matched — nothing sent.",
+                "delivered": 0, "failed": 0}
+
+    # Inline for small sends (immediate confirmation), background for larger fan-outs.
+    if recipients <= 3:
+        await _fanout_send()
+        nl_fresh = await db.newsletters.find_one({"id": nid}, {"_id": 0, "delivered_to": 1, "delivery_failures": 1}) or {}
+        return {
+            "ok": True,
+            "recipients": recipients,
+            "delivered": len(nl_fresh.get("delivered_to") or []),
+            "failed": len(nl_fresh.get("delivery_failures") or []),
+            "note": f"Resend dispatch · {scope_note}",
+        }
+    asyncio.create_task(_fanout_send())
+    return {
+        "ok": True,
+        "recipients": recipients,
+        "delivered": 0,
+        "failed": 0,
+        "note": f"Resend dispatch started in background · {scope_note}. "
+                "Refresh the newsletter list in ~30s to see per-recipient delivery status.",
+    }
 
 
 # -----------------------------------------------------------------------------
@@ -5367,10 +5649,19 @@ async def download_file(rid: str, file_id: str, user=Depends(get_current_user)):
     room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
     if not room:
         raise HTTPException(status_code=404, detail="Vault not found")
-    await participant_check(room, user)
+    role = await participant_check(room, user)
     f = await db.deal_room_files.find_one({"id": file_id, "room_id": rid}, {"_id": 0})
     if not f:
         raise HTTPException(status_code=404, detail="File not found")
+    # Per-file access policy: sellers + admins always download (they own the
+    # docs); buyers only download when `download_allowed` is explicitly true.
+    # Defaults to false to match institutional VDR convention (view-only is
+    # the safer default). Sellers flip the toggle file-by-file in the UI.
+    if role == "buyer" and not f.get("download_allowed", False):
+        raise HTTPException(
+            status_code=403,
+            detail="This file is view-only. Ask the seller to enable downloads.",
+        )
     if not f.get("gridfs_id"):
         raise HTTPException(status_code=400, detail="This file has no binary content (text-only upload)")
     try:
@@ -5406,6 +5697,189 @@ async def download_file(rid: str, file_id: str, user=Depends(get_current_user)):
         streamer(),
         media_type=f.get("content_type") or "application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{f["filename"]}"'},
+    )
+
+
+# -----------------------------------------------------------------------------
+# Per-file access policy (seller-only) & in-browser preview
+# -----------------------------------------------------------------------------
+class FileAccessPolicy(BaseModel):
+    download_allowed: bool
+
+
+@api_router.patch("/deal-rooms/{rid}/files/{file_id}/access")
+async def set_file_access(
+    rid: str, file_id: str, body: FileAccessPolicy,
+    user=Depends(get_current_user),
+):
+    """Seller (or admin/agent on the listing's workspace) toggles download
+    permission on a per-file basis. Buyers cannot call this endpoint."""
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    role = await participant_check(room, user)
+    if role not in ("seller", "admin"):
+        raise HTTPException(status_code=403, detail="Only the seller can change file access policy")
+    res = await db.deal_room_files.update_one(
+        {"id": file_id, "room_id": rid},
+        {"$set": {"download_allowed": bool(body.download_allowed),
+                  "access_policy_updated_at": now_utc().isoformat(),
+                  "access_policy_updated_by": user["id"]}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="File not found")
+    await log_audit(user["id"], "dealroom.file.access", rid,
+                    {"file_id": file_id, "download_allowed": bool(body.download_allowed)})
+    return {"ok": True, "download_allowed": bool(body.download_allowed)}
+
+
+# Office → PDF conversion cache (per-file-id) lives in GridFS so it survives
+# restarts and idle pods. Repeated previews of the same DOCX/XLSX/PPTX therefore
+# trigger LibreOffice only once.
+async def _office_to_pdf_via_libreoffice(filename: str, data: bytes) -> bytes | None:
+    """Convert DOCX/XLSX/PPTX/DOC/XLS/PPT/ODT/ODP/ODS → PDF using LibreOffice
+    headless. Returns PDF bytes on success, None if soffice is missing or
+    conversion fails. Single-shot, isolated, ~5-10s typical."""
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice:
+        return None
+    import tempfile, subprocess
+    with tempfile.TemporaryDirectory() as td:
+        in_path = os.path.join(td, filename)
+        with open(in_path, "wb") as f:
+            f.write(data)
+        try:
+            proc = subprocess.run(
+                [soffice, "--headless", "--norestore", "--nofirststartwizard",
+                 "--convert-to", "pdf", "--outdir", td, in_path],
+                capture_output=True, timeout=90,
+            )
+            if proc.returncode != 0:
+                logger.warning(f"soffice convert failed for {filename}: {proc.stderr[:300]!r}")
+                return None
+        except subprocess.TimeoutExpired:
+            logger.warning(f"soffice convert timeout for {filename}")
+            return None
+        except Exception as e:
+            logger.warning(f"soffice convert crashed for {filename}: {e}")
+            return None
+        # soffice names the output `{stem}.pdf` in --outdir
+        stem = os.path.splitext(filename)[0]
+        out_path = os.path.join(td, f"{stem}.pdf")
+        if not os.path.exists(out_path):
+            return None
+        with open(out_path, "rb") as f:
+            return f.read()
+
+
+# Mime types we directly stream into the browser viewer (PDFs + images + plain
+# text). Anything not in this set + not an Office format triggers a 415 from
+# the preview endpoint and the UI falls back to "Preview unavailable" copy.
+_DIRECT_PREVIEW_TYPES = {
+    "application/pdf",
+    "image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/svg+xml",
+    "text/plain", "text/markdown", "text/csv", "text/html",
+    "application/json",
+}
+_OFFICE_PREVIEW_EXTS = (
+    ".docx", ".doc", ".odt",
+    ".xlsx", ".xls", ".ods", ".xlsm",
+    ".pptx", ".ppt", ".odp",
+)
+
+
+@api_router.get("/deal-rooms/{rid}/files/{file_id}/preview")
+async def preview_file(rid: str, file_id: str, user=Depends(get_current_user)):
+    """Stream a file inline for in-browser viewing. PDFs + images + text
+    served directly. Office formats converted on-the-fly via LibreOffice
+    headless and cached in GridFS so the second preview is instant.
+
+    Unlike `/download`, the preview endpoint is ALWAYS available to every
+    Vault participant — the watermark overlay added client-side carries
+    the viewer's identity. Audit-logged so the seller sees who previewed
+    what."""
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    await participant_check(room, user)
+    f = await db.deal_room_files.find_one({"id": file_id, "room_id": rid}, {"_id": 0})
+    if not f or not f.get("gridfs_id"):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    ctype = (f.get("content_type") or "application/octet-stream").lower()
+    fname = f.get("filename", "file")
+    fname_lc = fname.lower()
+
+    # Decrypt staged bytes once; both direct-preview and Office-convert paths
+    # reuse the plaintext below.
+    try:
+        grid_out = await gridfs_bucket.open_download_stream(ObjectId(f["gridfs_id"]))
+        raw = await grid_out.read()
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Binary not found: {e}")
+    plaintext = raw
+    if f.get("encrypted"):
+        try:
+            aad = f"{rid}:{file_id}".encode("utf-8")
+            plaintext = decrypt_envelope(raw, associated_data=aad)
+        except Exception as e:
+            logger.exception("Vault file decryption failed (preview)")
+            raise HTTPException(status_code=500, detail=f"Decryption failed: {e}")
+
+    await log_audit(user["id"], "dealroom.file.preview", rid,
+                    {"filename": fname, "file_id": file_id})
+
+    # Direct preview path — no conversion needed.
+    if ctype in _DIRECT_PREVIEW_TYPES or fname_lc.endswith(".pdf"):
+        out_ctype = "application/pdf" if fname_lc.endswith(".pdf") else ctype
+        return StreamingResponse(
+            io.BytesIO(plaintext),
+            media_type=out_ctype,
+            headers={"Content-Disposition": f'inline; filename="{fname}"',
+                     "Cache-Control": "private, max-age=60"},
+        )
+
+    # Office formats — check cache first, else convert via LibreOffice
+    # headless and persist the PDF rendition in GridFS for next time.
+    if fname_lc.endswith(_OFFICE_PREVIEW_EXTS):
+        pdf_id = f.get("preview_pdf_gridfs_id")
+        pdf_bytes: bytes | None = None
+        if pdf_id:
+            try:
+                cached = await gridfs_bucket.open_download_stream(ObjectId(pdf_id))
+                pdf_bytes = await cached.read()
+            except Exception as e:
+                logger.warning(f"preview cache miss for {file_id}: {e}")
+                pdf_bytes = None
+        if pdf_bytes is None:
+            pdf_bytes = await _office_to_pdf_via_libreoffice(fname, plaintext)
+            if pdf_bytes is None:
+                raise HTTPException(
+                    status_code=415,
+                    detail="Preview unavailable — Office conversion failed. Try downloading the file.",
+                )
+            try:
+                new_id = await gridfs_bucket.upload_from_stream(
+                    f"preview-{fname}.pdf", io.BytesIO(pdf_bytes),
+                    metadata={"kind": "preview-pdf", "room_id": rid, "file_id": file_id},
+                )
+                await db.deal_room_files.update_one(
+                    {"id": file_id, "room_id": rid},
+                    {"$set": {"preview_pdf_gridfs_id": str(new_id),
+                              "preview_pdf_generated_at": now_utc().isoformat()}},
+                )
+            except Exception as e:
+                logger.warning(f"preview cache write failed for {file_id}: {e}")
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{os.path.splitext(fname)[0]}.pdf"',
+                     "Cache-Control": "private, max-age=300"},
+        )
+
+    raise HTTPException(
+        status_code=415,
+        detail="Preview not supported for this format. Download to view locally.",
     )
 
 
