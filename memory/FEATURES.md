@@ -234,7 +234,7 @@ NextCapOS ships four first-class roles, each with a tailored console.
 - Self-heals: pulls any newly-staged or newly-synced docs on each question.
 
 ### Vault Activity tab (Bitcoin-anchored audit trail)
-- Dedicated tab in every Vault showing every action taken on it: vault opens, NDA signatures, file uploads (manual + Composio-synced), downloads, Co-pilot questions, AI Findings runs.
+- Dedicated tab in every Vault showing every action taken on it: vault opens, NDA signatures, file uploads (manual + Composio-synced), downloads, previews, Co-pilot questions, AI Findings runs.
 - Filter chips: All · NDA · Files · Co-pilot · Findings · Vault access (with live counts).
 - Per-event detail: actor name + role + org, time-ago, action label, filename / signed name / question excerpt where relevant.
 - Synced files render a small **provider badge** (Google Drive · OneDrive · SharePoint · Dropbox · Box) for provenance transparency.
@@ -242,6 +242,23 @@ NextCapOS ships four first-class roles, each with a tailored console.
 - Hash-chained + periodically anchored to Bitcoin via OpenTimestamps — tampering with any past entry breaks the chain.
 - Auto-polls every 30s while the tab is mounted.
 - Endpoint: `GET /api/deal-rooms/{rid}/activity?since=ISO&limit=200`.
+
+### Per-file access policy (view-only by default)
+- Industry-default VDR behaviour — every Vault file lands as **view-only**; the seller flips a per-file checkbox to enable downloads for the buyer.
+- Sellers/admins always download (it's their data). Buyers get 403 unless `download_allowed=true`.
+- One-click **Disable / Allow** toggle on every file row; admin can also flip.
+- Green "Download" pill (unlock icon) vs. amber "View-only" pill (lock icon) — visible to both sides.
+- Endpoint: `PATCH /api/deal-rooms/{rid}/files/{fid}/access` body `{download_allowed: bool}`.
+- Every policy change logs a `dealroom.file.access` audit event with the new state.
+
+### Watermarked in-browser preview
+- Click "Preview" on any Vault file → opens a full-screen modal with PDF.js rendering and a **diagonal repeating CSS watermark** carrying `{viewer_email} · {ISO UTC timestamp} · {6-char session id}` at 16% opacity, Bloomberg-blue.
+- Office formats (DOCX/XLSX/PPTX + DOC/XLS/PPT + ODT/ODS/ODP) auto-converted server-side to PDF via **LibreOffice headless**; the rendition is cached in GridFS so subsequent previews are instant.
+- PDFs + images + text + JSON stream inline directly.
+- Toolbar: page navigation, zoom in/out, optional Download (only if `download_allowed=true`).
+- Right-click + drag-save explicitly disabled inside the modal (best-effort signal, not bulletproof — the watermark is the actual deterrent).
+- Every preview logs `dealroom.file.preview` audit event with the file id + filename → shows up in the Activity tab so the seller sees who looked at what.
+- Endpoint: `GET /api/deal-rooms/{rid}/files/{fid}/preview` (HTTP 415 if unsupported format).
 
 ### Preview Vault (QA mode)
 - Seller can preview the buyer experience without an inquiry; flagged `is_preview: true`, excluded from real deal metrics.

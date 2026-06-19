@@ -157,6 +157,13 @@ class TestVaultBackfill:
         assert nda.status_code in (200, 204), nda.text
 
         post_clone = clones2[post_fid]
+        # iter22: per-file access control means buyers default to view-only;
+        # seller must enable download before the buyer can save the bytes.
+        requests.patch(
+            f"{API}/deal-rooms/{rid}/files/{post_clone['id']}/access",
+            json={"download_allowed": True},
+            headers=_hdr(seller_tok), timeout=30,
+        )
         dl = requests.get(f"{API}/deal-rooms/{rid}/files/{post_clone['id']}/download",
                           headers=_hdr(buyer_tok), timeout=30)
         assert dl.status_code == 200, dl.text

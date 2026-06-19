@@ -6,10 +6,11 @@ import { useAuth } from "../lib/auth";
 import {
   FileText, Files, MagnifyingGlass, ListChecks, ShieldCheck,
   CloudArrowUp, CheckCircle, Warning, ArrowLeft, ChatCircleDots, PaperPlaneTilt,
-  Certificate, Clock,
+  Certificate, Clock, Eye, Lock, LockOpen,
 } from "@phosphor-icons/react";
 import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
 import VaultActivity from "../components/VaultActivity";
+import PdfPreview from "../components/PdfPreview";
 
 const FOLDERS = [
   { v: "financials", l: "Financials" },
@@ -36,6 +37,7 @@ export default function DealRoomDetail() {
   const [messages, setMessages] = useState([]);
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
+  const [previewFile, setPreviewFile] = useState(null);
 
   const load = () => api.get(`/deal-rooms/${id}`).then((r) => setRoom(r.data));
   const loadCopilot = () => api.get(`/deal-rooms/${id}/copilot`).then((r) => setMessages(r.data));
@@ -354,12 +356,10 @@ export default function DealRoomDetail() {
             <div className="px-5 py-3 border-b border-[var(--wz-border)] overline">Document inventory</div>
             <div className="divide-y divide-[var(--wz-border)]">
               {room.files.map((f) => {
-                const downloadHref = f.gridfs_id
-                  ? `${process.env.REACT_APP_BACKEND_URL}/api/deal-rooms/${id}/files/${f.id}/download`
-                  : null;
-                const token = localStorage.getItem("workz_token");
+                const downloadAllowed = f.download_allowed !== false ? f.download_allowed === true : false;
+                const canDownload = isSeller || user?.role === "admin" || downloadAllowed;
                 const onDownload = async (e) => {
-                  e.preventDefault();
+                  e?.preventDefault?.();
                   try {
                     const resp = await api.get(`/deal-rooms/${id}/files/${f.id}/download`, { responseType: "blob" });
                     const blob = new Blob([resp.data], { type: f.content_type || "application/octet-stream" });
@@ -373,6 +373,19 @@ export default function DealRoomDetail() {
                     window.URL.revokeObjectURL(url);
                   } catch (err) {
                     toast.error(err?.response?.data?.detail || "Download failed");
+                  }
+                };
+                const onToggleAccess = async () => {
+                  try {
+                    await api.patch(`/deal-rooms/${id}/files/${f.id}/access`, {
+                      download_allowed: !downloadAllowed,
+                    });
+                    toast.success(downloadAllowed
+                      ? "Download disabled — buyer can preview but not download"
+                      : "Download enabled — buyer can save this file");
+                    load();
+                  } catch (err) {
+                    toast.error(err?.response?.data?.detail || "Access policy update failed");
                   }
                 };
                 return (
@@ -390,11 +403,43 @@ export default function DealRoomDetail() {
                       </div>
                       {f.note && <div className="text-xs text-[var(--wz-text-secondary)] mt-1 italic">{f.note}</div>}
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
                       {f.matched_request_id && (
                         <span className="pill pill-positive flex items-center gap-1"><CheckCircle size={10} weight="fill" /> matched</span>
                       )}
-                      {downloadHref && (
+                      {/* Access policy pill — visible to everyone, makes the buyer's expectations explicit. */}
+                      <span
+                        className="pill text-[10px] inline-flex items-center gap-1"
+                        style={downloadAllowed
+                          ? { background: "rgba(34,197,94,0.10)", color: "var(--wz-positive,#22C55E)", border: "1px solid var(--wz-positive,#22C55E)" }
+                          : { background: "rgba(245,158,11,0.10)", color: "var(--wz-amber,#F59E0B)", border: "1px solid var(--wz-amber,#F59E0B)" }}
+                        title={downloadAllowed ? "Download enabled" : "View-only — buyer cannot download"}
+                        data-testid={`file-access-pill-${f.id}`}
+                      >
+                        {downloadAllowed ? <LockOpen size={10} /> : <Lock size={10} />}
+                        {downloadAllowed ? "Download" : "View-only"}
+                      </span>
+                      {/* Seller-only toggle. Admin can also toggle. */}
+                      {(isSeller || user?.role === "admin") && (
+                        <button
+                          onClick={onToggleAccess}
+                          className="text-[10px] text-[var(--wz-text-secondary)] hover:text-white underline underline-offset-2"
+                          data-testid={`toggle-access-${f.id}`}
+                          title={downloadAllowed ? "Disable download for buyer" : "Allow buyer to download"}
+                        >
+                          {downloadAllowed ? "Disable" : "Allow"}
+                        </button>
+                      )}
+                      {f.gridfs_id && (
+                        <button
+                          onClick={() => setPreviewFile(f)}
+                          className="text-xs text-[var(--wz-text-secondary)] hover:text-white inline-flex items-center gap-1"
+                          data-testid={`preview-${f.id}`}
+                        >
+                          <Eye size={12} /> Preview
+                        </button>
+                      )}
+                      {f.gridfs_id && canDownload && (
                         <button
                           onClick={onDownload}
                           className="text-xs text-[var(--wz-gold)] hover:underline"
@@ -704,6 +749,31 @@ export default function DealRoomDetail() {
       {tab === "activity" && (
         <VaultActivity roomId={id} accentClass={accentClass} />
       )}
+
+      {/* Watermarked in-browser PDF / Office preview modal */}
+      <PdfPreview
+        open={!!previewFile}
+        onClose={() => setPreviewFile(null)}
+        roomId={id}
+        file={previewFile}
+        onDownload={async () => {
+          if (!previewFile) return;
+          try {
+            const resp = await api.get(`/deal-rooms/${id}/files/${previewFile.id}/download`, { responseType: "blob" });
+            const blob = new Blob([resp.data], { type: previewFile.content_type || "application/octet-stream" });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = previewFile.filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(url);
+          } catch (err) {
+            toast.error(err?.response?.data?.detail || "Download failed");
+          }
+        }}
+      />
     </div>
   );
 }

@@ -9,6 +9,7 @@ import uuid
 import json
 import logging
 import asyncio
+import shutil
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import secrets

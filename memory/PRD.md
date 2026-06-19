@@ -451,6 +451,27 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
   - Self-heal call sites added to `GET /deal-rooms/{rid}` (catches refresh), `POST /deal-rooms/{rid}/copilot` (catches AI-question-before-refresh), and end of `_run_external_source_sync` (eager backfill into every active/preview vault on the listing).
 - **Tested**: `tests/test_vault_backfill.py` 2 PASS — pre-open clones at open-room; post-open arrival backfills on GET + buyer can decrypt + download the backfilled bytes; repeated GET doesn't duplicate.
 
+### P0 — Newsletter actually emails (iter-22)
+- **Problem**: Newsletter dispatch was 100% mocked — `MOCKED dispatch` note in response, status flipped to `dispatched` but no email ever sent. User reported running a newsletter and getting nothing in their inbox.
+- **Backend** (`server.py`):
+  - `_render_newsletter_html(data, recipient_name, sender_name, sender_org, kind)` — email-safe inline-CSS HTML template with the NextCapOS Bloomberg-blue / warm-paper brand (no external assets, no "Workz" references anywhere). Renders title, tagline, deal spotlights, market analysis, portfolio updates, editor note, and a CTA link back to `${FRONTEND_URL}/app/newsletter`. Defensive `html.escape` on every user-provided field.
+  - `_newsletter_plain_text(data)` — plain-text fallback for clients that block HTML.
+  - `POST /newsletter/personal` — now generates + immediately sends the digest to the buyer's inbox via `mailer.send_email` (Resend). Persists `delivery: {sent_ok, skipped, provider_id, error}` on the doc so the UI can show real status.
+  - `POST /newsletter/{nid}/dispatch` — no longer mocked. Fans out to opted-in buyers (or hand-picked `recipient_ids`) with per-recipient HTML personalized greeting. Small sends (≤3 recipients) inline; larger sends in background to avoid Cloudflare 100s timeout. Per-recipient outcomes tracked in `delivered_to[]` and `delivery_failures[]` on the newsletter doc.
+- **Verified**: Personal newsletter sent end-to-end (`alex@workz.example.com` → Resend → provider_id returned). Broadcast dispatch to 11 opted-in buyers: 11 delivered, 0 failed.
+- **Note**: Resend domain verification required for production sends from `team@app.nextcapos.com` — see SPF/DKIM/DMARC setup at https://resend.com/domains.
+
+### P1 — Watermarked in-browser preview + per-file download toggle (iter-22)
+- **Backend** (`server.py`):
+  - `PATCH /api/deal-rooms/{rid}/files/{fid}/access` — seller/admin sets `download_allowed: bool` per file. Buyer attempts return 403. Logs `dealroom.file.access` audit event.
+  - `GET /api/deal-rooms/{rid}/files/{fid}/preview` — streams inline content for browser viewing. PDFs/images/text served directly; **Office formats (DOCX/XLSX/PPTX + DOC/XLS/PPT + ODT/ODS/ODP) converted on-the-fly via LibreOffice headless** (`_office_to_pdf_via_libreoffice`) and cached in GridFS (`preview_pdf_gridfs_id` field) so subsequent previews are instant. Logs `dealroom.file.preview` audit event.
+  - `/download` endpoint now enforces the policy: sellers/admins always 200; buyers 403 unless `download_allowed=true`.
+  - LibreOffice installed in the container (`libreoffice-core-nogui` + writer/calc/impress filters, ~500 MB).
+- **Frontend**:
+  - `components/PdfPreview.jsx` — new modal using `react-pdf` (pdfjs v4 worker). Diagonal repeating CSS watermark overlay carrying `{user.email} · {UTC timestamp} · {6-char session id}` at 16% opacity in Bloomberg-blue. Right-click + page drag suppression best-effort. Toolbar: prev/next page, zoom in/out, optional Download (only when `download_allowed=true`), close. ESC/arrow-keys keyboard shortcuts. Footer trust line about the audit trail.
+  - `pages/DealRoomDetail.jsx` — Files tab now shows per-row: green "Download" pill (unlock icon) when allowed, amber "View-only" pill (lock icon) otherwise; seller/admin-only "Allow / Disable" toggle link; "Preview" button on every binary file; "Download" button only when policy allows it.
+- **Tested**: `tests/test_vault_preview.py` 6 PASS — default view-only, seller-always-downloads, seller-toggles-then-buyer-can, buyer-cannot-toggle, preview-always-available-for-buyer, preview-logs-audit, DOCX-roundtrip-via-LibreOffice. Frontend smoke test via screenshot tool confirmed the watermarked preview modal renders correctly with `alex@workz.example.com · 2026-06-19 00:14:25 UTC · 3OM4TN` overlaid diagonally across the DOCX-rendered-as-PDF page.
+
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)
