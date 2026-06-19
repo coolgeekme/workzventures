@@ -21,6 +21,42 @@ pdfjs.GlobalWorkerOptions.workerSrc =
   `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 /**
+ * Diagonal repeating watermark overlay. Sits absolutely over whatever the
+ * parent renders (PDF page, image, text block) so any screenshot taken of
+ * the modal captures the viewer's identity. Pointer-events disabled so the
+ * underlying content stays interactive (text selection in PDFs etc.).
+ */
+function WatermarkOverlay({ text }) {
+  return (
+    <div
+      className="absolute inset-0 pointer-events-none overflow-hidden"
+      aria-hidden="true"
+      data-testid="pdf-watermark"
+    >
+      <div
+        className="absolute -inset-1/2 flex flex-wrap content-center justify-center"
+        style={{
+          transform: "rotate(-30deg)",
+          opacity: 0.16,
+          color: "#1D4ED8",
+          fontFamily: "ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace",
+          fontSize: "13px",
+          letterSpacing: "0.05em",
+          lineHeight: "70px",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {Array.from({ length: 60 }).map((_, i) => (
+          <span key={i} className="mx-8" style={{ width: "260px", textAlign: "center" }}>
+            {text}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
  * In-browser PDF preview modal with a watermark overlay carrying the viewer's
  * identity. Used for institutional VDR-style "view-only" file inspection:
  * the buyer can browse the document without downloading, but every visible
@@ -37,6 +73,12 @@ pdfjs.GlobalWorkerOptions.workerSrc =
 export default function PdfPreview({ open, onClose, roomId, file, onDownload }) {
   const { user } = useAuth();
   const [blobUrl, setBlobUrl] = useState(null);
+  const [textBody, setTextBody] = useState(null);
+  // 'pdf' | 'image' | 'text' | 'unsupported' — drives which renderer the
+  // modal mounts. Detected at fetch time from the response Content-Type so
+  // images / text / Office (converted to PDF server-side) all flow through
+  // the same modal with a consistent watermark overlay.
+  const [previewKind, setPreviewKind] = useState("pdf");
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState(null);
   const [pageCount, setPageCount] = useState(0);
@@ -65,17 +107,43 @@ export default function PdfPreview({ open, onClose, roomId, file, onDownload }) 
     setPageNumber(1);
     setPageCount(0);
     setBlobUrl(null);
+    setTextBody(null);
+    setPreviewKind("pdf");
     (async () => {
       try {
         const resp = await api.get(`/deal-rooms/${roomId}/files/${file.id}/preview`, {
           responseType: "blob",
         });
         if (!active) return;
-        const blob = new Blob([resp.data], { type: "application/pdf" });
-        setBlobUrl(window.URL.createObjectURL(blob));
+        // Trust the server's Content-Type — it knows what it converted /
+        // streamed. Server delivers Office formats already converted to PDF.
+        const ctype = (resp.headers["content-type"] || resp.data.type || "").toLowerCase().split(";")[0].trim();
+        let kind = "unsupported";
+        if (ctype === "application/pdf") kind = "pdf";
+        else if (ctype.startsWith("image/")) kind = "image";
+        else if (ctype.startsWith("text/") || ctype === "application/json") kind = "text";
+        setPreviewKind(kind);
+        if (kind === "text") {
+          // Decode small text payloads inline so we can render in a styled <pre>.
+          // Cap at 2MB — beyond that we fall back to "download to view".
+          if (resp.data.size > 2 * 1024 * 1024) {
+            setErrorMsg("File is too large to preview inline. Download it instead.");
+            setPreviewKind("unsupported");
+          } else {
+            const txt = await resp.data.text();
+            setTextBody(txt);
+          }
+        } else if (kind === "pdf" || kind === "image") {
+          const blob = new Blob([resp.data], { type: ctype || resp.data.type });
+          setBlobUrl(window.URL.createObjectURL(blob));
+        } else {
+          setErrorMsg("Preview not supported for this file type. Download to view locally.");
+        }
+        if (kind !== "pdf") setLoading(false);
       } catch (e) {
         if (!active) return;
         setErrorMsg(e?.response?.data?.detail || "Preview unavailable for this file.");
+        setPreviewKind("unsupported");
         setLoading(false);
       }
     })();
@@ -131,26 +199,30 @@ export default function PdfPreview({ open, onClose, roomId, file, onDownload }) 
         className="relative my-6 mx-4 sm:mx-8 max-w-6xl w-full bg-[var(--wz-card-bg,#0E0E12)] border border-[var(--wz-border)] rounded-md flex flex-col"
         onContextMenu={(e) => e.preventDefault()}
       >
-        {/* Toolbar */}
+        {/* Toolbar — zoom + pagination only meaningful for PDF; hidden for image/text */}
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-[var(--wz-border)]">
           <div className="min-w-0 flex-1">
             <div className="text-[10px] uppercase tracking-[0.18em] text-[var(--wz-text-tertiary)]">View-only preview</div>
             <div className="text-sm font-medium text-white truncate" title={file?.filename}>{file?.filename}</div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={() => setScale((s) => Math.max(s - 0.2, 0.4))}
-              className="p-1.5 text-[var(--wz-text-secondary)] hover:text-white border border-[var(--wz-border)] hover:border-white rounded-sm"
-              data-testid="pdf-zoom-out"
-              aria-label="Zoom out"
-            ><MagnifyingGlassMinus size={14} /></button>
-            <span className="text-xs font-mono-wz text-[var(--wz-text-tertiary)] w-12 text-center">{Math.round(scale * 100)}%</span>
-            <button
-              onClick={() => setScale((s) => Math.min(s + 0.2, 2.4))}
-              className="p-1.5 text-[var(--wz-text-secondary)] hover:text-white border border-[var(--wz-border)] hover:border-white rounded-sm"
-              data-testid="pdf-zoom-in"
-              aria-label="Zoom in"
-            ><MagnifyingGlassPlus size={14} /></button>
+            {previewKind === "pdf" && (
+              <>
+                <button
+                  onClick={() => setScale((s) => Math.max(s - 0.2, 0.4))}
+                  className="p-1.5 text-[var(--wz-text-secondary)] hover:text-white border border-[var(--wz-border)] hover:border-white rounded-sm"
+                  data-testid="pdf-zoom-out"
+                  aria-label="Zoom out"
+                ><MagnifyingGlassMinus size={14} /></button>
+                <span className="text-xs font-mono-wz text-[var(--wz-text-tertiary)] w-12 text-center">{Math.round(scale * 100)}%</span>
+                <button
+                  onClick={() => setScale((s) => Math.min(s + 0.2, 2.4))}
+                  className="p-1.5 text-[var(--wz-text-secondary)] hover:text-white border border-[var(--wz-border)] hover:border-white rounded-sm"
+                  data-testid="pdf-zoom-in"
+                  aria-label="Zoom in"
+                ><MagnifyingGlassPlus size={14} /></button>
+              </>
+            )}
             {downloadAllowed && (
               <button
                 onClick={() => onDownload?.()}
@@ -167,27 +239,33 @@ export default function PdfPreview({ open, onClose, roomId, file, onDownload }) 
           </div>
         </div>
 
-        {/* Page strip */}
+        {/* Page strip — PDF only; image/text just show the view-only pill */}
         <div className="px-4 py-2 border-b border-[var(--wz-border)] flex items-center justify-between text-xs">
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={() => setPageNumber((p) => Math.max(p - 1, 1))}
-              disabled={pageNumber <= 1}
-              className="p-1 text-[var(--wz-text-secondary)] hover:text-white disabled:opacity-40"
-              data-testid="pdf-prev-page"
-              aria-label="Previous page"
-            ><CaretLeft size={14} /></button>
-            <span className="font-mono-wz text-[var(--wz-text-tertiary)]" data-testid="pdf-page-indicator">
-              Page <span className="text-white">{pageNumber}</span> / {pageCount || "—"}
+          {previewKind === "pdf" ? (
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setPageNumber((p) => Math.max(p - 1, 1))}
+                disabled={pageNumber <= 1}
+                className="p-1 text-[var(--wz-text-secondary)] hover:text-white disabled:opacity-40"
+                data-testid="pdf-prev-page"
+                aria-label="Previous page"
+              ><CaretLeft size={14} /></button>
+              <span className="font-mono-wz text-[var(--wz-text-tertiary)]" data-testid="pdf-page-indicator">
+                Page <span className="text-white">{pageNumber}</span> / {pageCount || "—"}
+              </span>
+              <button
+                onClick={() => setPageNumber((p) => Math.min(p + 1, pageCount || 1))}
+                disabled={pageNumber >= pageCount}
+                className="p-1 text-[var(--wz-text-secondary)] hover:text-white disabled:opacity-40"
+                data-testid="pdf-next-page"
+                aria-label="Next page"
+              ><CaretRight size={14} /></button>
+            </div>
+          ) : (
+            <span className="font-mono-wz text-[10px] text-[var(--wz-text-tertiary)] uppercase tracking-[0.18em]">
+              {previewKind === "image" ? "Image" : previewKind === "text" ? "Text" : "Preview"}
             </span>
-            <button
-              onClick={() => setPageNumber((p) => Math.min(p + 1, pageCount || 1))}
-              disabled={pageNumber >= pageCount}
-              className="p-1 text-[var(--wz-text-secondary)] hover:text-white disabled:opacity-40"
-              data-testid="pdf-next-page"
-              aria-label="Next page"
-            ><CaretRight size={14} /></button>
-          </div>
+          )}
           {!downloadAllowed && (
             <span className="pill text-[10px]" style={{ background: "rgba(245,158,11,0.10)", color: "var(--wz-amber, #F59E0B)", border: "1px solid var(--wz-amber, #F59E0B)" }}>
               View-only · ask the seller to enable download
@@ -195,7 +273,9 @@ export default function PdfPreview({ open, onClose, roomId, file, onDownload }) 
           )}
         </div>
 
-        {/* Document area with watermark overlay */}
+        {/* Content area — switches renderer by previewKind, all wrapped with
+            the same watermark overlay so the buyer's identity captures into
+            any screenshot regardless of file type. */}
         <div className="relative flex-1 overflow-auto bg-[#1A1A1F] flex justify-center py-6 px-4 select-none">
           {errorMsg && (
             <div className="m-auto max-w-md text-center" data-testid="pdf-preview-error">
@@ -205,7 +285,8 @@ export default function PdfPreview({ open, onClose, roomId, file, onDownload }) 
             </div>
           )}
 
-          {!errorMsg && blobUrl && (
+          {/* PDF renderer */}
+          {!errorMsg && previewKind === "pdf" && blobUrl && (
             <Document
               file={blobUrl}
               onLoadSuccess={({ numPages }) => {
@@ -227,39 +308,38 @@ export default function PdfPreview({ open, onClose, roomId, file, onDownload }) 
                   renderTextLayer={true}
                   className="shadow-xl"
                 />
-                {/* Watermark overlay — diagonal, repeating, semi-transparent.
-                    Pure CSS so it can't be stripped via right-click "save image as".
-                    Positioned absolutely over the page so it captures into screenshots. */}
-                <div
-                  className="absolute inset-0 pointer-events-none overflow-hidden"
-                  aria-hidden="true"
-                  data-testid="pdf-watermark"
-                >
-                  <div
-                    className="absolute -inset-1/2 flex flex-wrap content-center justify-center"
-                    style={{
-                      transform: "rotate(-30deg)",
-                      opacity: 0.16,
-                      color: "#1D4ED8",
-                      fontFamily: "ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace",
-                      fontSize: "13px",
-                      letterSpacing: "0.05em",
-                      lineHeight: "70px",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {Array.from({ length: 60 }).map((_, i) => (
-                      <span key={i} className="mx-8" style={{ width: "260px", textAlign: "center" }}>
-                        {wm}
-                      </span>
-                    ))}
-                  </div>
-                </div>
+                <WatermarkOverlay text={wm} />
               </div>
             </Document>
           )}
 
-          {!errorMsg && !blobUrl && loading && (
+          {/* Image renderer — handles png/jpg/jpeg/gif/webp/svg+xml. The browser
+              decodes natively; we just slap the watermark over it. */}
+          {!errorMsg && previewKind === "image" && blobUrl && (
+            <div className="relative inline-block max-w-full">
+              <img
+                src={blobUrl}
+                alt={file?.filename || "preview"}
+                className="block max-w-full max-h-[75vh] object-contain shadow-xl bg-white"
+                draggable={false}
+                onContextMenu={(e) => e.preventDefault()}
+              />
+              <WatermarkOverlay text={wm} />
+            </div>
+          )}
+
+          {/* Text renderer — TXT / MD / CSV / TSV / JSON / HTML (as code). */}
+          {!errorMsg && previewKind === "text" && textBody !== null && (
+            <div className="relative w-full max-w-4xl">
+              <pre
+                className="m-0 p-6 bg-[#0E0E12] border border-[var(--wz-border)] text-[12.5px] leading-relaxed text-[var(--wz-text-primary,#E5E7EB)] whitespace-pre-wrap font-mono-wz rounded-sm overflow-auto max-h-[75vh] shadow-xl"
+                onContextMenu={(e) => e.preventDefault()}
+              >{textBody}</pre>
+              <WatermarkOverlay text={wm} />
+            </div>
+          )}
+
+          {!errorMsg && !blobUrl && textBody === null && loading && (
             <div className="text-sm text-[var(--wz-text-secondary)] m-auto inline-flex items-center gap-2">
               <ArrowsClockwise size={14} className="animate-spin" /> Loading preview…
             </div>

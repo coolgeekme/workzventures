@@ -5736,41 +5736,279 @@ async def set_file_access(
 
 # Office → PDF conversion cache (per-file-id) lives in GridFS so it survives
 # restarts and idle pods. Repeated previews of the same DOCX/XLSX/PPTX therefore
-# trigger LibreOffice only once.
-async def _office_to_pdf_via_libreoffice(filename: str, data: bytes) -> bytes | None:
-    """Convert DOCX/XLSX/PPTX/DOC/XLS/PPT/ODT/ODP/ODS → PDF using LibreOffice
-    headless. Returns PDF bytes on success, None if soffice is missing or
-    conversion fails. Single-shot, isolated, ~5-10s typical."""
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
-    if not soffice:
+# trigger conversion only once.
+def _docx_to_pdf_bytes(data: bytes, filename: str) -> bytes | None:
+    """Render a DOCX as PDF using python-docx + reportlab. Pure-Python pipeline
+    chosen over LibreOffice because apt-installed packages don't survive
+    container restarts on this hosting platform. Trade-off: lower visual
+    fidelity (no inline images / complex table layouts), but reliable and fast."""
+    try:
+        from docx import Document as _Docx
+        from reportlab.lib.pagesizes import LETTER
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+        from reportlab.lib import colors
+        import html as _h
+    except Exception as e:
+        logger.warning(f"docx→pdf deps missing: {e}")
         return None
-    import tempfile, subprocess
-    with tempfile.TemporaryDirectory() as td:
-        in_path = os.path.join(td, filename)
-        with open(in_path, "wb") as f:
-            f.write(data)
-        try:
-            proc = subprocess.run(
-                [soffice, "--headless", "--norestore", "--nofirststartwizard",
-                 "--convert-to", "pdf", "--outdir", td, in_path],
-                capture_output=True, timeout=90,
-            )
-            if proc.returncode != 0:
-                logger.warning(f"soffice convert failed for {filename}: {proc.stderr[:300]!r}")
-                return None
-        except subprocess.TimeoutExpired:
-            logger.warning(f"soffice convert timeout for {filename}")
+    try:
+        d = _Docx(io.BytesIO(data))
+        out = io.BytesIO()
+        doc = SimpleDocTemplate(out, pagesize=LETTER,
+                                leftMargin=0.9*inch, rightMargin=0.9*inch,
+                                topMargin=0.9*inch, bottomMargin=0.9*inch,
+                                title=os.path.splitext(filename)[0])
+        styles = getSampleStyleSheet()
+        body_style = ParagraphStyle("body", parent=styles["Normal"], fontName="Helvetica",
+                                     fontSize=10.5, leading=14.5, spaceAfter=6)
+        h1_style = ParagraphStyle("h1", parent=styles["Heading1"], fontName="Helvetica-Bold",
+                                   fontSize=18, leading=22, spaceAfter=10, textColor=colors.HexColor("#0B1B3D"))
+        h2_style = ParagraphStyle("h2", parent=styles["Heading2"], fontName="Helvetica-Bold",
+                                   fontSize=14, leading=18, spaceAfter=8, textColor=colors.HexColor("#0B1B3D"))
+        flow = []
+        for blk in d.element.body.iter():
+            tag = blk.tag.split("}")[-1]
+            if tag == "p":
+                txt = "".join(node.text or "" for node in blk.iter() if node.tag.endswith("}t"))
+                if not txt.strip():
+                    flow.append(Spacer(1, 5))
+                    continue
+                # Map Word heading styles loosely.
+                style = body_style
+                pStyle = blk.find(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pStyle")
+                if pStyle is not None:
+                    val = (pStyle.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val") or "").lower()
+                    if "heading 1" in val or val == "heading1" or val == "title":
+                        style = h1_style
+                    elif "heading" in val:
+                        style = h2_style
+                flow.append(Paragraph(_h.escape(txt), style))
+            elif tag == "tbl":
+                rows: list[list[str]] = []
+                for tr in blk.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr"):
+                    row: list[str] = []
+                    for tc in tr.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tc"):
+                        cell_txt = "".join(t.text or "" for t in tc.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"))
+                        row.append(cell_txt.strip())
+                    if row:
+                        rows.append(row)
+                if rows:
+                    flow.append(Spacer(1, 6))
+                    flow.append(Table(rows, repeatRows=1, style=TableStyle([
+                        ("BOX", (0,0), (-1,-1), 0.5, colors.HexColor("#1D4ED8")),
+                        ("INNERGRID", (0,0), (-1,-1), 0.25, colors.HexColor("#A8AEC0")),
+                        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8F0FE")),
+                        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0,0), (-1,-1), 9),
+                        ("LEFTPADDING", (0,0), (-1,-1), 6),
+                        ("RIGHTPADDING", (0,0), (-1,-1), 6),
+                        ("TOPPADDING", (0,0), (-1,-1), 4),
+                        ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+                    ])))
+                    flow.append(Spacer(1, 6))
+        if not flow:
+            flow.append(Paragraph(f"<i>{_h.escape(filename)} appears to be empty.</i>", body_style))
+        doc.build(flow)
+        return out.getvalue()
+    except Exception as e:
+        logger.warning(f"docx→pdf render failed for {filename}: {e}")
+        return None
+
+
+def _xlsx_to_pdf_bytes(data: bytes, filename: str) -> bytes | None:
+    """Render an XLSX as a multi-page PDF (one section per sheet) using
+    openpyxl + reportlab. Caps each sheet at 200 rows × 24 cols to keep the
+    output legible — buyers can ask the seller to enable download for the
+    full spreadsheet."""
+    try:
+        from openpyxl import load_workbook
+        from reportlab.lib.pagesizes import landscape, LETTER
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+        from reportlab.lib import colors
+        import html as _h
+    except Exception as e:
+        logger.warning(f"xlsx→pdf deps missing: {e}")
+        return None
+    try:
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        out = io.BytesIO()
+        doc = SimpleDocTemplate(out, pagesize=landscape(LETTER),
+                                leftMargin=0.5*inch, rightMargin=0.5*inch,
+                                topMargin=0.6*inch, bottomMargin=0.5*inch,
+                                title=os.path.splitext(filename)[0])
+        styles = getSampleStyleSheet()
+        sheet_title = ParagraphStyle("sheetTitle", parent=styles["Heading2"],
+                                      fontName="Helvetica-Bold", fontSize=13, leading=16,
+                                      spaceAfter=8, textColor=colors.HexColor("#0B1B3D"))
+        note = ParagraphStyle("note", parent=styles["Normal"], fontName="Helvetica-Oblique",
+                               fontSize=8.5, textColor=colors.HexColor("#7A8299"), spaceAfter=8)
+        flow = []
+        for sheet_idx, ws in enumerate(wb.worksheets):
+            if sheet_idx > 0:
+                flow.append(PageBreak())
+            flow.append(Paragraph(_h.escape(ws.title or f"Sheet {sheet_idx+1}"), sheet_title))
+            max_rows, max_cols = 200, 24
+            rows = []
+            for r_idx, row in enumerate(ws.iter_rows(values_only=True)):
+                if r_idx >= max_rows:
+                    break
+                rows.append(["" if c is None else str(c)[:120] for c in row[:max_cols]])
+            if not rows:
+                flow.append(Paragraph("<i>Empty sheet.</i>", note))
+                continue
+            # Pad uneven rows
+            width = max(len(r) for r in rows)
+            for r in rows:
+                while len(r) < width:
+                    r.append("")
+            tbl = Table(rows, repeatRows=1, style=TableStyle([
+                ("BOX", (0,0), (-1,-1), 0.3, colors.HexColor("#A8AEC0")),
+                ("INNERGRID", (0,0), (-1,-1), 0.15, colors.HexColor("#D6D9E0")),
+                ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8F0FE")),
+                ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+                ("FONTNAME", (0,1), (-1,-1), "Helvetica"),
+                ("FONTSIZE", (0,0), (-1,-1), 7.5),
+                ("LEFTPADDING", (0,0), (-1,-1), 4),
+                ("RIGHTPADDING", (0,0), (-1,-1), 4),
+                ("TOPPADDING", (0,0), (-1,-1), 2),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 2),
+                ("VALIGN", (0,0), (-1,-1), "TOP"),
+            ]))
+            flow.append(tbl)
+            # Footnote if we truncated the sheet
+            total_rows = ws.max_row or 0
+            if total_rows > max_rows:
+                flow.append(Spacer(1, 4))
+                flow.append(Paragraph(f"Showing first {max_rows} of {total_rows} rows.", note))
+        wb.close()
+        if not flow:
             return None
-        except Exception as e:
-            logger.warning(f"soffice convert crashed for {filename}: {e}")
+        doc.build(flow)
+        return out.getvalue()
+    except Exception as e:
+        logger.warning(f"xlsx→pdf render failed for {filename}: {e}")
+        return None
+
+
+def _pptx_to_pdf_bytes(data: bytes, filename: str) -> bytes | None:
+    """Render a PPTX as a PDF (one page per slide) using python-pptx +
+    reportlab. We extract slide text + speaker notes only — no rendered
+    shapes/images — so buyers get a readable outline of the deck."""
+    try:
+        from pptx import Presentation
+        from reportlab.lib.pagesizes import landscape, LETTER
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+        from reportlab.lib import colors
+        import html as _h
+    except Exception as e:
+        logger.warning(f"pptx→pdf deps missing: {e}")
+        return None
+    try:
+        pres = Presentation(io.BytesIO(data))
+        out = io.BytesIO()
+        doc = SimpleDocTemplate(out, pagesize=landscape(LETTER),
+                                leftMargin=0.7*inch, rightMargin=0.7*inch,
+                                topMargin=0.7*inch, bottomMargin=0.6*inch,
+                                title=os.path.splitext(filename)[0])
+        styles = getSampleStyleSheet()
+        slide_no = ParagraphStyle("slideNo", parent=styles["Normal"], fontName="Helvetica",
+                                   fontSize=8.5, textColor=colors.HexColor("#7A8299"),
+                                   letterSpacing=2, spaceAfter=4)
+        slide_title = ParagraphStyle("slideTitle", parent=styles["Heading1"],
+                                      fontName="Helvetica-Bold", fontSize=20, leading=26,
+                                      spaceAfter=12, textColor=colors.HexColor("#0B1B3D"))
+        body_style = ParagraphStyle("body", parent=styles["Normal"], fontName="Helvetica",
+                                     fontSize=11.5, leading=15.5, spaceAfter=4)
+        bullet_style = ParagraphStyle("bullet", parent=body_style, leftIndent=14, bulletIndent=4)
+        notes_style = ParagraphStyle("notes", parent=styles["Normal"], fontName="Helvetica-Oblique",
+                                      fontSize=9, textColor=colors.HexColor("#5A6275"),
+                                      leftIndent=8, spaceBefore=12, leading=12)
+        flow = []
+        for i, slide in enumerate(pres.slides):
+            if i > 0:
+                flow.append(PageBreak())
+            flow.append(Paragraph(f"SLIDE {i+1} / {len(pres.slides)}", slide_no))
+            title_text = None
+            bullets: list[str] = []
+            for shape in slide.shapes:
+                if not shape.has_text_frame:
+                    continue
+                tf = shape.text_frame
+                for p_idx, para in enumerate(tf.paragraphs):
+                    txt = "".join(r.text or "" for r in para.runs).strip()
+                    if not txt:
+                        continue
+                    if title_text is None and (
+                        getattr(shape, "is_placeholder", False) and shape.placeholder_format and shape.placeholder_format.idx == 0
+                    ):
+                        title_text = txt
+                    else:
+                        bullets.append(txt)
+            if title_text:
+                flow.append(Paragraph(_h.escape(title_text), slide_title))
+            for b in bullets[:12]:
+                flow.append(Paragraph(f"• {_h.escape(b)}", bullet_style))
+            if not title_text and not bullets:
+                flow.append(Paragraph("<i>(empty slide)</i>", body_style))
+            # Speaker notes
+            try:
+                notes = slide.notes_slide.notes_text_frame.text if slide.has_notes_slide else ""
+            except Exception:
+                notes = ""
+            if notes and notes.strip():
+                flow.append(Paragraph(f"<b>Speaker notes:</b> {_h.escape(notes[:1200])}", notes_style))
+        if not flow:
             return None
-        # soffice names the output `{stem}.pdf` in --outdir
-        stem = os.path.splitext(filename)[0]
-        out_path = os.path.join(td, f"{stem}.pdf")
-        if not os.path.exists(out_path):
-            return None
-        with open(out_path, "rb") as f:
-            return f.read()
+        doc.build(flow)
+        return out.getvalue()
+    except Exception as e:
+        logger.warning(f"pptx→pdf render failed for {filename}: {e}")
+        return None
+
+
+async def _office_to_pdf(filename: str, data: bytes) -> bytes | None:
+    """Dispatch Office formats to the appropriate pure-Python renderer.
+    Falls back to LibreOffice headless if installed (local dev convenience).
+    Returns PDF bytes or None if no renderer matches."""
+    fname_lc = filename.lower()
+    # Prefer LibreOffice when available — better fidelity. Only used in local
+    # dev; production containers don't ship it.
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if soffice:
+        import tempfile, subprocess
+        with tempfile.TemporaryDirectory() as td:
+            in_path = os.path.join(td, filename)
+            with open(in_path, "wb") as f:
+                f.write(data)
+            try:
+                proc = subprocess.run(
+                    [soffice, "--headless", "--norestore", "--nofirststartwizard",
+                     "--convert-to", "pdf", "--outdir", td, in_path],
+                    capture_output=True, timeout=90,
+                )
+                stem = os.path.splitext(filename)[0]
+                out_path = os.path.join(td, f"{stem}.pdf")
+                if proc.returncode == 0 and os.path.exists(out_path):
+                    with open(out_path, "rb") as f:
+                        return f.read()
+            except Exception as e:
+                logger.warning(f"soffice convert crashed for {filename}: {e}")
+    # Pure-Python fallback path (the primary path in production).
+    if fname_lc.endswith((".docx",)):
+        return _docx_to_pdf_bytes(data, filename)
+    if fname_lc.endswith((".xlsx", ".xlsm")):
+        return _xlsx_to_pdf_bytes(data, filename)
+    if fname_lc.endswith((".pptx",)):
+        return _pptx_to_pdf_bytes(data, filename)
+    # Legacy formats (.doc, .xls, .ppt, .odt, .ods, .odp) without LibreOffice
+    # are unsupported — buyer must download to view locally.
+    return None
 
 
 # Mime types we directly stream into the browser viewer (PDFs + images + plain
@@ -5853,7 +6091,7 @@ async def preview_file(rid: str, file_id: str, user=Depends(get_current_user)):
                 logger.warning(f"preview cache miss for {file_id}: {e}")
                 pdf_bytes = None
         if pdf_bytes is None:
-            pdf_bytes = await _office_to_pdf_via_libreoffice(fname, plaintext)
+            pdf_bytes = await _office_to_pdf(fname, plaintext)
             if pdf_bytes is None:
                 raise HTTPException(
                     status_code=415,

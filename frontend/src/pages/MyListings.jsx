@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X, UsersThree, Eye, EyeSlash, ShareNetwork, Buildings, Vault } from "@phosphor-icons/react";
+import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X, UsersThree, Eye, EyeSlash, ShareNetwork, Buildings, Vault, PencilSimpleLine } from "@phosphor-icons/react";
 import ExternalSources from "../components/ExternalSources";
 import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
 import ListingCollaborators from "../components/ListingCollaborators";
@@ -28,6 +28,8 @@ export default function MyListings() {
   const [listings, setListings] = useState([]);
   const [show, setShow] = useState(false);
   const [form, setForm] = useState(emptyForm);
+  // When non-null, the form is in edit mode and `submit()` PATCHes this id.
+  const [editingId, setEditingId] = useState(null);
   const [scopeFilter, setScopeFilter] = useState("all"); // all | mine | org | shared
 
   const load = () => api.get("/listings").then((r) => setListings(r.data));
@@ -53,14 +55,53 @@ export default function MyListings() {
         employees: Number(form.employees) || null,
         highlights: form.highlights.split("\n").map((s) => s.trim()).filter(Boolean),
       };
-      await api.post("/listings", body);
-      toast.success("Listing created");
+      if (editingId) {
+        await api.patch(`/listings/${editingId}`, body);
+        toast.success("Listing updated");
+      } else {
+        await api.post("/listings", body);
+        toast.success("Listing created");
+      }
       setForm(emptyForm);
+      setEditingId(null);
       setShow(false);
       load();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed");
     }
+  };
+
+  // Prefill the form with the listing's current values and open the editor.
+  // Highlights is a string in the form (one per line) but an array on the
+  // server — convert as we hydrate.
+  const onEdit = (l) => {
+    setForm({
+      company_name: l.company_name || "",
+      sector: l.sector || "",
+      geography: l.geography || "",
+      asking_price_usd_m: l.asking_price_usd_m ?? 0,
+      revenue_usd_m: l.revenue_usd_m ?? 0,
+      ebitda_usd_m: l.ebitda_usd_m ?? 0,
+      employees: l.employees ?? 0,
+      headline: l.headline || "",
+      summary: l.summary || "",
+      highlights: (l.highlights || []).join("\n"),
+      status: l.status || "draft",
+    });
+    setEditingId(l.id);
+    setShow(true);
+    // Scroll the form into view — useful when the user clicks Edit deep in
+    // a long listing grid.
+    setTimeout(() => {
+      const el = document.querySelector('[data-testid="listing-form"]');
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+  };
+
+  const cancelEdit = () => {
+    setForm(emptyForm);
+    setEditingId(null);
+    setShow(false);
   };
 
   const setStatus = async (l, status) => {
@@ -102,14 +143,36 @@ export default function MyListings() {
           </p>
         </div>
         {!isCollabOnly && (
-          <button data-testid="add-listing" onClick={() => setShow(!show)} className="wz-btn wz-btn-gold flex items-center gap-2">
-            <Plus size={14} /> New listing
+          <button
+            data-testid="add-listing"
+            onClick={() => {
+              if (show && editingId) {
+                cancelEdit();
+              } else {
+                setForm(emptyForm);
+                setEditingId(null);
+                setShow(!show);
+              }
+            }}
+            className="wz-btn wz-btn-gold flex items-center gap-2"
+          >
+            <Plus size={14} /> {show ? "Close form" : "New listing"}
           </button>
         )}
       </div>
 
       {show && (
         <form onSubmit={submit} data-testid="listing-form" className="wz-card p-6 mb-8 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="md:col-span-2 flex items-center justify-between -mt-2 mb-1">
+            <div className="overline" style={{ color: editingId ? "var(--wz-amber)" : "var(--wz-gold)" }}>
+              {editingId ? `Editing · ${form.company_name || "listing"}` : "Create new listing"}
+            </div>
+            {editingId && (
+              <div className="text-[10px] font-mono-wz text-[var(--wz-text-tertiary)]">
+                ID: <span className="text-white">{editingId.slice(0, 8)}</span>
+              </div>
+            )}
+          </div>
           <Input label="Company name" required value={form.company_name} onChange={(v) => setForm({ ...form, company_name: v })} tid="listing-name" />
           <Input label="Sector" required value={form.sector} onChange={(v) => setForm({ ...form, sector: v })} tid="listing-sector" />
           <Input label="Geography" required value={form.geography} onChange={(v) => setForm({ ...form, geography: v })} tid="listing-geo" />
@@ -133,8 +196,10 @@ export default function MyListings() {
             <textarea rows={3} className="wz-input" value={form.highlights} onChange={(e) => setForm({ ...form, highlights: e.target.value })} data-testid="listing-highlights" placeholder="32 hospital systems under contract&#10;FDA + CE marked&#10;Founder-led, succession-ready" />
           </label>
           <div className="md:col-span-2 flex justify-end gap-2">
-            <button type="button" onClick={() => setShow(false)} className="wz-btn-ghost wz-btn">Cancel</button>
-            <button type="submit" className="wz-btn wz-btn-gold" data-testid="listing-save">Create listing</button>
+            <button type="button" onClick={cancelEdit} className="wz-btn-ghost wz-btn">Cancel</button>
+            <button type="submit" className="wz-btn wz-btn-gold" data-testid="listing-save">
+              {editingId ? "Save changes" : "Create listing"}
+            </button>
           </div>
         </form>
       )}
@@ -165,7 +230,7 @@ export default function MyListings() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6" data-testid="listing-grid">
         {filteredListings.map((l) => (
-          <ListingCard key={l.id} listing={l} onRemove={remove} onSetStatus={setStatus} />
+          <ListingCard key={l.id} listing={l} onRemove={remove} onSetStatus={setStatus} onEdit={onEdit} />
         ))}
         {filteredListings.length === 0 && listings.length > 0 && (
           <div className="text-xs text-[var(--wz-text-tertiary)] col-span-full" data-testid="listing-empty-filter">
@@ -219,7 +284,7 @@ function Metric({ label, value }) {
  *   - Collaborators: invite form, remove buttons, and access-policy save hidden
  *   - A gold dashed accent + sticky banner make the preview state obvious.
  * ========================================================================== */
-function ListingCard({ listing: l, onRemove, onSetStatus }) {
+function ListingCard({ listing: l, onRemove, onSetStatus, onEdit }) {
   const [viewAsPrincipal, setViewAsPrincipal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
@@ -325,6 +390,16 @@ function ListingCard({ listing: l, onRemove, onSetStatus }) {
               <span className="inline-flex items-center gap-1"><Eye size={11} /> View as principal</span>
             )}
           </button>
+          {!viewAsPrincipal && onEdit && (
+            <button
+              onClick={() => onEdit(l)}
+              data-testid={`edit-listing-${l.id}`}
+              title="Edit listing details"
+              className="text-[10px] font-mono-wz uppercase tracking-widest border border-[var(--wz-border)] text-[var(--wz-text-secondary)] hover:border-[var(--wz-gold)] hover:text-[var(--wz-gold)] px-2 py-1 transition-colors inline-flex items-center gap-1"
+            >
+              <PencilSimpleLine size={11} /> Edit
+            </button>
+          )}
           {!viewAsPrincipal && (
             <button
               onClick={() => onRemove(l.id)}
