@@ -462,7 +462,17 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Note**: Resend domain verification required for production sends from `team@app.nextcapos.com` — see SPF/DKIM/DMARC setup at https://resend.com/domains.
 
 ### P1 — Watermarked in-browser preview + per-file download toggle (iter-22)
-- **Backend** (`server.py`):
+
+### P0 — Research Companion brief detection + Option B expansion (iter-22)
+- **Bug**: Research Companion always replied with "I don't have any source material…" even when a brief was completed on the same page. Root cause: the Companion read `research.content` (legacy field name) but `/research/company` actually persists the brief as a structured dict at `research.data`. Production users with a fully-generated 14-section brief got the empty-state every time.
+- **Fix (server.py `ask_research_copilot`)**: Detect the structured `data` dict and flatten its named keys (`summary`, `business_model`, `investor_take`, `market_signals`, `growth_drivers`, `risks`, `competitive_landscape`, `leadership_insights`, `suggested_buyer_profile`, `next_actions`, plus `hq` / `founded` / `employees` / `revenue`) into a readable prompt block. Handles list-of-strings AND list-of-dicts (leadership insights) cleanly. Falls back to legacy `content` field for backwards compat.
+- **Option B expansion (per user pre-approval)**: Companion now pulls two additional source kinds on every question:
+  - **Public listing artifacts** — case-insensitive substring match on `company_name` against `listings` collection, capped at 5; surfaces sector / geography / headline / asking / revenue / EBITDA / summary / highlights. Citation kind `listing`, tag format `[listing:CompanyName]`.
+  - **Vault files the buyer has rightful access to** — only `buyer_id == user.id` rooms with status in (`pending_nda`, `active`, `preview`); pulls extracted content per file (first 2.2 KB). Citation kind `vault`, tag format `[vault:filename]`, with `vault_id` + `file_id` for click-through. Provider badge (`googledrive` / `onedrive` / etc.) included in the source block when applicable.
+- **RESEARCH_COPILOT_SYS prompt updated** with the new 5-source citation grammar; Claude now knows to prefer Vault sources over public listing when both contain the same fact.
+- **Audit/agent meta** carries `matched_listings` + `vault_files` counts so the Agent Monitor reflects context expansion.
+- **Verified end-to-end on preview**: brief detected (citation `[brief]` resolves), Option B picks up the public listing (`[listing:LunaLite Dental]`), and a buyer-owned vault on that listing (`[vault:listing_fin.txt]`) — confirmed via live curl with cross-source reasoning ("Vault's 33% net margin doesn't reconcile with listing's $0.3M EBITDA").
+- **Tested**: `tests/test_research_companion.py` 3 PASS (1 pre-existing unrelated failure on the admin-approval registration flow).
   - `PATCH /api/deal-rooms/{rid}/files/{fid}/access` — seller/admin sets `download_allowed: bool` per file. Buyer attempts return 403. Logs `dealroom.file.access` audit event.
   - `GET /api/deal-rooms/{rid}/files/{fid}/preview` — streams inline content for browser viewing. PDFs/images/text served directly; **Office formats (DOCX/XLSX/PPTX + DOC/XLS/PPT + ODT/ODS/ODP) converted on-the-fly via LibreOffice headless** (`_office_to_pdf_via_libreoffice`) and cached in GridFS (`preview_pdf_gridfs_id` field) so subsequent previews are instant. Logs `dealroom.file.preview` audit event.
   - `/download` endpoint now enforces the policy: sellers/admins always 200; buyers 403 unless `download_allowed=true`.

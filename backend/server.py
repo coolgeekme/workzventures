@@ -2938,14 +2938,21 @@ async def attach_detailed_report(rid: str, body: AttachDetailedReportRequest, us
 RESEARCH_COPILOT_SYS = """You are the NextCapOS Research Companion — a senior buy-side analyst
 helping an institutional investor go deeper on a company they are researching.
 
-You answer ONLY from the supplied source materials: (a) the buyer's research brief,
-(b) any detailed analysis report, and (c) any private notes / documents the buyer has uploaded.
-Cite sources inline as [brief], [detailed-analysis], or [filename]. If the answer is not
+You answer ONLY from the supplied source materials:
+  (a) the buyer's research brief — cite as [brief]
+  (b) any detailed analysis report — cite as [detailed-analysis]
+  (c) the buyer's private locker docs — cite as [filename]
+  (d) public listing artifacts from the NextCapOS marketplace — cite as [listing:CompanyName]
+  (e) files in a Vault the buyer has rightful (NDA-signed) access to — cite as [vault:filename]
+
+Always cite the specific source(s) inline using these tags. If the answer is not
 in the provided context, say so explicitly and suggest what to research next.
 
 Keep answers under 260 words. Tone: institutional, terse, analytical. Never invent
 financials, customer names, or sources. When the buyer asks for opinions ("should I
-proceed?"), structure the answer as: signal, risk, recommended next diligence step."""
+proceed?"), structure the answer as: signal, risk, recommended next diligence step.
+When information is available in both the public listing and the Vault, prefer the
+Vault source — it's authoritative for that deal."""
 
 
 class ResearchCopilotAsk(BaseModel):
@@ -3005,9 +3012,54 @@ async def ask_research_copilot(rid: str, body: ResearchCopilotAsk, user=Depends(
     # Assemble grounded context
     sections: List[str] = []
 
+    # 1) The research brief itself. Stored as a structured dict in `research.data`,
+    # not a flat `content` string (that field was the legacy shape). Flatten the
+    # named fields into the prompt so Claude can cite them by section.
+    brief_data = research.get("data") if isinstance(research.get("data"), dict) else None
     brief_text = (research.get("content") or "").strip()
+    if not brief_text and brief_data:
+        # Flatten the structured brief into a single human-readable block.
+        ordered_keys = [
+            ("summary", "Summary"),
+            ("business_model", "Business model"),
+            ("investor_take", "Investor take"),
+            ("market_signals", "Market signals"),
+            ("growth_drivers", "Growth drivers"),
+            ("risks", "Risks"),
+            ("competitive_landscape", "Competitive landscape"),
+            ("leadership_insights", "Leadership insights"),
+            ("suggested_buyer_profile", "Suggested buyer profile"),
+            ("next_actions", "Next actions"),
+            ("hq", "HQ"), ("founded", "Founded"),
+            ("employees", "Employees"), ("revenue", "Revenue"),
+        ]
+        parts: List[str] = []
+        for key, label in ordered_keys:
+            val = brief_data.get(key)
+            if val is None or val == "" or val == []:
+                continue
+            if isinstance(val, list):
+                # List of strings or list of dicts (leadership insights).
+                lines: List[str] = []
+                for item in val[:12]:
+                    if isinstance(item, str):
+                        lines.append(f"• {item}")
+                    elif isinstance(item, dict):
+                        name = item.get("name") or item.get("role") or ""
+                        role = item.get("role") if name == item.get("name") else ""
+                        note = item.get("note") or item.get("summary") or item.get("background") or ""
+                        head = ", ".join(x for x in [name, role] if x)
+                        if note:
+                            lines.append(f"• {head}: {note}" if head else f"• {note}")
+                        elif head:
+                            lines.append(f"• {head}")
+                if lines:
+                    parts.append(f"{label}:\n" + "\n".join(lines))
+            else:
+                parts.append(f"{label}: {val}")
+        brief_text = "\n\n".join(parts)
     if brief_text:
-        sections.append(f"=== [brief] Research brief on {research.get('company_name')} ===\n{brief_text[:6000]}")
+        sections.append(f"=== [brief] Research brief on {research.get('company_name')} ===\n{brief_text[:8000]}")
         srcs = research.get("sources") or []
         if srcs:
             src_lines = [f"- {s.get('title') or s.get('url')}: {s.get('url')}" for s in srcs[:12] if isinstance(s, dict)]
@@ -3049,11 +3101,91 @@ async def ask_research_copilot(rid: str, body: ResearchCopilotAsk, user=Depends(
         sections.append(f"=== [{f['filename']}] Private locker file ===\n" + "\n".join(body_lines))
         locker_citations.append({"filename": f["filename"]})
 
+    # --- iter-22 Option B expansion ---
+    # The Research Companion now also pulls (a) public listing artifacts on the
+    # marketplace that match the researched company name, and (b) files from
+    # any Vault the buyer has an active/preview NDA on for those listings.
+    # The buyer already has rightful access to all of this material; surfacing
+    # it inside the Companion saves them from juggling tabs.
+    company_name = (research.get("company_name") or "").strip()
+    listing_citations: List[dict] = []
+    vault_citations: List[dict] = []
+    matched_listings: List[dict] = []
+    if company_name:
+        # Case-insensitive substring match on company_name. Cap at 5 listings
+        # so a generic name (e.g., "Acme") doesn't blow up the context window.
+        listing_rows = await db.listings.find(
+            {"company_name": {"$regex": re.escape(company_name), "$options": "i"},
+             "status": {"$in": ["live", "draft", "under_loi", "closed"]},
+             "deleted_at": {"$exists": False}},
+            {"_id": 0, "id": 1, "company_name": 1, "sector": 1, "geography": 1,
+             "headline": 1, "summary": 1, "highlights": 1, "asking_price_usd_m": 1,
+             "revenue_usd_m": 1, "ebitda_usd_m": 1, "employees": 1, "status": 1},
+        ).limit(5).to_list(5)
+        matched_listings = listing_rows
+        for l in listing_rows:
+            # (a) Public listing summary — the CIM-style marketing copy that
+            # any buyer on the marketplace can see for this listing.
+            block_lines = [
+                f"Listing status: {l.get('status')}",
+                f"Sector: {l.get('sector')} · Geography: {l.get('geography')}",
+                f"Headline: {l.get('headline')}",
+                f"Asking: ${l.get('asking_price_usd_m')}M · Revenue: ${l.get('revenue_usd_m') or '—'}M · EBITDA: ${l.get('ebitda_usd_m') or '—'}M",
+                f"Summary: {l.get('summary') or ''}",
+            ]
+            if l.get("highlights"):
+                block_lines.append("Highlights:")
+                for h in (l["highlights"] or [])[:8]:
+                    block_lines.append(f"• {h}")
+            cite_key = f"listing:{l['company_name']}"
+            sections.append(f"=== [{cite_key}] Public listing artifact ===\n" + "\n".join(block_lines))
+            listing_citations.append({"kind": "listing", "label": l["company_name"],
+                                       "cite_key": cite_key, "listing_id": l["id"]})
+
+            # (b) Any active or preview Vault this buyer has on this listing →
+            # pull file content. NDA gating already enforced — only buyer's
+            # OWN vault rows are queried.
+            buyer_vaults = await db.deal_rooms.find(
+                {"listing_id": l["id"], "buyer_id": user["id"],
+                 "status": {"$in": ["pending_nda", "active", "preview"]},
+                 "deleted_at": {"$exists": False}},
+                {"_id": 0, "id": 1, "status": 1},
+            ).to_list(3)
+            for vault in buyer_vaults:
+                vault_files = await db.deal_room_files.find(
+                    {"room_id": vault["id"]},
+                    {"_id": 0, "id": 1, "filename": 1, "content": 1, "folder": 1,
+                     "page_count": 1, "source": 1},
+                ).sort("uploaded_at", 1).to_list(15)
+                for vf in vault_files:
+                    snippet = (vf.get("content") or "")[:2200]
+                    if not snippet:
+                        continue
+                    cite_key = f"vault:{vf['filename']}"
+                    via = ""
+                    src = vf.get("source") or {}
+                    if isinstance(src, dict) and src.get("kind"):
+                        via = f" · synced from {src['kind']}"
+                    sections.append(
+                        f"=== [{cite_key}] Vault file ({l['company_name']} · {vf.get('folder','other')}{via}) ===\n"
+                        + snippet
+                    )
+                    vault_citations.append({
+                        "kind": "vault",
+                        "label": vf["filename"],
+                        "cite_key": cite_key,
+                        "vault_id": vault["id"],
+                        "file_id": vf["id"],
+                        "listing_name": l["company_name"],
+                    })
+
     if not sections:
         empty_reply = (
             "I don't have any source material to answer from yet. Generate the brief or "
             "Detailed Analysis on this company in the Research Hub, or attach a document "
-            "to this research target in your Private Locker — then re-ask."
+            "to this research target in your Private Locker — then re-ask. "
+            "(Tip: if you also have an active Vault on this company's listing, "
+            "those Vault docs will automatically be available here.)"
         )
         asst_msg = {
             "id": str(uuid.uuid4()),
@@ -3095,8 +3227,7 @@ async def ask_research_copilot(rid: str, body: ResearchCopilotAsk, user=Depends(
         logger.exception("Research companion call failed")
         raise HTTPException(status_code=502, detail=f"Companion failed: {e}")
 
-    # Resolve citations: [brief], [detailed-analysis], [filename]
-    import re
+    # Resolve citations: [brief], [detailed-analysis], [filename], [listing:Name], [vault:filename]
     cited = set(re.findall(r"\[([^\[\]]+)\]", answer or ""))
     citations: List[dict] = []
     if "brief" in cited and brief_text:
@@ -3107,6 +3238,12 @@ async def ask_research_copilot(rid: str, body: ResearchCopilotAsk, user=Depends(
     for f in locker_citations:
         if f["filename"] in cited:
             citations.append({"kind": "locker", "label": f["filename"]})
+    for lc in listing_citations:
+        if lc["cite_key"] in cited:
+            citations.append({k: lc[k] for k in ("kind", "label", "listing_id")})
+    for vc in vault_citations:
+        if vc["cite_key"] in cited:
+            citations.append({k: vc[k] for k in ("kind", "label", "vault_id", "file_id", "listing_name")})
 
     asst_msg = {
         "id": str(uuid.uuid4()),
@@ -3126,10 +3263,18 @@ async def ask_research_copilot(rid: str, body: ResearchCopilotAsk, user=Depends(
         "completed",
         user_id=user["id"],
         duration_ms=duration,
-        meta={"citations": len(citations), "locker_files": len(locker_files)},
+        meta={
+            "citations": len(citations),
+            "locker_files": len(locker_files),
+            "matched_listings": len(matched_listings),
+            "vault_files": len(vault_citations),
+        },
     )
     await log_audit(user["id"], "research.companion.ask", rid,
-                    {"locker_files": len(locker_files), "had_detailed": bool(detailed)})
+                    {"locker_files": len(locker_files),
+                     "had_detailed": bool(detailed),
+                     "matched_listings": len(matched_listings),
+                     "vault_files": len(vault_citations)})
 
     user_msg.pop("_id", None)
     asst_msg.pop("_id", None)

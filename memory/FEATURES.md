@@ -85,9 +85,16 @@ NextCapOS ships four first-class roles, each with a tailored console.
 - AES-256-GCM at-rest, OpenTimestamps notarized, 50 MB cap, dedicated GridFS bucket.
 
 ### Research Companion
-- Buyer-only AI chat against (a) the research brief, (b) detailed-analysis report, (c) any Private Locker docs tagged to the research target.
-- Citation extraction for `[brief]`, `[detailed-analysis]`, and `[filename]` references.
-- Sidebar showing locker files tied to the research with Add / Download / Delete.
+- Buyer-only AI chat against:
+  - The research brief itself (`[brief]` citation)
+  - The Detailed Analysis report, if generated (`[detailed-analysis]` citation)
+  - Any Private Locker docs tagged to this research target (`[filename]` citation)
+  - **Public marketplace listings** matching the researched company name (`[listing:CompanyName]` citation) — auto-discovered, case-insensitive substring match, capped at 5 listings
+  - **Files in Vaults the buyer has rightful (NDA-signed) access to** on those matched listings (`[vault:filename]` citation) — pulls active + preview + pending-NDA rooms
+- Cross-source reasoning: the AI can compare e.g. listing-claimed EBITDA against Vault-disclosed financials and flag discrepancies as a diligence step
+- Provider badge surfaces in vault citations when the file was synced from Google Drive / OneDrive / SharePoint / Dropbox / Box
+- Auto-discovers all 4 source types on every question — no manual scope selection
+- Sidebar shows Private Locker docs tagged to the research target with Add / Download / Delete
 
 ### Personal newsletter
 - `POST /api/newsletter/personal` generates a Bloomberg-blue branded digest and delivers it to the buyer's inbox in one call.
