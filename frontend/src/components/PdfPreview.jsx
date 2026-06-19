@@ -7,11 +7,18 @@ import { useAuth } from "../lib/auth";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 
-// pdf.js worker — load from the same package as react-pdf to avoid version drift.
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.min.mjs",
-  import.meta.url,
-).toString();
+// pdf.js worker — pin to the exact installed `pdfjs-dist` version and load
+// from a public CDN. This is the most robust approach in production because:
+//   1. The `.mjs` worker shipped by react-pdf v9 fails on hosts that serve it
+//      with the wrong MIME type (Cloudflare in front of CRA does exactly this)
+//      → "Failed to fetch dynamically imported module: pdf.worker.min.mjs".
+//   2. The CDN serves the legacy UMD `.js` build with `application/javascript`,
+//      bypassing the MIME-type dance entirely.
+//   3. Pinning to react-pdf's exact pdfjs-dist version (read at module-load
+//      time so a future bump auto-updates) avoids API mismatch between worker
+//      and main thread.
+pdfjs.GlobalWorkerOptions.workerSrc =
+  `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 /**
  * In-browser PDF preview modal with a watermark overlay carrying the viewer's
