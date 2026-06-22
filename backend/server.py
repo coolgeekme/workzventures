@@ -6148,15 +6148,19 @@ async def set_file_access(
 def _docx_to_pdf_bytes(data: bytes, filename: str) -> bytes | None:
     """Render a DOCX as PDF using python-docx + reportlab. Pure-Python pipeline
     chosen over LibreOffice because apt-installed packages don't survive
-    container restarts on this hosting platform. Trade-off: lower visual
-    fidelity (no inline images / complex table layouts), but reliable and fast."""
+    container restarts on this hosting platform. Includes inline images so
+    one-pagers with screenshots / charts render faithfully."""
     try:
         from docx import Document as _Docx
         from reportlab.lib.pagesizes import LETTER
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.units import inch
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
+            Image as RLImage,
+        )
         from reportlab.lib import colors
+        from PIL import Image as PILImage
         import html as _h
     except Exception as e:
         logger.warning(f"docx→pdf deps missing: {e}")
@@ -6175,24 +6179,66 @@ def _docx_to_pdf_bytes(data: bytes, filename: str) -> bytes | None:
                                    fontSize=18, leading=22, spaceAfter=10, textColor=colors.HexColor("#0B1B3D"))
         h2_style = ParagraphStyle("h2", parent=styles["Heading2"], fontName="Helvetica-Bold",
                                    fontSize=14, leading=18, spaceAfter=8, textColor=colors.HexColor("#0B1B3D"))
+        # Index inline images by their relationship id so we can drop them
+        # in document order when we encounter the `<w:drawing>` block.
+        rels_by_id: dict[str, bytes] = {}
+        try:
+            for rel_id, rel in d.part.rels.items():
+                if "image" in (rel.reltype or "").lower():
+                    try:
+                        rels_by_id[rel_id] = rel.target_part.blob
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.debug(f"docx image rel walk failed: {e}")
+
+        MAX_W = 6.5 * inch
+        MAX_H = 4.0 * inch
+
+        def _img_flowable(blob: bytes):
+            try:
+                im = PILImage.open(io.BytesIO(blob)); im.load()
+                if im.mode not in ("RGB", "RGBA"):
+                    im = im.convert("RGB")
+                buf = io.BytesIO(); im.save(buf, format="PNG"); buf.seek(0)
+                w, h = im.size
+                scale = min(MAX_W / w, MAX_H / h, 1.0)
+                return RLImage(buf, width=w*scale, height=h*scale)
+            except Exception:
+                return None
+
+        EMBED_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
         flow = []
         for blk in d.element.body.iter():
             tag = blk.tag.split("}")[-1]
             if tag == "p":
                 txt = "".join(node.text or "" for node in blk.iter() if node.tag.endswith("}t"))
-                if not txt.strip():
+                # Detect any inline image in this paragraph and emit it before
+                # / after the text (we always emit after for simplicity).
+                image_flowables: list = []
+                for blip in blk.iter("{http://schemas.openxmlformats.org/drawingml/2006/main}blip"):
+                    rid = blip.get(EMBED_NS + "embed")
+                    if rid and rid in rels_by_id:
+                        img = _img_flowable(rels_by_id[rid])
+                        if img is not None:
+                            image_flowables.append(img)
+                if not txt.strip() and not image_flowables:
                     flow.append(Spacer(1, 5))
                     continue
-                # Map Word heading styles loosely.
-                style = body_style
-                pStyle = blk.find(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pStyle")
-                if pStyle is not None:
-                    val = (pStyle.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val") or "").lower()
-                    if "heading 1" in val or val == "heading1" or val == "title":
-                        style = h1_style
-                    elif "heading" in val:
-                        style = h2_style
-                flow.append(Paragraph(_h.escape(txt), style))
+                if txt.strip():
+                    style = body_style
+                    pStyle = blk.find(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pStyle")
+                    if pStyle is not None:
+                        val = (pStyle.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val") or "").lower()
+                        if "heading 1" in val or val == "heading1" or val == "title":
+                            style = h1_style
+                        elif "heading" in val:
+                            style = h2_style
+                    flow.append(Paragraph(_h.escape(txt), style))
+                for img in image_flowables:
+                    flow.append(Spacer(1, 4))
+                    flow.append(img)
+                    flow.append(Spacer(1, 4))
             elif tag == "tbl":
                 rows: list[list[str]] = []
                 for tr in blk.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr"):
@@ -6304,16 +6350,21 @@ def _xlsx_to_pdf_bytes(data: bytes, filename: str) -> bytes | None:
 
 def _pptx_to_pdf_bytes(data: bytes, filename: str) -> bytes | None:
     """Render a PPTX as a PDF (one page per slide) using python-pptx +
-    reportlab. We extract slide text + speaker notes only — no rendered
-    shapes/images — so buyers get a readable outline of the deck."""
+    reportlab. Extracts slide text, embedded raster images, AND speaker
+    notes so buyers see the deck's actual visual content — not just a
+    text outline."""
     try:
         from pptx import Presentation
+        from pptx.enum.shapes import MSO_SHAPE_TYPE
         from reportlab.lib.pagesizes import landscape, LETTER
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.units import inch
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, PageBreak, Image as RLImage,
+        )
         from reportlab.lib import colors
         import html as _h
+        from PIL import Image as PILImage
     except Exception as e:
         logger.warning(f"pptx→pdf deps missing: {e}")
         return None
@@ -6337,6 +6388,34 @@ def _pptx_to_pdf_bytes(data: bytes, filename: str) -> bytes | None:
         notes_style = ParagraphStyle("notes", parent=styles["Normal"], fontName="Helvetica-Oblique",
                                       fontSize=9, textColor=colors.HexColor("#5A6275"),
                                       leftIndent=8, spaceBefore=12, leading=12)
+        # Reportlab usable page width (landscape LETTER ~11" minus margins).
+        MAX_IMG_W = 9.0 * inch
+        MAX_IMG_H = 4.5 * inch
+
+        def _make_image_flowable(blob: bytes, ctype: str | None):
+            """Return a reportlab Image flowable scaled to fit the slide page.
+            Robust to broken/unknown formats — returns None if Pillow can't
+            decode it, so a single bad image doesn't kill the whole render."""
+            try:
+                # Pillow normalizes anything reportlab might choke on (WMF,
+                # uncommon CMYK JPEGs, etc.) into a clean PNG buffer first.
+                im = PILImage.open(io.BytesIO(blob))
+                im.load()
+                if im.mode in ("RGBA", "P", "LA"):
+                    im = im.convert("RGBA")
+                elif im.mode != "RGB":
+                    im = im.convert("RGB")
+                norm = io.BytesIO()
+                im.save(norm, format="PNG")
+                norm.seek(0)
+                src_w, src_h = im.size
+            except Exception as e:
+                logger.debug(f"pptx image decode failed: {e}")
+                return None
+            # Fit-to-box, preserving aspect ratio.
+            scale = min(MAX_IMG_W / src_w, MAX_IMG_H / src_h, 1.0)
+            return RLImage(norm, width=src_w * scale, height=src_h * scale)
+
         flow = []
         for i, slide in enumerate(pres.slides):
             if i > 0:
@@ -6344,7 +6423,24 @@ def _pptx_to_pdf_bytes(data: bytes, filename: str) -> bytes | None:
             flow.append(Paragraph(f"SLIDE {i+1} / {len(pres.slides)}", slide_no))
             title_text = None
             bullets: list[str] = []
+            images: list = []  # RLImage flowables, in shape document order
+
             for shape in slide.shapes:
+                # Pictures — extract raw blob and embed.
+                try:
+                    is_pic = shape.shape_type == MSO_SHAPE_TYPE.PICTURE
+                except Exception:
+                    is_pic = False
+                if is_pic and hasattr(shape, "image"):
+                    try:
+                        blob = shape.image.blob
+                        ctype = getattr(shape.image, "content_type", None)
+                        img = _make_image_flowable(blob, ctype)
+                        if img is not None:
+                            images.append(img)
+                    except Exception as e:
+                        logger.debug(f"pptx picture extract failed on slide {i+1}: {e}")
+                # Text frames.
                 if not shape.has_text_frame:
                     continue
                 tf = shape.text_frame
@@ -6358,11 +6454,17 @@ def _pptx_to_pdf_bytes(data: bytes, filename: str) -> bytes | None:
                         title_text = txt
                     else:
                         bullets.append(txt)
+
             if title_text:
                 flow.append(Paragraph(_h.escape(title_text), slide_title))
             for b in bullets[:12]:
                 flow.append(Paragraph(f"• {_h.escape(b)}", bullet_style))
-            if not title_text and not bullets:
+            # Place up to 2 images per slide so the layout stays sane; if a
+            # slide has more, the extras still appear but stacked vertically.
+            for j, img in enumerate(images[:4]):
+                flow.append(Spacer(1, 8))
+                flow.append(img)
+            if not title_text and not bullets and not images:
                 flow.append(Paragraph("<i>(empty slide)</i>", body_style))
             # Speaker notes
             try:

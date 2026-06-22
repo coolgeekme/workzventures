@@ -485,3 +485,10 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 ## Mocked
 - Newsletter email dispatch (Resend MOCKED — flips status to `dispatched` + records recipient count)
 - Outreach campaign launch (LinkedIn delivery MOCKED — flips status to `launched` + records sent count)
+
+
+## Iter-25 (Feb 2026) — Embedded image rendering in pure-Python Office previews
+- **Problem**: After replacing LibreOffice (volatile under K8s restarts) with a pure-Python `python-docx` / `python-pptx` + `reportlab` pipeline, document previews lost all embedded raster images. Sellers' pitch decks and one-pagers rendered as text-only outlines.
+- **Fix**: `_pptx_to_pdf_bytes` walks every shape with `MSO_SHAPE_TYPE.PICTURE`, extracts `shape.image.blob`, normalizes via Pillow (handles CMYK JPEGs / RGBA PNGs / palette images), and emits a fit-to-box `reportlab.platypus.Image` flowable per slide (capped at 4 images per slide to keep layouts sane). `_docx_to_pdf_bytes` indexes relationship-id → image blob and emits a `RLImage` flowable each time a `<w:drawing>` block references an embed rid, preserving document order with text.
+- **Resilience**: A single corrupt image is caught and skipped — the rest of the deck/document still renders. Verified by a tampered-zip test (`tests/test_preview_images.py::test_pptx_with_text_around_corrupt_image_falls_through`).
+- **Tested**: 7/7 unit tests in `tests/test_preview_images.py` pass — confirms PPTX/DOCX with PNG images produce PDFs that contain `/Subtype /Image` XObjects. End-to-end live API verification: PPTX uploaded to a real Vault, `GET /api/deal-rooms/{rid}/files/{fid}/preview` returns a 2KB PDF with the image XObject present.
