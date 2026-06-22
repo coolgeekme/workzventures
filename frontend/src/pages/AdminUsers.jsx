@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   UsersThree, PlusCircle, EnvelopeSimple, Pencil, Prohibit, Key, X,
-  CheckCircle, Copy, MagnifyingGlass, ThumbsUp, ThumbsDown,
+  CheckCircle, Copy, MagnifyingGlass, ThumbsUp, ThumbsDown, Trash,
 } from "@phosphor-icons/react";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -56,6 +56,37 @@ export default function AdminUsers() {
       load();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed");
+    }
+  };
+
+  // Hard delete — irreversible. Cascades through every record this user owns
+  // (listings, vaults, files, locker, research, etc.) and tombstones their
+  // audit-log entries to keep the hash chain intact. Two-step confirmation
+  // because there's no recovery path.
+  const purgeUser = async (u) => {
+    const phrase = `DELETE ${u.email}`;
+    const typed = window.prompt(
+      `⚠️ HARD DELETE — this is permanent and cascades to every listing, ` +
+      `vault, file, message and record this user owns. There is no undo.\n\n` +
+      `Type exactly:  ${phrase}\n\nto confirm.`
+    );
+    if (typed !== phrase) {
+      if (typed !== null) toast.error("Phrase mismatch — purge cancelled");
+      return;
+    }
+    try {
+      const r = await api.post(`/admin/users/${u.id}/purge`);
+      const sum = r.data?.summary || {};
+      const bits = [];
+      if (sum.listings) bits.push(`${sum.listings} listing(s)`);
+      if (sum.deal_rooms) bits.push(`${sum.deal_rooms} vault(s)`);
+      if (sum.inquiries) bits.push(`${sum.inquiries} inquir(ies)`);
+      if (sum.locker_files) bits.push(`${sum.locker_files} locker file(s)`);
+      if (sum.user_owned_rows) bits.push(`${sum.user_owned_rows} other record(s)`);
+      toast.success(`Purged ${u.email}${bits.length ? " · " + bits.join(", ") : ""}`);
+      load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Purge failed");
     }
   };
 
@@ -240,10 +271,20 @@ export default function AdminUsers() {
                       <button
                         data-testid={`deactivate-${u.id}`}
                         onClick={() => deactivate(u)}
-                        className="wz-btn wz-btn-ghost text-[11px] text-[var(--wz-negative)]"
-                        title="Deactivate"
+                        className="wz-btn wz-btn-ghost text-[11px] text-[var(--wz-negative)] mr-1"
+                        title="Deactivate (soft — they can be reactivated)"
                       >
                         <Prohibit size={11} />
+                      </button>
+                    )}
+                    {!u.is_demo && !u.is_seed && u.id !== me?.id && (
+                      <button
+                        data-testid={`purge-${u.id}`}
+                        onClick={() => purgeUser(u)}
+                        className="wz-btn wz-btn-ghost text-[11px] text-[var(--wz-negative)] border border-transparent hover:border-[var(--wz-negative)]"
+                        title="Hard delete — permanently removes user and all their data"
+                      >
+                        <Trash size={11} />
                       </button>
                     )}
                   </td>
@@ -330,8 +371,17 @@ export default function AdminUsers() {
 
 function ModalShell({ title, onClose, children }) {
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
-      <div className="wz-card w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
+    // Top-anchored modal with viewport-scroll fallback. Previous `items-center`
+    // pushed the modal off-screen vertically when the form was taller than the
+    // viewport (admin had to scroll the whole page to find it).
+    <div
+      className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-start justify-center p-4 overflow-y-auto"
+      onClick={onClose}
+    >
+      <div
+        className="wz-card w-full max-w-md p-5 mt-16 sm:mt-20 mb-12"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-display text-lg">{title}</h2>
           <button onClick={onClose} className="text-[var(--wz-text-tertiary)] hover:text-[var(--wz-text)]"><X size={16} /></button>

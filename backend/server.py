@@ -1272,6 +1272,159 @@ async def admin_deactivate_user(uid: str, user=Depends(get_current_user)):
     return {"ok": True, "status": "deactivated"}
 
 
+@api_router.post("/admin/users/{uid}/purge")
+async def admin_hard_delete_user(uid: str, user=Depends(get_current_user)):
+    """HARD delete: removes the user account and every record they own
+    (listings + staged files, inquiries, deal rooms + their files / messages /
+    findings / requests, locker files, research + copilots, detailed reports,
+    collateral, outreach, newsletters, leads, watchlist, agent activity, external
+    sources, composio connections).
+
+    Audit logs are preserved (hash-chain integrity) but the actor_id is
+    rewritten to a tombstone `deleted:{uid}` so the chain still validates and
+    the email never leaks back.
+
+    Guardrails (HTTP 400 on each):
+      - Cannot purge yourself.
+      - Cannot purge seeded demo accounts (`is_demo: True`).
+      - Cannot purge another admin unless this admin is the platform owner
+        (heuristic: oldest active admin).
+    """
+    _admin_only(user)
+    if uid == user["id"]:
+        raise HTTPException(status_code=400, detail="Cannot purge yourself")
+    target = await db.users.find_one(
+        {"id": uid},
+        {"_id": 0, "id": 1, "email": 1, "role": 1, "is_demo": 1, "is_seed": 1},
+    )
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.get("is_demo") or target.get("is_seed"):
+        raise HTTPException(status_code=400, detail="Cannot purge seeded / demo accounts")
+    if target.get("role") == "admin":
+        # Only the platform's primary admin (= the oldest admin by created_at)
+        # can purge another admin. Prevents accidental nuking of co-admins.
+        oldest_admin = await db.users.find_one(
+            {"role": "admin", "status": {"$ne": "deactivated"}},
+            sort=[("created_at", 1)],
+            projection={"_id": 0, "id": 1},
+        )
+        if not oldest_admin or oldest_admin["id"] != user["id"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Only the primary admin can purge another admin account",
+            )
+
+    deleted: dict = {"email": target.get("email"), "by": user["id"]}
+
+    # 1. Listings owned by this user (cascades to staged files + buyer-discovery rows)
+    listings = await db.listings.find(
+        {"seller_id": uid}, {"_id": 0, "id": 1}
+    ).to_list(None)
+    lids = [li["id"] for li in listings]
+    if lids:
+        async for s in db.listing_staged_files.find(
+            {"listing_id": {"$in": lids}, "gridfs_id": {"$exists": True}},
+            {"_id": 0, "gridfs_id": 1},
+        ):
+            try:
+                await listing_files_bucket.delete(ObjectId(s["gridfs_id"]))
+            except Exception:
+                pass
+        await db.listing_staged_files.delete_many({"listing_id": {"$in": lids}})
+        await db.listing_external_sources.delete_many({"listing_id": {"$in": lids}})
+        await db.listing_collaborators.delete_many({"listing_id": {"$in": lids}})
+        await db.listing_collab_invites.delete_many({"listing_id": {"$in": lids}})
+        await db.listing_share_links.delete_many({"listing_id": {"$in": lids}})
+        await db.buyer_matches.delete_many({"listing_id": {"$in": lids}})
+        await db.buyer_alerts.delete_many({"listing_id": {"$in": lids}})
+        await db.buyer_scans.delete_many({"listing_id": {"$in": lids}})
+        await db.listings.delete_many({"id": {"$in": lids}})
+        deleted["listings"] = len(lids)
+
+    # 2. Deal rooms where this user was buyer OR seller — cascade to files,
+    #    messages, findings, requests + their GridFS blobs.
+    rooms = await db.deal_rooms.find(
+        {"$or": [{"buyer_id": uid}, {"seller_id": uid}]},
+        {"_id": 0, "id": 1},
+    ).to_list(None)
+    rids = [r["id"] for r in rooms]
+    if rids:
+        async for f in db.deal_room_files.find(
+            {"room_id": {"$in": rids}, "gridfs_id": {"$exists": True}},
+            {"_id": 0, "gridfs_id": 1},
+        ):
+            try:
+                await gridfs_bucket.delete(ObjectId(f["gridfs_id"]))
+            except Exception:
+                pass
+        await db.deal_room_files.delete_many({"room_id": {"$in": rids}})
+        await db.deal_room_findings.delete_many({"room_id": {"$in": rids}})
+        await db.deal_room_messages.delete_many({"room_id": {"$in": rids}})
+        await db.deal_room_requests.delete_many({"room_id": {"$in": rids}})
+        await db.deal_rooms.delete_many({"id": {"$in": rids}})
+        deleted["deal_rooms"] = len(rids)
+
+    # 3. Inquiries authored by or directed at this user
+    inq = await db.inquiries.find(
+        {"$or": [{"buyer_id": uid}, {"seller_id": uid}]},
+        {"_id": 0, "id": 1},
+    ).to_list(None)
+    if inq:
+        iids = [i["id"] for i in inq]
+        await db.inquiry_messages.delete_many({"inquiry_id": {"$in": iids}})
+        await db.inquiries.delete_many({"id": {"$in": iids}})
+        deleted["inquiries"] = len(iids)
+
+    # 4. Private Locker — drop GridFS + rows
+    locker_rows = await db.private_locker_files.find(
+        {"user_id": uid, "gridfs_id": {"$exists": True}},
+        {"_id": 0, "id": 1, "gridfs_id": 1},
+    ).to_list(None)
+    for r in locker_rows:
+        try:
+            await private_locker_bucket.delete(ObjectId(r["gridfs_id"]))
+        except Exception:
+            pass
+    res_lk = await db.private_locker_files.delete_many({"user_id": uid})
+    deleted["locker_files"] = res_lk.deleted_count
+
+    # 5. All user-owned collection rows
+    user_owned = [
+        "research", "detailed_reports", "research_copilot_messages",
+        "collateral", "collateral_versions", "outreach", "newsletters",
+        "leads", "watchlist", "agent_activity", "composio_connections",
+        "listing_external_sources",
+    ]
+    owned_total = 0
+    for col in user_owned:
+        try:
+            r = await db[col].delete_many({"user_id": uid})
+            owned_total += r.deleted_count
+        except Exception as e:
+            logger.warning(f"purge {col} failed for {uid}: {e}")
+    deleted["user_owned_rows"] = owned_total
+
+    # 6. Tombstone audit logs — DON'T delete (would break chain), just rewrite
+    #    actor reference. Keep the email out of the public-facing actor field.
+    tombstone = f"deleted:{uid}"
+    await db.audit_logs.update_many(
+        {"actor_id": uid},
+        {"$set": {"actor_id": tombstone, "actor_was_deleted": True}},
+    )
+
+    # 7. Other refs: collaborator/org membership where this user appears
+    await db.listing_collaborators.delete_many({"user_id": uid})
+    await db.user_invites.delete_many({"email": (target.get("email") or "").lower()})
+
+    # 8. Finally the user record
+    await db.users.delete_one({"id": uid})
+
+    # 9. Audit the purge itself (with the surviving admin as actor)
+    await log_audit(user["id"], "admin.user.purge", uid, deleted)
+    return {"ok": True, "purged": True, "summary": deleted}
+
+
 @api_router.get("/admin/invites")
 async def admin_list_invites(user=Depends(get_current_user)):
     _admin_only(user)
