@@ -430,7 +430,10 @@ export default function DealRoomDetail() {
                           {downloadAllowed ? "Disable" : "Allow"}
                         </button>
                       )}
-                      {f.gridfs_id && (
+                      {/* Preview is offered for any file with bytes OR
+                          extracted text (seed/legacy files lack gridfs_id
+                          but have extracted text — backend serves them). */}
+                      {(f.gridfs_id || f.has_text) && (
                         <button
                           onClick={() => setPreviewFile(f)}
                           className="text-xs text-[var(--wz-text-secondary)] hover:text-white inline-flex items-center gap-1"

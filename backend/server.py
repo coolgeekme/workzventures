@@ -5476,7 +5476,28 @@ async def get_deal_room(rid: str, user=Depends(get_current_user)):
                 logger.info(f"backfilled {backfilled} staged file(s) into room {rid}")
         except Exception as e:
             logger.warning(f"get_deal_room: backfill clone failed for {rid}: {e}")
-    room["files"] = await db.deal_room_files.find({"room_id": rid}, {"_id": 0, "content": 0, "pages": 0}).sort("uploaded_at", -1).to_list(500)
+    # Pull files WITHOUT the heavy `content` / `pages` payloads, but project a
+    # boolean so the frontend knows preview is available for text-only files
+    # (seed data / legacy uploads with no gridfs_id but extracted text).
+    # MongoDB doesn't allow mixed include/exclude projection (except for _id),
+    # so we project everything we need EXPLICITLY (without pages) and read
+    # `content` separately just to compute has_text.
+    room["files"] = []
+    async for fr in db.deal_room_files.find(
+        {"room_id": rid},
+        {"_id": 0,
+         "id": 1, "room_id": 1, "filename": 1, "folder": 1, "content_type": 1,
+         "size_bytes": 1, "page_count": 1, "char_count": 1, "gridfs_id": 1,
+         "encrypted": 1, "encryption_alg": 1, "sha256_hex": 1, "note": 1,
+         "uploaded_by": 1, "uploaded_by_role": 1, "uploaded_at": 1,
+         "matched_request_id": 1, "cloned_from_listing_file": 1, "source": 1,
+         "download_allowed": 1,
+         "content": 1},
+    ).sort("uploaded_at", -1).limit(500):
+        # Strip the heavy text but expose presence to the UI.
+        fr["has_text"] = bool(fr.get("content"))
+        fr.pop("content", None)
+        room["files"].append(fr)
     room["requests"] = await db.deal_room_requests.find({"room_id": rid}, {"_id": 0}).sort("created_at", 1).to_list(200)
     room["findings"] = await db.deal_room_findings.find({"room_id": rid}, {"_id": 0}).sort("created_at", -1).to_list(200)
     # Activity audit: log a `dealroom.view` event but rate-limit to once-per-hour
@@ -6328,8 +6349,9 @@ _OFFICE_PREVIEW_EXTS = (
 @api_router.get("/deal-rooms/{rid}/files/{file_id}/preview")
 async def preview_file(rid: str, file_id: str, user=Depends(get_current_user)):
     """Stream a file inline for in-browser viewing. PDFs + images + text
-    served directly. Office formats converted on-the-fly via LibreOffice
-    headless and cached in GridFS so the second preview is instant.
+    served directly. Office formats converted on-the-fly via the pure-Python
+    pipeline (python-docx / openpyxl / python-pptx + reportlab) and cached
+    in GridFS so the second preview is instant.
 
     Unlike `/download`, the preview endpoint is ALWAYS available to every
     Vault participant — the watermark overlay added client-side carries
@@ -6340,28 +6362,67 @@ async def preview_file(rid: str, file_id: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Vault not found")
     await participant_check(room, user)
     f = await db.deal_room_files.find_one({"id": file_id, "room_id": rid}, {"_id": 0})
-    if not f or not f.get("gridfs_id"):
+    if not f:
         raise HTTPException(status_code=404, detail="File not found")
 
-    ctype = (f.get("content_type") or "application/octet-stream").lower()
     fname = f.get("filename", "file")
     fname_lc = fname.lower()
+    raw_ctype = (f.get("content_type") or "").lower().split(";")[0].strip()
 
-    # Decrypt staged bytes once; both direct-preview and Office-convert paths
-    # reuse the plaintext below.
-    try:
-        grid_out = await gridfs_bucket.open_download_stream(ObjectId(f["gridfs_id"]))
-        raw = await grid_out.read()
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Binary not found: {e}")
-    plaintext = raw
-    if f.get("encrypted"):
+    # Detect the *effective* content-type for routing. Browsers (and curl)
+    # frequently fail to supply a specific MIME for .csv / .md / .json /
+    # .svg → uploads land as "application/octet-stream" or empty. Fall back
+    # to the filename extension whenever the stored content_type is missing
+    # or generic so the preview still resolves.
+    EXT_MIME = {
+        ".pdf":  "application/pdf",
+        ".png":  "image/png",
+        ".jpg":  "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif":  "image/gif", ".webp": "image/webp",
+        ".svg":  "image/svg+xml",
+        ".txt":  "text/plain", ".log": "text/plain",
+        ".md":   "text/markdown", ".markdown": "text/markdown",
+        ".csv":  "text/csv", ".tsv": "text/tab-separated-values",
+        ".json": "application/json",
+        ".html": "text/html", ".htm": "text/html",
+        ".xml":  "application/xml",
+    }
+    ctype = raw_ctype
+    if (not ctype) or ctype == "application/octet-stream":
+        for ext, mime in EXT_MIME.items():
+            if fname_lc.endswith(ext):
+                ctype = mime
+                break
+
+    # ----- Source the bytes -----
+    # Three storage layouts to support: (a) modern encrypted GridFS upload,
+    # (b) plain GridFS without encryption, (c) text-only legacy / seed file
+    # stored as `content` string with no GridFS id. (c) is the path that was
+    # returning 404 — fix is to fall through to text/plain inline streaming.
+    plaintext: bytes | None = None
+    if f.get("gridfs_id"):
         try:
-            aad = f"{rid}:{file_id}".encode("utf-8")
-            plaintext = decrypt_envelope(raw, associated_data=aad)
+            grid_out = await gridfs_bucket.open_download_stream(ObjectId(f["gridfs_id"]))
+            raw = await grid_out.read()
         except Exception as e:
-            logger.exception("Vault file decryption failed (preview)")
-            raise HTTPException(status_code=500, detail=f"Decryption failed: {e}")
+            raise HTTPException(status_code=404, detail=f"Binary not found: {e}")
+        if f.get("encrypted"):
+            try:
+                aad = f"{rid}:{file_id}".encode("utf-8")
+                plaintext = decrypt_envelope(raw, associated_data=aad)
+            except Exception as e:
+                logger.exception("Vault file decryption failed (preview)")
+                raise HTTPException(status_code=500, detail=f"Decryption failed: {e}")
+        else:
+            plaintext = raw
+    elif f.get("content"):
+        # Text-only file (seed / legacy / extracted-from-binary): serve the
+        # extracted plaintext as text/plain inline.
+        plaintext = (f.get("content") or "").encode("utf-8", errors="replace")
+        if not ctype or not (ctype.startswith("text/") or ctype == "application/json"):
+            ctype = "text/plain"
+    else:
+        raise HTTPException(status_code=404, detail="File has no previewable content")
 
     await log_audit(user["id"], "dealroom.file.preview", rid,
                     {"filename": fname, "file_id": file_id})
@@ -6376,8 +6437,8 @@ async def preview_file(rid: str, file_id: str, user=Depends(get_current_user)):
                      "Cache-Control": "private, max-age=60"},
         )
 
-    # Office formats — check cache first, else convert via LibreOffice
-    # headless and persist the PDF rendition in GridFS for next time.
+    # Office formats — check cache first, else convert via the pure-Python
+    # pipeline and persist the PDF rendition in GridFS for next time.
     if fname_lc.endswith(_OFFICE_PREVIEW_EXTS):
         pdf_id = f.get("preview_pdf_gridfs_id")
         pdf_bytes: bytes | None = None

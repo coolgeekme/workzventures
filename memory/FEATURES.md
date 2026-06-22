@@ -260,12 +260,15 @@ NextCapOS ships four first-class roles, each with a tailored console.
 
 ### Watermarked in-browser preview
 - Click "Preview" on any Vault file → opens a full-screen modal with PDF.js rendering and a **diagonal repeating CSS watermark** carrying `{viewer_email} · {ISO UTC timestamp} · {6-char session id}` at 16% opacity, Bloomberg-blue.
-- Office formats (DOCX/XLSX/PPTX + DOC/XLS/PPT + ODT/ODS/ODP) auto-converted server-side to PDF via **LibreOffice headless**; the rendition is cached in GridFS so subsequent previews are instant.
-- PDFs + images + text + JSON stream inline directly.
+- **Multi-format support** — PDF, DOCX, XLSX (200×24 cells per sheet), PPTX (slides + speaker notes), PNG/JPG/GIF/WEBP/SVG (native image), TXT/MD/CSV/TSV/JSON/HTML (styled monospace `<pre>`).
+- Office conversion via **pure-Python pipeline** (python-docx / openpyxl / python-pptx + reportlab) — chosen over LibreOffice headless because apt-installed packages don't survive container restarts on this hosting platform. Pure-Python is faster (no subprocess overhead) and self-contained.
+- **MIME-type extension fallback** — browsers often supply `application/octet-stream` for `.csv` / `.md` / `.json` / `.svg`; the preview endpoint detects the format from the filename when content-type is missing or generic so every file still resolves.
+- **Text-only legacy/seed files** (no GridFS bytes, just extracted text) now stream as `text/plain` — they used to return 404 for preview.
+- Office renditions cached in GridFS so subsequent previews are instant.
 - Toolbar: page navigation, zoom in/out, optional Download (only if `download_allowed=true`).
 - Right-click + drag-save explicitly disabled inside the modal (best-effort signal, not bulletproof — the watermark is the actual deterrent).
 - Every preview logs `dealroom.file.preview` audit event with the file id + filename → shows up in the Activity tab so the seller sees who looked at what.
-- Endpoint: `GET /api/deal-rooms/{rid}/files/{fid}/preview` (HTTP 415 if unsupported format).
+- Endpoint: `GET /api/deal-rooms/{rid}/files/{fid}/preview` (HTTP 415 if format genuinely unsupported, e.g., ZIP / proprietary CAD).
 
 ### Preview Vault (QA mode)
 - Seller can preview the buyer experience without an inquiry; flagged `is_preview: true`, excluded from real deal metrics.
