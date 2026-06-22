@@ -1253,6 +1253,68 @@ async def admin_reset_password(uid: str, body: dict, user=Depends(get_current_us
     return {"ok": True}
 
 
+@api_router.post("/admin/listings/{lid}/sources/cleanup-corrupt")
+async def cleanup_corrupt_synced_files(lid: str, user=Depends(get_current_user)):
+    """Scan every Composio-mirrored staged file on a listing and remove any
+    whose stored content is actually an HTML error page or JSON error envelope
+    from a failed proxy download. Created for the iter-22 bug where wrong
+    proxy paths silently stored Google's "/drive/v3/drive/v3/...404" HTML as
+    the file body.
+
+    Returns the list of filenames removed so the caller can re-sync them."""
+    _admin_only(user) if user.get("role") == "admin" else None
+    listing = await db.listings.find_one({"id": lid}, {"_id": 0, "seller_id": 1})
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    # Allow seller or org workspace participant too
+    if user.get("role") not in ("admin",):
+        ws_listings, _ = await _user_workspace_listing_ids(user)
+        if lid not in ws_listings:
+            raise HTTPException(status_code=403, detail="Not authorized for this listing")
+
+    staged = await db.listing_staged_files.find(
+        {"listing_id": lid, "source": {"$exists": True, "$ne": None},
+         "deleted_at": {"$exists": False}, "gridfs_id": {"$exists": True}},
+        {"_id": 0, "id": 1, "filename": 1, "gridfs_id": 1, "encrypted": 1},
+    ).to_list(500)
+    removed: list[str] = []
+    for s in staged:
+        try:
+            grid = await listing_files_bucket.open_download_stream(ObjectId(s["gridfs_id"]))
+            raw = await grid.read()
+        except Exception:
+            continue
+        if s.get("encrypted"):
+            try:
+                aad = f"listing:{lid}:{s['id']}".encode("utf-8")
+                raw = decrypt_envelope(raw, associated_data=aad)
+            except Exception:
+                continue
+        sniff = (raw or b"")[:200].lstrip().lower()
+        is_html_error = sniff.startswith(b"<!doctype html") or sniff.startswith(b"<html")
+        is_json_err = False
+        if not is_html_error and (sniff.startswith(b'{"error"') or sniff.startswith(b'{"message"')):
+            try:
+                import json as _j
+                parsed = _j.loads(raw.decode("utf-8", errors="replace"))
+                is_json_err = isinstance(parsed, dict) and "error" in parsed
+            except Exception:
+                pass
+        if is_html_error or is_json_err:
+            try:
+                await listing_files_bucket.delete(ObjectId(s["gridfs_id"]))
+            except Exception:
+                pass
+            await db.listing_staged_files.delete_one({"id": s["id"]})
+            # Cascade into vault clones (purged on next get_deal_room hit too,
+            # but this is the eager cleanup).
+            await db.deal_room_files.delete_many({"cloned_from_listing_file": s["id"]})
+            removed.append(s["filename"])
+    await log_audit(user["id"], "listing.source.cleanup-corrupt", lid,
+                    {"removed": removed, "count": len(removed)})
+    return {"ok": True, "removed": removed, "count": len(removed)}
+
+
 @api_router.delete("/admin/users/{uid}")
 async def admin_deactivate_user(uid: str, user=Depends(get_current_user)):
     _admin_only(user)
@@ -4380,14 +4442,18 @@ async def _composio_action_execute(action_slug: str, connected_account_id: str, 
 # and returns either `data` (small JSON/text) or `binary_data: {url, ...}`
 # which we then fetch with a follow-up HTTP GET.
 PROXY_DOWNLOAD_ENDPOINTS = {
-    # Google Drive: regular files use ?alt=media; native Docs/Sheets/Slides
-    # need /export with a target mimeType (handled in the helper below).
-    "googledrive": {"path": "/drive/v3/files/{file_id}", "query": [("alt", "media")]},
-    # Microsoft Graph: shared base URL for OneDrive + SharePoint document libs.
-    "onedrive":    {"path": "/v1.0/me/drive/items/{file_id}/content", "query": []},
-    "sharepoint":  {"path": "/v1.0/me/drive/items/{file_id}/content", "query": []},
-    # Box content endpoint (returns 302 → presigned S3; proxy follows it).
-    "box":         {"path": "/2.0/files/{file_id}/content", "query": []},
+    # Composio's proxy already prepends each toolkit's API base URL (e.g.,
+    # https://www.googleapis.com/drive/v3 for Drive, https://graph.microsoft.com/v1.0
+    # for Graph, https://api.box.com/2.0 for Box). We pass ONLY the path
+    # AFTER that base. Earlier versions of this map repeated the version
+    # prefix and produced 404s like /drive/v3/drive/v3/files/... which were
+    # silently stored as the file contents (Google's HTML 404 page).
+    "googledrive": {"path": "/files/{file_id}", "query": [("alt", "media")]},
+    # Microsoft Graph base is https://graph.microsoft.com/v1.0
+    "onedrive":    {"path": "/me/drive/items/{file_id}/content", "query": []},
+    "sharepoint":  {"path": "/me/drive/items/{file_id}/content", "query": []},
+    # Box base is https://api.box.com/2.0
+    "box":         {"path": "/files/{file_id}/content", "query": []},
 }
 
 # Google Workspace native mime types → export target. Composio cannot read
@@ -4433,7 +4499,7 @@ async def _composio_proxy_download(
         export_target = GOOGLE_DRIVE_EXPORT_MAP.get(mime_type)
         if not export_target:
             return None  # unsupported Google native type
-        endpoint = f"/drive/v3/files/{file_id}/export"
+        endpoint = f"/files/{file_id}/export"
         query_params = [("mimeType", export_target)]
     parameters = [{"name": k, "value": v, "type": "query"} for k, v in query_params]
     payload: dict = {
@@ -4464,26 +4530,49 @@ async def _composio_proxy_download(
     #   2) `data` as a raw string when content was small enough to inline
     bin_meta = body.get("binary_data") or {}
     bin_url = bin_meta.get("url") if isinstance(bin_meta, dict) else None
+    fetched: bytes | None = None
     if bin_url:
         try:
             async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as c:
                 rr = await c.get(bin_url)
                 if rr.status_code < 400:
-                    return rr.content
-                logger.warning(f"proxy fetch binary url failed {rr.status_code}: {rr.text[:200]}")
+                    fetched = rr.content
+                else:
+                    logger.warning(f"proxy fetch binary url failed {rr.status_code}: {rr.text[:200]}")
         except Exception as e:
             logger.warning(f"proxy fetch binary url crashed: {e}")
+    else:
+        data_field = body.get("data")
+        if isinstance(data_field, str) and data_field:
+            import base64 as _b64
+            try:
+                fetched = _b64.b64decode(data_field, validate=True)
+            except Exception:
+                fetched = data_field.encode("utf-8", errors="replace")
+    if fetched is None:
         return None
-    data_field = body.get("data")
-    if isinstance(data_field, str) and data_field:
-        # Try base64 first (likely if it came from a binary endpoint), fall
-        # back to raw bytes encoding.
-        import base64 as _b64
+    # Sanity-check: refuse to store HTML error pages as file content. Earlier
+    # versions of this code silently saved Google's "404 Not Found" HTML when
+    # the proxy endpoint path was wrong, so buyers saw "random text" instead
+    # of their PPTX. If the first bytes look like an HTML doctype OR a JSON
+    # error envelope, treat as a failed download.
+    sniff = fetched[:200].lstrip().lower()
+    if sniff.startswith(b"<!doctype html") or sniff.startswith(b"<html"):
+        logger.warning(f"proxy download for {source_kind}/{file_id} returned HTML — likely an upstream error page. Refusing to store.")
+        return None
+    if sniff.startswith(b'{"error"') or sniff.startswith(b'{"message"'):
+        # Best-effort: peek for a JSON error shape. Real JSON files start with
+        # `{"` too, but the literal `"error"` / `"message"` key at the top is
+        # a strong upstream-error tell.
         try:
-            return _b64.b64decode(data_field, validate=True)
+            import json as _j
+            parsed = _j.loads(fetched.decode("utf-8", errors="replace"))
+            if isinstance(parsed, dict) and ("error" in parsed and isinstance(parsed.get("error"), (dict, str))):
+                logger.warning(f"proxy download for {source_kind}/{file_id} returned JSON error envelope. Refusing to store.")
+                return None
         except Exception:
-            return data_field.encode("utf-8", errors="replace")
-    return None
+            pass
+    return fetched
 
 
 @api_router.post("/listings/{lid}/external-sources")
