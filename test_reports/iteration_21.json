@@ -1,0 +1,36 @@
+{
+  "summary": "Backend regression verified for the admin-invite scope bug fix. All 10 tests pass (5 pre-existing in test_admin_invite_role_scope.py + 5 new in test_admin_invite_scope_v2.py). Confirmed admin-invited agent/seller/buyer users now land with account_scope='principal' on first login AND on subsequent /auth/me calls, while real listing collaborators still resolve to 'collaborator'. Admin invite endpoint response shape (token/accept_url/email/role/status='pending') confirmed. All seeded users (mira/alex/admin/agent) still resolve to 'principal'. Throwaway invitee.* users + their invite rows purged from Mongo.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_admin_invite_role_scope.py",
+    "/app/backend/tests/test_admin_invite_scope_v2.py",
+    "/app/test_reports/pytest/invite_scope_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "_compute_account_scope fix at server.py:278-303 is correct: now only returns 'collaborator' when user is positively referenced in some listing.collaborators[].user_id AND owns 0 listings AND admins 0 orgs AND is not platform admin. Verified end-to-end via Carl flow (principal -> add as listing collaborator -> flips to collaborator).",
+    "server.py exceeds 9000 lines — strongly consider splitting into modules (auth, admin, listings, collaborators, vault). Out of scope for this bug but flagged for future refactor.",
+    "test_admin_invite_role_scope.py uses identical _api()/_login() helpers as the new v2 file — these could be extracted into conftest.py to DRY up the invite-related test suite."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_admin_invite_scope_v2.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10 pytest tests passed)",
+    "frontend": "not tested (backend-only run as requested)"
+  },
+  "test_credentials": "/app/memory/test_credentials.md present and accurate; admin / mira / alex / agent all verified login-able.",
+  "seed_data_creation": "5 throwaway invitee.<role>.<rand>@workz.example.com users were created during the test run; all 5 purged from `users`, along with 6 rows from `user_invites`, 8 from `login_attempts`, and 1 from `listing_invites` after the run. Mongo is clean.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The admin-invite -> principal scope bug is fully verified fixed. Both regression files (test_admin_invite_role_scope.py and test_admin_invite_scope_v2.py) should be re-run on any future change to _compute_account_scope, POST /api/admin/invites, POST /api/auth/accept-invite, POST /api/listings/{lid}/collaborators, or POST /api/listing-invites/{token}/accept. Throwaway emails use the pattern invitee.<role>.<hex>@workz.example.com — always purge after the test if running outside CI.",
+  "rca of the issue": "Original heuristic in _compute_account_scope demoted any non-admin user with 0 owned listings AND 0 admin-of orgs to 'collaborator'. Admin-invited users start with exactly 0 listings/0 orgs, so they got stripped down to the COLLAB_NAV ('My Collaborations' + 'Security') instead of their real role nav. Fix flipped the rule to positively check listing.collaborators[].user_id membership: scope='collaborator' ONLY if user appears in some listing's collaborators array AND owns 0 listings AND admins 0 orgs AND is not platform admin; otherwise 'principal'. Verified via 10 passing pytest cases including a true-positive collaborator path (Carl)."
+}

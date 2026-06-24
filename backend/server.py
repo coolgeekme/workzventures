@@ -277,22 +277,33 @@ def serialize_user(doc: dict) -> dict:
 
 async def _compute_account_scope(user_id: str, role: str) -> str:
     """
-    "collaborator" iff the user owns ZERO listings AND holds ZERO org_admin
-    memberships AND isn't an admin. Drives the restricted nav + upgrade CTA.
-    Principals (anyone who owns at least one listing OR admins an org OR is
-    a platform admin) get "principal".
+    "collaborator" iff the user's ONLY relationship to the platform is being
+    a listing collaborator on at least one listing owned by someone else AND
+    they own zero listings, admin zero orgs, and aren't a platform admin.
+
+    Anyone admin-invited (agent/seller/buyer/admin), self-registered & admin-
+    approved, an org_admin, or a listing owner is a "principal" — they get
+    the full role-based nav (BUYER_NAV / SELLER_NAV / AGENT_NAV / ADMIN_NAV).
+
+    NB: the earlier heuristic ("owns 0 listings AND admins 0 orgs ⇒ collab")
+    incorrectly demoted freshly admin-invited agents and not-yet-listed
+    sellers to the stripped "My Collaborations" nav.
     """
     if role == "admin":
         return "principal"
-    owned = await db.listings.count_documents({"seller_id": user_id})
-    if owned > 0:
+    if await db.listings.count_documents({"seller_id": user_id}) > 0:
         return "principal"
-    org_admin = await db.org_memberships.count_documents(
+    if await db.org_memberships.count_documents(
         {"user_id": user_id, "role": "org_admin"}
-    )
-    if org_admin > 0:
+    ) > 0:
         return "principal"
-    return "collaborator"
+    # Only demote to "collaborator" if the user is actually listed as a
+    # collaborator on at least one listing. Pure-collab accounts come into
+    # being via /listing-invites/{token}/accept or the listing_invite_token
+    # fast path in /auth/register.
+    if await db.listings.count_documents({"collaborators.user_id": user_id}) > 0:
+        return "collaborator"
+    return "principal"
 
 
 async def serialize_user_with_scope(doc: dict) -> dict:
