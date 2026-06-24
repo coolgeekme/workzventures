@@ -4406,18 +4406,29 @@ async def push_inquiry_to_zoho(inquiry_id: str, user=Depends(get_current_user)):
 # wiped (Rule 3A: immediate purge).
 # -----------------------------------------------------------------------------
 COMPOSIO_FILE_SOURCES = {
-    "googledrive": {"label": "Google Drive", "app": "googledrive",  "list": "GOOGLEDRIVE_LIST_FILES",  "download": "GOOGLEDRIVE_DOWNLOAD_FILE"},
-    "onedrive":    {"label": "OneDrive",     "app": "one_drive",    "list": "ONE_DRIVE_LIST_FILES",    "download": "ONE_DRIVE_DOWNLOAD_FILE"},
-    "sharepoint":  {"label": "SharePoint",   "app": "share_point",  "list": "SHARE_POINT_LIST_FILES",  "download": "SHARE_POINT_DOWNLOAD_FILE"},
-    "dropbox":     {"label": "Dropbox",      "app": "dropbox",      "list": "DROPBOX_LIST_FILES",      "download": "DROPBOX_DOWNLOAD_FILE"},
-    "box":         {"label": "Box",          "app": "box",          "list": "BOX_LIST_ITEMS_IN_FOLDER", "download": "BOX_DOWNLOAD_FILE"},
+    "googledrive": {"label": "Google Drive", "app": "googledrive",  "list": "GOOGLEDRIVE_LIST_FILES",        "download": "GOOGLEDRIVE_DOWNLOAD_FILE"},
+    "onedrive":    {"label": "OneDrive",     "app": "one_drive",    "list": "ONE_DRIVE_ONEDRIVE_LIST_ITEMS", "download": "ONE_DRIVE_DOWNLOAD_FILE"},
+    "sharepoint":  {"label": "SharePoint",   "app": "share_point",  "list": None,                            "download": None},
+    "dropbox":     {"label": "Dropbox",      "app": "dropbox",      "list": "DROPBOX_LIST_FILES_IN_FOLDER",  "download": "DROPBOX_READ_FILE"},
+    "box":         {"label": "Box",          "app": "box",          "list": "BOX_LIST_ITEMS_IN_FOLDER",      "download": "BOX_DOWNLOAD_FILE"},
 }
 
 
 class ExternalSourceCreate(BaseModel):
     source_kind: Literal["googledrive", "onedrive", "sharepoint", "dropbox", "box"]
-    folder_id: Optional[str] = None
+    folder_id: Optional[str] = None  # legacy single-folder API
+    folder_ids: Optional[List[str]] = None  # NEW: multi-select folder picker
+    folder_labels: Optional[List[str]] = None  # parallel list of display names
+    include_subfolders: Optional[bool] = True
     label: Optional[str] = None
+
+
+class ExternalSourceFoldersUpdate(BaseModel):
+    """PATCH body for editing the folder selection on an already-connected
+    source (the "Edit folders" affordance on each source row)."""
+    folder_ids: List[str] = []
+    folder_labels: Optional[List[str]] = None
+    include_subfolders: Optional[bool] = True
 
 
 async def _composio_action_execute(action_slug: str, connected_account_id: str, input_params: dict | None = None, user_id: str | None = None) -> dict:
@@ -4586,6 +4597,192 @@ async def _composio_proxy_download(
     return fetched
 
 
+# Proxy bases per toolkit (where Composio's /proxy execute prepends to our
+# endpoint). MS Graph for OneDrive/SharePoint, Box API v2.0 for Box, etc.
+# Used only by `_composio_proxy_get_json` below.
+_PROXY_API_BASES = {
+    "googledrive": "googleapis.com/drive/v3",
+    "onedrive":    "graph.microsoft.com/v1.0",
+    "sharepoint":  "graph.microsoft.com/v1.0",
+    "box":         "api.box.com/2.0",
+    "dropbox":     "api.dropboxapi.com/2",
+}
+
+
+async def _composio_proxy_get_json(
+    source_kind: str, connected_account_id: str, endpoint: str,
+    query: list[tuple[str, str]] | None = None, user_id: str | None = None,
+) -> dict | None:
+    """Call a provider's native HTTP API via Composio's proxy execute and
+    return a parsed JSON dict. None on failure. Used by the folder picker
+    (`_browse_folder`) for OneDrive, where Composio's predefined LIST_ITEMS
+    tool can only list the drive root."""
+    if not COMPOSIO_API_KEY or not connected_account_id:
+        return None
+    parameters = [{"name": k, "value": v, "type": "query"} for k, v in (query or [])]
+    payload: dict = {
+        "endpoint": endpoint,
+        "method": "GET",
+        "connected_account_id": connected_account_id,
+        "parameters": parameters,
+    }
+    if user_id:
+        payload["user_id"] = user_id
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as c:
+            r = await c.post(
+                f"{COMPOSIO_BASE_URL}/api/v3.1/tools/execute/proxy",
+                headers={"x-api-key": COMPOSIO_API_KEY, "Content-Type": "application/json"},
+                json=payload,
+            )
+        if r.status_code >= 400:
+            logger.warning(f"proxy GET {source_kind}{endpoint} failed {r.status_code}: {r.text[:200]}")
+            return None
+        body = r.json()
+    except Exception as e:
+        logger.warning(f"proxy GET {source_kind}{endpoint} crashed: {e}")
+        return None
+    # Composio's proxy returns the upstream JSON under `data` (small payload).
+    # `binary_data` is only for large/binary downloads.
+    data = body.get("data")
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, str):
+        try:
+            import json as _j
+            return _j.loads(data)
+        except Exception:
+            return None
+    return None
+
+
+async def _browse_folder(src: dict, parent_id: str | None) -> dict:
+    """Return the immediate subfolders of `parent_id` inside `src`. Used by
+    the seller's folder-picker modal. Shape:
+        { folders: [{id, name}], parent_id, can_browse: bool, err: str|None }
+    `folders` is empty for SharePoint (no Composio file-list tool) — the
+    frontend renders a "paste folder ID manually" affordance in that case."""
+    kind = src["source_kind"]
+    conn_id = src.get("composio_connected_id")
+    entity = src.get("entity_id")
+    if not conn_id:
+        return {"folders": [], "parent_id": parent_id, "can_browse": False,
+                "err": "Connection not finished — complete OAuth first."}
+
+    if kind == "box":
+        fid = parent_id or "0"
+        try:
+            raw = await _composio_action_execute(
+                "BOX_LIST_ITEMS_IN_FOLDER", conn_id, {"folder_id": fid}, user_id=entity,
+            )
+        except HTTPException as e:
+            return {"folders": [], "parent_id": fid, "can_browse": True,
+                    "err": str(e.detail)[:200]}
+        resp = _normalise_composio_response(raw)
+        if not resp.get("successful"):
+            return {"folders": [], "parent_id": fid, "can_browse": True,
+                    "err": str(resp.get("error"))[:200]}
+        items = _extract_files_array(resp.get("data"))
+        folders = [
+            {"id": str(i["id"]), "name": i.get("name") or "(unnamed)"}
+            for i in items
+            if isinstance(i, dict) and (i.get("type") or "").lower() == "folder" and i.get("id")
+        ]
+        return {"folders": folders, "parent_id": fid, "can_browse": True, "err": None}
+
+    if kind == "googledrive":
+        fid = parent_id or "root"
+        q = (
+            f"'{fid}' in parents and "
+            "mimeType='application/vnd.google-apps.folder' and trashed=false"
+        )
+        try:
+            raw = await _composio_action_execute(
+                "GOOGLEDRIVE_LIST_FILES", conn_id,
+                {"q": q, "pageSize": 200,
+                 "fields": "files(id,name)",
+                 "supportsAllDrives": True, "includeItemsFromAllDrives": True},
+                user_id=entity,
+            )
+        except HTTPException as e:
+            return {"folders": [], "parent_id": fid, "can_browse": True,
+                    "err": str(e.detail)[:200]}
+        resp = _normalise_composio_response(raw)
+        if not resp.get("successful"):
+            return {"folders": [], "parent_id": fid, "can_browse": True,
+                    "err": str(resp.get("error"))[:200]}
+        items = _extract_files_array(resp.get("data"))
+        folders = [
+            {"id": f["id"], "name": f.get("name") or "(unnamed)"}
+            for f in items if isinstance(f, dict) and f.get("id")
+        ]
+        return {"folders": folders, "parent_id": fid, "can_browse": True, "err": None}
+
+    if kind == "dropbox":
+        # Empty string = root. Otherwise full path (e.g. "/Reports").
+        path = parent_id or ""
+        try:
+            raw = await _composio_action_execute(
+                "DROPBOX_LIST_FILES_IN_FOLDER", conn_id,
+                {"path": path, "limit": 500, "recursive": False},
+                user_id=entity,
+            )
+        except HTTPException as e:
+            return {"folders": [], "parent_id": path, "can_browse": True,
+                    "err": str(e.detail)[:200]}
+        resp = _normalise_composio_response(raw)
+        if not resp.get("successful"):
+            return {"folders": [], "parent_id": path, "can_browse": True,
+                    "err": str(resp.get("error"))[:200]}
+        items = _extract_files_array(resp.get("data"))
+        folders = []
+        for i in items:
+            if not isinstance(i, dict):
+                continue
+            tag = (i.get(".tag") or i.get("tag") or "").lower()
+            if tag != "folder":
+                continue
+            # Dropbox uses path_lower as its canonical folder identifier for
+            # subsequent list calls (Dropbox accepts either path OR "id:..."
+            # form; path is more human-readable in the picker).
+            fid = i.get("path_lower") or i.get("path_display") or i.get("id")
+            if fid is None:
+                continue
+            folders.append({"id": fid, "name": i.get("name") or "(unnamed)"})
+        return {"folders": folders, "parent_id": path, "can_browse": True, "err": None}
+
+    if kind == "onedrive":
+        if not parent_id or parent_id == "root":
+            endpoint = "/me/drive/root/children"
+        else:
+            endpoint = f"/me/drive/items/{parent_id}/children"
+        body = await _composio_proxy_get_json(
+            "onedrive", conn_id, endpoint,
+            query=[("$select", "id,name,folder,file"), ("$top", "200")],
+            user_id=entity,
+        )
+        if not isinstance(body, dict):
+            return {"folders": [], "parent_id": parent_id or "root",
+                    "can_browse": True,
+                    "err": "Microsoft Graph returned no body. Reconnect OneDrive and try again."}
+        items = body.get("value") or []
+        folders = [
+            {"id": i["id"], "name": i.get("name") or "(unnamed)"}
+            for i in items
+            if isinstance(i, dict) and i.get("folder") and i.get("id")
+        ]
+        return {"folders": folders, "parent_id": parent_id or "root",
+                "can_browse": True, "err": None}
+
+    # SharePoint and any future provider without browse support degrade
+    # gracefully — the picker UI shows a "paste folder ID" fallback.
+    return {"folders": [], "parent_id": parent_id, "can_browse": False,
+            "err": "Folder browsing isn't available for this provider yet. "
+                   "Paste the folder ID manually instead."}
+
+
+
+
 @api_router.post("/listings/{lid}/external-sources")
 async def create_external_source(
     lid: str, body: ExternalSourceCreate, user=Depends(get_current_user)
@@ -4708,6 +4905,9 @@ async def create_external_source(
         "source_kind": body.source_kind,
         "label": body.label or cfg["label"],
         "folder_id": body.folder_id,
+        "folder_ids": body.folder_ids or ([body.folder_id] if body.folder_id else []),
+        "folder_labels": body.folder_labels or [],
+        "include_subfolders": body.include_subfolders if body.include_subfolders is not None else True,
         "entity_id": entity_id,
         "composio_connected_id": composio_connected_id,
         "redirect_url": redirect_url,
@@ -4737,6 +4937,74 @@ async def create_external_source(
     doc.pop("_id", None)
     doc["oauth_not_configured"] = oauth_not_configured
     return doc
+
+
+@api_router.get("/listings/{lid}/external-sources/{sid}/browse")
+async def browse_external_source_folders(
+    lid: str, sid: str,
+    parent_id: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    """Folder picker backend. Returns the immediate subfolders of `parent_id`
+    inside the connected source. `parent_id` omitted → provider root.
+
+    Used by the multi-select folder picker modal in the seller UI. The
+    picker doesn't list files — only folders — so the seller can navigate
+    deeply without scrolling past thousands of file rows."""
+    await _listing_for_edit_or_404(lid, user)
+    src = await db.listing_external_sources.find_one(
+        {"id": sid, "listing_id": lid, "deleted_at": {"$exists": False}}, {"_id": 0},
+    )
+    if not src:
+        raise HTTPException(status_code=404, detail="Source not found")
+    if src.get("status") != "active":
+        raise HTTPException(status_code=400, detail="Connection isn't active yet. Finish the OAuth handshake and try again.")
+    result = await _browse_folder(src, parent_id)
+    result["source_kind"] = src["source_kind"]
+    return result
+
+
+@api_router.patch("/listings/{lid}/external-sources/{sid}/folders")
+async def update_external_source_folders(
+    lid: str, sid: str, body: ExternalSourceFoldersUpdate,
+    user=Depends(get_current_user),
+):
+    """Persist the seller's folder selection after they confirm the picker.
+    `folder_ids` is the canonical list (multi-select); `folder_labels` is a
+    parallel array of display names so the UI can show 'Marketing /
+    Financials' without re-resolving each ID against the provider.
+
+    Saves and triggers an immediate sync so the seller sees mirrored files
+    show up without an extra click."""
+    await _listing_for_edit_or_404(lid, user)
+    src = await db.listing_external_sources.find_one(
+        {"id": sid, "listing_id": lid, "deleted_at": {"$exists": False}}, {"_id": 0},
+    )
+    if not src:
+        raise HTTPException(status_code=404, detail="Source not found")
+    # Sanity: prevent unbounded selections.
+    if len(body.folder_ids) > 20:
+        raise HTTPException(status_code=400, detail="Pick at most 20 folders per source.")
+    if body.folder_labels is not None and len(body.folder_labels) != len(body.folder_ids):
+        raise HTTPException(status_code=400, detail="folder_labels length must match folder_ids length")
+    update = {
+        "folder_ids": list(body.folder_ids),
+        "folder_labels": list(body.folder_labels or []),
+        "include_subfolders": bool(body.include_subfolders if body.include_subfolders is not None else True),
+        # Keep legacy single field in sync so older code paths still work.
+        "folder_id": body.folder_ids[0] if body.folder_ids else None,
+    }
+    await db.listing_external_sources.update_one({"id": sid}, {"$set": update})
+    await log_audit(user["id"], "listing.source.folders.updated", lid, {
+        "sid": sid, "folder_count": len(body.folder_ids),
+        "include_subfolders": update["include_subfolders"],
+    })
+    # Trigger a fresh sync immediately so the seller sees results.
+    await db.listing_external_sources.update_one(
+        {"id": sid}, {"$set": {"syncing": True, "last_error": None}},
+    )
+    asyncio.create_task(_run_external_source_sync(lid, sid, user["id"]))
+    return {"ok": True, **update}
 
 
 @api_router.get("/listings/{lid}/external-sources")
@@ -4877,11 +5145,18 @@ async def _mirror_one_file(lid: str, sid: str, src_kind: str, raw_name: str,
 # ignored and the action lists from the drive's root.
 FOLDER_PARAM_KEY = {
     "googledrive": "folderId",
-    "one_drive":   "folder_id",
-    "share_point": "folder_id",
+    "onedrive":    None,            # Composio's ONE_DRIVE_ONEDRIVE_LIST_ITEMS only lists root.
+                                    # Folder browsing is done via the proxy → MS Graph path.
+    "sharepoint":  None,            # No Composio list tool exposed for SharePoint.
     "dropbox":     "path",
     "box":         "folder_id",
 }
+
+# Providers that natively support listing arbitrary subfolders via a Composio
+# action (i.e. you can pass folder_id/path and get its direct children).
+# OneDrive is browsed via the proxy → Graph path (see _browse_folder), and
+# SharePoint has no Composio file-list tool — picker degrades to manual-id.
+_FOLDER_BROWSE_NATIVE = {"box", "googledrive", "dropbox"}
 
 
 def _normalise_composio_response(resp: dict) -> dict:
@@ -4914,48 +5189,242 @@ def _extract_files_array(data_obj) -> list:
     return []
 
 
+async def _collect_files_under_folder(
+    src: dict, root_id: str | None, include_subfolders: bool,
+    max_files: int, errors: list[str],
+) -> tuple[list[dict], int, int]:
+    """BFS-collect file entries under `root_id` for the given source.
+    Returns (files_meta, explored_folders, skipped_non_file_entries).
+
+    - include_subfolders=False: only the immediate file children of root_id.
+    - include_subfolders=True : recurse depth-first up to MAX_DEPTH=4 or
+      until we hit `max_files` total file entries. Same bounds for every
+      provider so the picker behaves predictably.
+
+    For Dropbox we let the toolkit handle recursion via its built-in
+    `recursive` flag (no need to BFS at the app layer). For OneDrive we use
+    the Composio proxy because the predefined LIST_ITEMS tool only sees
+    drive root.
+    """
+    kind = src["source_kind"]
+    conn_id = src["composio_connected_id"]
+    entity = src.get("entity_id")
+    MAX_DEPTH = 4
+    files: list[dict] = []
+    explored = 0
+    skipped = 0
+
+    # ── Dropbox: native recursion. One call, no BFS needed. ──────────────
+    if kind == "dropbox":
+        path = root_id if root_id is not None else ""
+        try:
+            raw = await _composio_action_execute(
+                "DROPBOX_LIST_FILES_IN_FOLDER", conn_id,
+                {"path": path, "limit": min(max_files, 500),
+                 "recursive": bool(include_subfolders)},
+                user_id=entity,
+            )
+        except HTTPException as e:
+            errors.append(f"dropbox {path!r}: {str(e.detail)[:140]}")
+            return files, explored, skipped
+        resp = _normalise_composio_response(raw)
+        if not resp.get("successful"):
+            errors.append(f"dropbox {path!r}: list failed ({str(resp.get('error'))[:140]})")
+            return files, explored, skipped
+        for i in _extract_files_array(resp.get("data")):
+            if not isinstance(i, dict):
+                continue
+            tag = (i.get(".tag") or i.get("tag") or "").lower()
+            if tag == "file":
+                # Normalize to our common schema (id + name + mime_type).
+                files.append({
+                    "id": i.get("id") or i.get("path_lower") or i.get("path_display"),
+                    "name": i.get("name"),
+                    "_path": i.get("path_display") or i.get("path_lower"),
+                    "size": i.get("size"),
+                })
+            elif tag == "folder":
+                # We don't count Dropbox subfolders in `explored` since
+                # the tool flattened them for us.
+                pass
+            else:
+                skipped += 1
+        return files[:max_files], explored, skipped
+
+    # ── OneDrive: always via proxy → Graph (predefined tool only sees root) ─
+    if kind == "onedrive":
+        queue: list[tuple[str, int]] = [(root_id or "root", 0)]
+        while queue and len(files) < max_files:
+            fid, depth = queue.pop(0)
+            endpoint = "/me/drive/root/children" if fid in (None, "", "root") \
+                else f"/me/drive/items/{fid}/children"
+            body = await _composio_proxy_get_json(
+                "onedrive", conn_id, endpoint,
+                query=[("$select", "id,name,folder,file,size"), ("$top", "200")],
+                user_id=entity,
+            )
+            if not isinstance(body, dict):
+                errors.append(f"onedrive folder {fid}: proxy returned nothing")
+                continue
+            explored += 1
+            for i in body.get("value") or []:
+                if not isinstance(i, dict):
+                    continue
+                if i.get("folder"):
+                    if include_subfolders and depth + 1 <= MAX_DEPTH and i.get("id"):
+                        queue.append((i["id"], depth + 1))
+                elif i.get("file"):
+                    file_meta = i.get("file") or {}
+                    files.append({
+                        "id": i["id"],
+                        "name": i.get("name"),
+                        "mime_type": file_meta.get("mimeType") or "application/octet-stream",
+                        "size": i.get("size"),
+                    })
+                else:
+                    skipped += 1
+        return files[:max_files], explored, skipped
+
+    # ── Native list providers (Box / Google Drive): BFS via Composio tool ─
+    cfg = COMPOSIO_FILE_SOURCES[kind]
+
+    def _build_list_input(folder_id: str | None) -> dict:
+        inp: dict = {}
+        if kind == "box":
+            inp["folder_id"] = folder_id or "0"
+        elif kind == "googledrive":
+            inp["pageSize"] = 200
+            inp["supportsAllDrives"] = True
+            inp["includeItemsFromAllDrives"] = True
+            inp["fields"] = "files(id,name,mimeType,size)"
+            if folder_id:
+                inp["folderId"] = folder_id
+        return inp
+
+    def _classify(entry: dict) -> str:
+        """Return 'file' | 'folder' | 'skip' for a single list entry."""
+        if not isinstance(entry, dict):
+            return "skip"
+        if kind == "box":
+            t = (entry.get("type") or "").lower()
+            if t == "file":   return "file"
+            if t == "folder": return "folder"
+            if t == "":       return "file"  # default-keep unknown
+            return "skip"
+        if kind == "googledrive":
+            if entry.get("mimeType") == "application/vnd.google-apps.folder":
+                return "folder"
+            return "file"
+        return "file"
+
+    queue: list[tuple[str | None, int]] = [(root_id, 0)]
+    seen_roots: set[str] = set()
+
+    while queue and len(files) < max_files:
+        fid, depth = queue.pop(0)
+        if fid in seen_roots:
+            continue
+        seen_roots.add(fid or "")
+        try:
+            raw = await _composio_action_execute(
+                cfg["list"], conn_id, _build_list_input(fid),
+                user_id=entity,
+            )
+        except HTTPException as e:
+            errors.append(f"{kind} folder {fid}: {str(e.detail)[:140]}")
+            continue
+        resp = _normalise_composio_response(raw)
+        if not resp.get("successful"):
+            errors.append(f"{kind} folder {fid}: list failed ({str(resp.get('error'))[:140]})")
+            continue
+        explored += 1
+        for entry in _extract_files_array(resp.get("data")):
+            klass = _classify(entry)
+            if klass == "skip":
+                skipped += 1
+                continue
+            if klass == "folder":
+                if include_subfolders and depth + 1 <= MAX_DEPTH and entry.get("id"):
+                    queue.append((str(entry["id"]), depth + 1))
+                continue
+            files.append({
+                "id": entry.get("id") or entry.get("file_id") or entry.get("ID"),
+                "name": entry.get("name") or entry.get("filename") or entry.get("title"),
+                "mime_type": entry.get("mime_type") or entry.get("mimeType")
+                             or entry.get("content_type") or "application/octet-stream",
+                "size": entry.get("size"),
+            })
+            if len(files) >= max_files:
+                break
+
+    return files[:max_files], explored, skipped
+
+
 async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
     """The actual sync work — runs in a background task so the HTTP request
     returns immediately and Cloudflare's 100s gateway timeout never fires.
     Progress is observable via the `syncing` flag + `last_sync_at` on the
-    source doc; the frontend polls /external-sources to follow along."""
+    source doc; the frontend polls /external-sources to follow along.
+
+    Multi-folder model: iterate every entry in `src.folder_ids` (or fall
+    back to legacy `src.folder_id`, or each provider's root). For each
+    selected folder we recurse if `src.include_subfolders` is True
+    (default). Total file cap = 200 across all selected folders combined.
+    """
     src = await db.listing_external_sources.find_one(
         {"id": sid, "listing_id": lid, "deleted_at": {"$exists": False}}, {"_id": 0}
     )
     if not src or src["status"] != "active":
         return
-    cfg = COMPOSIO_FILE_SOURCES[src["source_kind"]]
-    folder_key = FOLDER_PARAM_KEY.get(src["source_kind"], "folder_id")
-    list_input: dict = {}
-    if src.get("folder_id"):
-        # Use the per-toolkit canonical key (e.g. `folderId` for Drive).
-        list_input[folder_key] = src["folder_id"]
-    # Box requires `folder_id` even at the root. Default to "0" (Box's
-    # canonical root folder ID) when the seller didn't pick a folder.
-    if src["source_kind"] == "box" and not list_input.get(folder_key):
-        list_input[folder_key] = "0"
-    # Google Drive's LIST_FILES caps default pageSize at 100 and includes a
-    # `q` filter; passing pageSize ensures we ask for the full first batch.
-    if src["source_kind"] == "googledrive":
-        list_input["pageSize"] = 100
-        # If user gave us a folder ID, also build the standard query to
-        # filter children of that folder. Drive accepts EITHER folderId OR a
-        # `q` parameter — folderId is the convenience shortcut. Without
-        # either, Drive returns ALL files in the user's drive (root + nested).
+    kind = src["source_kind"]
+    cfg = COMPOSIO_FILE_SOURCES.get(kind) or {}
+    if not cfg.get("list") or not cfg.get("download"):
+        await db.listing_external_sources.update_one(
+            {"id": sid},
+            {"$set": {"syncing": False, "last_sync_at": now_utc().isoformat(),
+                      "last_error": f"{cfg.get('label', kind)} sync isn't available — Composio "
+                                    "doesn't yet expose list/download tools for this provider."}},
+        )
+        return
+
+    # Resolve folder selection: prefer the new multi-folder list, fall back
+    # to the legacy single folder_id, fall back to provider root.
+    selected: list[str | None] = []
+    if isinstance(src.get("folder_ids"), list) and src["folder_ids"]:
+        selected = list(src["folder_ids"])
+    elif src.get("folder_id"):
+        selected = [src["folder_id"]]
+    else:
+        # None means "use provider default root" inside `_collect_files_under_folder`.
+        selected = [None]
+    include_subfolders = bool(src.get("include_subfolders", True))
+    MAX_TOTAL = 200
 
     pulled = 0
     errors: list[str] = []
-    sample_response: str | None = None  # for debugging — captured below
+    sample_response: str | None = None
+    explored_folders_total = 0
+    skipped_non_file_total = 0
+    files_meta: list[dict] = []
     try:
-        raw_resp = await _composio_action_execute(
-            cfg["list"], src["composio_connected_id"], list_input,
-            user_id=src.get("entity_id"),
-        )
-        # Stash a truncated sample so the seller can paste it back to us when
-        # debugging "0 files pulled" — without this we'd have no visibility
-        # into what each toolkit actually returns.
-        sample_response = json.dumps(raw_resp, default=str)[:1200]
-        list_resp = _normalise_composio_response(raw_resp)
+        for folder_id in selected:
+            remaining = MAX_TOTAL - len(files_meta)
+            if remaining <= 0:
+                break
+            batch, explored, skipped = await _collect_files_under_folder(
+                src, folder_id, include_subfolders, remaining, errors,
+            )
+            files_meta.extend(batch)
+            explored_folders_total += explored
+            skipped_non_file_total += skipped
+        sample_response = json.dumps(
+            {"folders_scanned": len(selected),
+             "include_subfolders": include_subfolders,
+             "explored": explored_folders_total,
+             "skipped": skipped_non_file_total,
+             "file_count_in_sample": len(files_meta)},
+            default=str,
+        )[:1200]
     except HTTPException as e:
         await db.listing_external_sources.update_one(
             {"id": sid},
@@ -4971,75 +5440,11 @@ async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
         )
         return
 
-    if not list_resp.get("successful"):
-        await db.listing_external_sources.update_one(
-            {"id": sid},
-            {"$set": {"syncing": False, "last_sync_at": now_utc().isoformat(),
-                      "last_error": f"list returned successful=false: {str(list_resp.get('error'))[:280]}",
-                      "last_response_sample": sample_response}},
-        )
-        return
+    explored_folders = explored_folders_total
+    skipped_non_file = skipped_non_file_total
 
-    files_meta = _extract_files_array(list_resp.get("data"))
-
-    # Box (and the few other providers that return a `type` discriminator on
-    # each entry) list folders + web_links alongside files. We expand those
-    # by recursing into subfolders so a seller can point at the root and
-    # still pick up files that live in `My Box / Documents / *`. Depth and
-    # total-file caps keep us bounded if a Box account has thousands of
-    # nested folders.
-    skipped_non_file = 0
-    explored_folders = 0
-    if src["source_kind"] == "box":
-        MAX_DEPTH = 4
-        MAX_TOTAL = 100
-        # Seed queue with subfolders discovered in the root response.
-        subfolders: list[tuple[str, int]] = []  # (folder_id, depth)
-        kept_files: list[dict] = []
-        for f in files_meta:
-            ft = (f.get("type") or "").lower()
-            if ft == "folder":
-                if f.get("id"):
-                    subfolders.append((str(f["id"]), 1))
-            elif ft == "file":
-                kept_files.append(f)
-            elif ft == "" or ft is None:
-                # Some Composio responses omit `type` — keep them and let the
-                # download attempt sort it out.
-                kept_files.append(f)
-            else:
-                skipped_non_file += 1
-        while subfolders and len(kept_files) < MAX_TOTAL:
-            fid, depth = subfolders.pop(0)
-            if depth > MAX_DEPTH:
-                continue
-            try:
-                sub_raw = await _composio_action_execute(
-                    cfg["list"], src["composio_connected_id"],
-                    {"folder_id": fid},
-                    user_id=src.get("entity_id"),
-                )
-                sub_resp = _normalise_composio_response(sub_raw)
-                if not sub_resp.get("successful"):
-                    errors.append(f"folder {fid}: list failed ({str(sub_resp.get('error'))[:120]})")
-                    continue
-                explored_folders += 1
-                sub_meta = _extract_files_array(sub_resp.get("data"))
-                for f in sub_meta:
-                    ft = (f.get("type") or "").lower()
-                    if ft == "folder" and f.get("id"):
-                        subfolders.append((str(f["id"]), depth + 1))
-                    elif ft in ("", "file", None):
-                        kept_files.append(f)
-                    else:
-                        skipped_non_file += 1
-            except Exception as e:
-                errors.append(f"folder {fid}: {str(e)[:120]}")
-        files_meta = kept_files
-
-    for f in files_meta[:100]:
-        # Defensive: still skip any non-file remnant (non-Box providers may
-        # also return mixed entries on some toolkits).
+    for f in files_meta[:MAX_TOTAL]:
+        # Defensive: still skip any non-file remnant.
         ftype = (f.get("type") or "").lower()
         if ftype and ftype != "file":
             skipped_non_file += 1
@@ -5056,8 +5461,14 @@ async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
         if existing:
             continue
         try:
+            # Provider-specific download arg name. Dropbox uses `path`,
+            # everyone else uses `file_id`.
+            if kind == "dropbox":
+                dl_args = {"path": f.get("_path") or external_id}
+            else:
+                dl_args = {"file_id": external_id}
             raw_dl = await _composio_action_execute(
-                cfg["download"], src["composio_connected_id"], {"file_id": external_id},
+                cfg["download"], src["composio_connected_id"], dl_args,
                 user_id=src.get("entity_id"),
             )
             dl_resp = _normalise_composio_response(raw_dl)

@@ -1,0 +1,316 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="12" skipped="0" tests="24" time="7.880" timestamp="2026-06-24T22:31:00.853299+00:00" hostname="agent-env-1fdf2cf8-71c9-4f85-a9a9-e7ef1a8bb889"><testcase classname="tests.test_admin_invite_role_scope.TestAdminInviteScope" name="test_invited_agent_lands_as_principal" time="1.037" /><testcase classname="tests.test_admin_invite_role_scope.TestAdminInviteScope" name="test_invited_seller_lands_as_principal" time="0.508" /><testcase classname="tests.test_admin_invite_role_scope.TestAdminInviteScope" name="test_invited_buyer_lands_as_principal" time="0.458" /><testcase classname="tests.test_admin_invite_role_scope.TestAdminInviteScope" name="test_invited_agent_persists_principal_across_login" time="0.966" /><testcase classname="tests.test_admin_invite_role_scope.TestListingCollabUnchanged" name="test_listing_collab_remains_collaborator" time="1.921" /><testcase classname="tests.test_preview_images.TestPptxImageRendering" name="test_pptx_with_image_produces_pdf" time="2.460" /><testcase classname="tests.test_preview_images.TestPptxImageRendering" name="test_pptx_pdf_carries_embedded_image" time="0.015" /><testcase classname="tests.test_preview_images.TestPptxImageRendering" name="test_pptx_without_image_still_renders" time="0.011" /><testcase classname="tests.test_preview_images.TestDocxImageRendering" name="test_docx_with_image_produces_pdf" time="0.028" /><testcase classname="tests.test_preview_images.TestDocxImageRendering" name="test_docx_pdf_carries_embedded_image" time="0.027" /><testcase classname="tests.test_preview_images.TestDocxImageRendering" name="test_docx_without_image_still_renders" time="0.020" /><testcase classname="tests.test_preview_images.TestCorruptImageResilience" name="test_pptx_with_text_around_corrupt_image_falls_through" time="0.070" /><testcase classname="tests.test_box_recursive_sync.TestBoxFolderRecursion" name="test_nested_files_get_pulled" time="0.002"><failure message="RuntimeError: Task &lt;Task pending name='Task-1' coro=&lt;TestBoxFolderRecursion.test_nested_files_get_pulled() running at /app/backend/tests/test_box_recursive_sync.py:79&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop">self = &lt;test_box_recursive_sync.TestBoxFolderRecursion object at 0xf937104673d0&gt;
+
+    @pytest.mark.asyncio
+    async def test_nested_files_get_pulled(self):
+        """Root has 2 folders; folder A has 1 file at depth 1; folder B has
+        a subfolder containing 1 file at depth 2. Both files should mirror."""
+        import server
+&gt;       fixture = await _seed_box_source(server.db)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_box_recursive_sync.py:79: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = AsyncIOMotorDatabase(Database(MongoClient(host=['localhost:27017'], document_class=dict, tz_aware=False, connect=False, driver=DriverInfo(name='Motor', version='3.3.1', platform='asyncio')), 'test_database'))
+
+    async def _seed_box_source(db):
+        lid = f"test-listing-{secrets.token_hex(4)}"
+        sid = f"test-src-{secrets.token_hex(4)}"
+        uid = f"test-user-{secrets.token_hex(4)}"
+        now = datetime.now(timezone.utc).isoformat()
+&gt;       await db.listings.insert_one({
+            "id": lid, "company_name": "TestCo (box recursion)",
+            "seller_id": uid, "status": "draft", "created_at": now,
+        })
+E       RuntimeError: Task &lt;Task pending name='Task-1' coro=&lt;TestBoxFolderRecursion.test_nested_files_get_pulled() running at /app/backend/tests/test_box_recursive_sync.py:79&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop
+
+tests/test_box_recursive_sync.py:51: RuntimeError</failure></testcase><testcase classname="tests.test_box_recursive_sync.TestBoxFolderRecursion" name="test_empty_root_with_only_folders_surfaces_actionable_error" time="0.001"><failure message="RuntimeError: Task &lt;Task pending name='Task-2' coro=&lt;TestBoxFolderRecursion.test_empty_root_with_only_folders_surfaces_actionable_error() running at /app/backend/tests/test_box_recursive_sync.py:143&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop">self = &lt;test_box_recursive_sync.TestBoxFolderRecursion object at 0xf93710467a50&gt;
+
+    @pytest.mark.asyncio
+    async def test_empty_root_with_only_folders_surfaces_actionable_error(self):
+        """User connected Box root that has subfolders only and they are
+        themselves empty. The sync should set last_error to a clear,
+        seller-actionable string — NOT silently report success with 0 files."""
+        import server
+&gt;       fixture = await _seed_box_source(server.db)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_box_recursive_sync.py:143: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = AsyncIOMotorDatabase(Database(MongoClient(host=['localhost:27017'], document_class=dict, tz_aware=False, connect=False, driver=DriverInfo(name='Motor', version='3.3.1', platform='asyncio')), 'test_database'))
+
+    async def _seed_box_source(db):
+        lid = f"test-listing-{secrets.token_hex(4)}"
+        sid = f"test-src-{secrets.token_hex(4)}"
+        uid = f"test-user-{secrets.token_hex(4)}"
+        now = datetime.now(timezone.utc).isoformat()
+&gt;       await db.listings.insert_one({
+            "id": lid, "company_name": "TestCo (box recursion)",
+            "seller_id": uid, "status": "draft", "created_at": now,
+        })
+E       RuntimeError: Task &lt;Task pending name='Task-2' coro=&lt;TestBoxFolderRecursion.test_empty_root_with_only_folders_surfaces_actionable_error() running at /app/backend/tests/test_box_recursive_sync.py:143&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop
+
+tests/test_box_recursive_sync.py:51: RuntimeError</failure></testcase><testcase classname="tests.test_box_recursive_sync.TestBoxFolderRecursion" name="test_default_root_folder_id_is_zero" time="0.001"><failure message="RuntimeError: Task &lt;Task pending name='Task-3' coro=&lt;TestBoxFolderRecursion.test_default_root_folder_id_is_zero() running at /app/backend/tests/test_box_recursive_sync.py:178&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop">self = &lt;test_box_recursive_sync.TestBoxFolderRecursion object at 0xf93710478290&gt;
+
+    @pytest.mark.asyncio
+    async def test_default_root_folder_id_is_zero(self):
+        """A Box source created without a folder_id must send folder_id='0'
+        (Box's root) when calling LIST_ITEMS_IN_FOLDER — regression for the
+        previous 'folder_id required' Composio 400."""
+        import server
+&gt;       fixture = await _seed_box_source(server.db)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_box_recursive_sync.py:178: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = AsyncIOMotorDatabase(Database(MongoClient(host=['localhost:27017'], document_class=dict, tz_aware=False, connect=False, driver=DriverInfo(name='Motor', version='3.3.1', platform='asyncio')), 'test_database'))
+
+    async def _seed_box_source(db):
+        lid = f"test-listing-{secrets.token_hex(4)}"
+        sid = f"test-src-{secrets.token_hex(4)}"
+        uid = f"test-user-{secrets.token_hex(4)}"
+        now = datetime.now(timezone.utc).isoformat()
+&gt;       await db.listings.insert_one({
+            "id": lid, "company_name": "TestCo (box recursion)",
+            "seller_id": uid, "status": "draft", "created_at": now,
+        })
+E       RuntimeError: Task &lt;Task pending name='Task-3' coro=&lt;TestBoxFolderRecursion.test_default_root_folder_id_is_zero() running at /app/backend/tests/test_box_recursive_sync.py:178&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop
+
+tests/test_box_recursive_sync.py:51: RuntimeError</failure></testcase><testcase classname="tests.test_box_recursive_sync.TestBoxFolderRecursion" name="test_recursion_respects_total_cap" time="0.001"><failure message="RuntimeError: Task &lt;Task pending name='Task-4' coro=&lt;TestBoxFolderRecursion.test_recursion_respects_total_cap() running at /app/backend/tests/test_box_recursive_sync.py:204&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop">self = &lt;test_box_recursive_sync.TestBoxFolderRecursion object at 0xf93710478ad0&gt;
+
+    @pytest.mark.asyncio
+    async def test_recursion_respects_total_cap(self):
+        """If the user's Box has more than 100 files across nested folders,
+        we stop at the cap rather than spinning indefinitely."""
+        import server
+&gt;       fixture = await _seed_box_source(server.db)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_box_recursive_sync.py:204: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = AsyncIOMotorDatabase(Database(MongoClient(host=['localhost:27017'], document_class=dict, tz_aware=False, connect=False, driver=DriverInfo(name='Motor', version='3.3.1', platform='asyncio')), 'test_database'))
+
+    async def _seed_box_source(db):
+        lid = f"test-listing-{secrets.token_hex(4)}"
+        sid = f"test-src-{secrets.token_hex(4)}"
+        uid = f"test-user-{secrets.token_hex(4)}"
+        now = datetime.now(timezone.utc).isoformat()
+&gt;       await db.listings.insert_one({
+            "id": lid, "company_name": "TestCo (box recursion)",
+            "seller_id": uid, "status": "draft", "created_at": now,
+        })
+E       RuntimeError: Task &lt;Task pending name='Task-4' coro=&lt;TestBoxFolderRecursion.test_recursion_respects_total_cap() running at /app/backend/tests/test_box_recursive_sync.py:204&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop
+
+tests/test_box_recursive_sync.py:51: RuntimeError</failure></testcase><testcase classname="tests.test_folder_picker.TestBrowseFolderHelper" name="test_box_browse_returns_only_folders" time="0.001"><failure message="RuntimeError: Task &lt;Task pending name='Task-5' coro=&lt;TestBrowseFolderHelper.test_box_browse_returns_only_folders() running at /app/backend/tests/test_folder_picker.py:69&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop">self = &lt;test_folder_picker.TestBrowseFolderHelper object at 0xf9371047bf50&gt;
+
+    @pytest.mark.asyncio
+    async def test_box_browse_returns_only_folders(self):
+        """Box `BOX_LIST_ITEMS_IN_FOLDER` returns folders + files + web_links;
+        browse should expose only the folders."""
+        import server
+&gt;       fixture = await _seed_source(server.db, "box")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_folder_picker.py:69: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = AsyncIOMotorDatabase(Database(MongoClient(host=['localhost:27017'], document_class=dict, tz_aware=False, connect=False, driver=DriverInfo(name='Motor', version='3.3.1', platform='asyncio')), 'test_database'))
+kind = 'box', folder_ids = None, include_subfolders = True
+
+    async def _seed_source(db, kind, folder_ids=None, include_subfolders=True):
+        lid = f"test-listing-{secrets.token_hex(4)}"
+        sid = f"test-src-{secrets.token_hex(4)}"
+        uid = f"test-user-{secrets.token_hex(4)}"
+        now = datetime.now(timezone.utc).isoformat()
+&gt;       await db.listings.insert_one({
+            "id": lid, "company_name": f"TestCo ({kind} picker)",
+            "seller_id": uid, "status": "draft", "created_at": now,
+        })
+E       RuntimeError: Task &lt;Task pending name='Task-5' coro=&lt;TestBrowseFolderHelper.test_box_browse_returns_only_folders() running at /app/backend/tests/test_folder_picker.py:69&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop
+
+tests/test_folder_picker.py:39: RuntimeError</failure></testcase><testcase classname="tests.test_folder_picker.TestBrowseFolderHelper" name="test_drive_browse_uses_folder_query" time="0.001"><failure message="RuntimeError: Task &lt;Task pending name='Task-6' coro=&lt;TestBrowseFolderHelper.test_drive_browse_uses_folder_query() running at /app/backend/tests/test_folder_picker.py:101&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop">self = &lt;test_folder_picker.TestBrowseFolderHelper object at 0xf93710484590&gt;
+
+    @pytest.mark.asyncio
+    async def test_drive_browse_uses_folder_query(self):
+        """Drive's `q` must filter by mimeType=folder under the parent."""
+        import server
+&gt;       fixture = await _seed_source(server.db, "googledrive")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_folder_picker.py:101: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = AsyncIOMotorDatabase(Database(MongoClient(host=['localhost:27017'], document_class=dict, tz_aware=False, connect=False, driver=DriverInfo(name='Motor', version='3.3.1', platform='asyncio')), 'test_database'))
+kind = 'googledrive', folder_ids = None, include_subfolders = True
+
+    async def _seed_source(db, kind, folder_ids=None, include_subfolders=True):
+        lid = f"test-listing-{secrets.token_hex(4)}"
+        sid = f"test-src-{secrets.token_hex(4)}"
+        uid = f"test-user-{secrets.token_hex(4)}"
+        now = datetime.now(timezone.utc).isoformat()
+&gt;       await db.listings.insert_one({
+            "id": lid, "company_name": f"TestCo ({kind} picker)",
+            "seller_id": uid, "status": "draft", "created_at": now,
+        })
+E       RuntimeError: Task &lt;Task pending name='Task-6' coro=&lt;TestBrowseFolderHelper.test_drive_browse_uses_folder_query() running at /app/backend/tests/test_folder_picker.py:101&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop
+
+tests/test_folder_picker.py:39: RuntimeError</failure></testcase><testcase classname="tests.test_folder_picker.TestBrowseFolderHelper" name="test_dropbox_browse_filters_by_tag_folder" time="0.001"><failure message="RuntimeError: Task &lt;Task pending name='Task-7' coro=&lt;TestBrowseFolderHelper.test_dropbox_browse_filters_by_tag_folder() running at /app/backend/tests/test_folder_picker.py:128&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop">self = &lt;test_folder_picker.TestBrowseFolderHelper object at 0xf93710484d90&gt;
+
+    @pytest.mark.asyncio
+    async def test_dropbox_browse_filters_by_tag_folder(self):
+        import server
+&gt;       fixture = await _seed_source(server.db, "dropbox")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_folder_picker.py:128: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = AsyncIOMotorDatabase(Database(MongoClient(host=['localhost:27017'], document_class=dict, tz_aware=False, connect=False, driver=DriverInfo(name='Motor', version='3.3.1', platform='asyncio')), 'test_database'))
+kind = 'dropbox', folder_ids = None, include_subfolders = True
+
+    async def _seed_source(db, kind, folder_ids=None, include_subfolders=True):
+        lid = f"test-listing-{secrets.token_hex(4)}"
+        sid = f"test-src-{secrets.token_hex(4)}"
+        uid = f"test-user-{secrets.token_hex(4)}"
+        now = datetime.now(timezone.utc).isoformat()
+&gt;       await db.listings.insert_one({
+            "id": lid, "company_name": f"TestCo ({kind} picker)",
+            "seller_id": uid, "status": "draft", "created_at": now,
+        })
+E       RuntimeError: Task &lt;Task pending name='Task-7' coro=&lt;TestBrowseFolderHelper.test_dropbox_browse_filters_by_tag_folder() running at /app/backend/tests/test_folder_picker.py:128&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop
+
+tests/test_folder_picker.py:39: RuntimeError</failure></testcase><testcase classname="tests.test_folder_picker.TestBrowseFolderHelper" name="test_onedrive_browse_uses_graph_proxy" time="0.001"><failure message="RuntimeError: Task &lt;Task pending name='Task-8' coro=&lt;TestBrowseFolderHelper.test_onedrive_browse_uses_graph_proxy() running at /app/backend/tests/test_folder_picker.py:154&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop">self = &lt;test_folder_picker.TestBrowseFolderHelper object at 0xf937104855d0&gt;
+
+    @pytest.mark.asyncio
+    async def test_onedrive_browse_uses_graph_proxy(self):
+        import server
+&gt;       fixture = await _seed_source(server.db, "onedrive")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_folder_picker.py:154: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = AsyncIOMotorDatabase(Database(MongoClient(host=['localhost:27017'], document_class=dict, tz_aware=False, connect=False, driver=DriverInfo(name='Motor', version='3.3.1', platform='asyncio')), 'test_database'))
+kind = 'onedrive', folder_ids = None, include_subfolders = True
+
+    async def _seed_source(db, kind, folder_ids=None, include_subfolders=True):
+        lid = f"test-listing-{secrets.token_hex(4)}"
+        sid = f"test-src-{secrets.token_hex(4)}"
+        uid = f"test-user-{secrets.token_hex(4)}"
+        now = datetime.now(timezone.utc).isoformat()
+&gt;       await db.listings.insert_one({
+            "id": lid, "company_name": f"TestCo ({kind} picker)",
+            "seller_id": uid, "status": "draft", "created_at": now,
+        })
+E       RuntimeError: Task &lt;Task pending name='Task-8' coro=&lt;TestBrowseFolderHelper.test_onedrive_browse_uses_graph_proxy() running at /app/backend/tests/test_folder_picker.py:154&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop
+
+tests/test_folder_picker.py:39: RuntimeError</failure></testcase><testcase classname="tests.test_folder_picker.TestBrowseFolderHelper" name="test_sharepoint_browse_degrades_gracefully" time="0.001"><failure message="RuntimeError: Task &lt;Task pending name='Task-9' coro=&lt;TestBrowseFolderHelper.test_sharepoint_browse_degrades_gracefully() running at /app/backend/tests/test_folder_picker.py:179&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop">self = &lt;test_folder_picker.TestBrowseFolderHelper object at 0xf93710485dd0&gt;
+
+    @pytest.mark.asyncio
+    async def test_sharepoint_browse_degrades_gracefully(self):
+        import server
+&gt;       fixture = await _seed_source(server.db, "sharepoint")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_folder_picker.py:179: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = AsyncIOMotorDatabase(Database(MongoClient(host=['localhost:27017'], document_class=dict, tz_aware=False, connect=False, driver=DriverInfo(name='Motor', version='3.3.1', platform='asyncio')), 'test_database'))
+kind = 'sharepoint', folder_ids = None, include_subfolders = True
+
+    async def _seed_source(db, kind, folder_ids=None, include_subfolders=True):
+        lid = f"test-listing-{secrets.token_hex(4)}"
+        sid = f"test-src-{secrets.token_hex(4)}"
+        uid = f"test-user-{secrets.token_hex(4)}"
+        now = datetime.now(timezone.utc).isoformat()
+&gt;       await db.listings.insert_one({
+            "id": lid, "company_name": f"TestCo ({kind} picker)",
+            "seller_id": uid, "status": "draft", "created_at": now,
+        })
+E       RuntimeError: Task &lt;Task pending name='Task-9' coro=&lt;TestBrowseFolderHelper.test_sharepoint_browse_degrades_gracefully() running at /app/backend/tests/test_folder_picker.py:179&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop
+
+tests/test_folder_picker.py:39: RuntimeError</failure></testcase><testcase classname="tests.test_folder_picker.TestMultiFolderSync" name="test_multi_folder_box_pulls_from_each_selection" time="0.001"><failure message="RuntimeError: Task &lt;Task pending name='Task-10' coro=&lt;TestMultiFolderSync.test_multi_folder_box_pulls_from_each_selection() running at /app/backend/tests/test_folder_picker.py:198&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop">self = &lt;test_folder_picker.TestMultiFolderSync object at 0xf937104867d0&gt;
+
+    @pytest.mark.asyncio
+    async def test_multi_folder_box_pulls_from_each_selection(self):
+        """Seller picks 2 Box folders. Sync should iterate both and stage
+        files from each (no duplication, no missing folder)."""
+        import server
+&gt;       fixture = await _seed_source(server.db, "box", folder_ids=["100", "200"], include_subfolders=False)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_folder_picker.py:198: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = AsyncIOMotorDatabase(Database(MongoClient(host=['localhost:27017'], document_class=dict, tz_aware=False, connect=False, driver=DriverInfo(name='Motor', version='3.3.1', platform='asyncio')), 'test_database'))
+kind = 'box', folder_ids = ['100', '200'], include_subfolders = False
+
+    async def _seed_source(db, kind, folder_ids=None, include_subfolders=True):
+        lid = f"test-listing-{secrets.token_hex(4)}"
+        sid = f"test-src-{secrets.token_hex(4)}"
+        uid = f"test-user-{secrets.token_hex(4)}"
+        now = datetime.now(timezone.utc).isoformat()
+&gt;       await db.listings.insert_one({
+            "id": lid, "company_name": f"TestCo ({kind} picker)",
+            "seller_id": uid, "status": "draft", "created_at": now,
+        })
+E       RuntimeError: Task &lt;Task pending name='Task-10' coro=&lt;TestMultiFolderSync.test_multi_folder_box_pulls_from_each_selection() running at /app/backend/tests/test_folder_picker.py:198&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop
+
+tests/test_folder_picker.py:39: RuntimeError</failure></testcase><testcase classname="tests.test_folder_picker.TestMultiFolderSync" name="test_include_subfolders_false_skips_recursion" time="0.001"><failure message="RuntimeError: Task &lt;Task pending name='Task-11' coro=&lt;TestMultiFolderSync.test_include_subfolders_false_skips_recursion() running at /app/backend/tests/test_folder_picker.py:242&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop">self = &lt;test_folder_picker.TestMultiFolderSync object at 0xf93710486fd0&gt;
+
+    @pytest.mark.asyncio
+    async def test_include_subfolders_false_skips_recursion(self):
+        """When seller toggles off 'Include subfolders', sync must NOT descend
+        into subfolders even if they exist."""
+        import server
+&gt;       fixture = await _seed_source(server.db, "box", folder_ids=["100"], include_subfolders=False)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_folder_picker.py:242: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = AsyncIOMotorDatabase(Database(MongoClient(host=['localhost:27017'], document_class=dict, tz_aware=False, connect=False, driver=DriverInfo(name='Motor', version='3.3.1', platform='asyncio')), 'test_database'))
+kind = 'box', folder_ids = ['100'], include_subfolders = False
+
+    async def _seed_source(db, kind, folder_ids=None, include_subfolders=True):
+        lid = f"test-listing-{secrets.token_hex(4)}"
+        sid = f"test-src-{secrets.token_hex(4)}"
+        uid = f"test-user-{secrets.token_hex(4)}"
+        now = datetime.now(timezone.utc).isoformat()
+&gt;       await db.listings.insert_one({
+            "id": lid, "company_name": f"TestCo ({kind} picker)",
+            "seller_id": uid, "status": "draft", "created_at": now,
+        })
+E       RuntimeError: Task &lt;Task pending name='Task-11' coro=&lt;TestMultiFolderSync.test_include_subfolders_false_skips_recursion() running at /app/backend/tests/test_folder_picker.py:242&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop
+
+tests/test_folder_picker.py:39: RuntimeError</failure></testcase><testcase classname="tests.test_folder_picker.TestMultiFolderSync" name="test_dropbox_uses_native_recursive_flag" time="0.001"><failure message="RuntimeError: Task &lt;Task pending name='Task-12' coro=&lt;TestMultiFolderSync.test_dropbox_uses_native_recursive_flag() running at /app/backend/tests/test_folder_picker.py:292&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop">self = &lt;test_folder_picker.TestMultiFolderSync object at 0xf937104877d0&gt;
+
+    @pytest.mark.asyncio
+    async def test_dropbox_uses_native_recursive_flag(self):
+        """Dropbox supports `recursive=true` natively — we should pass it
+        through (no app-layer BFS for Dropbox)."""
+        import server
+&gt;       fixture = await _seed_source(server.db, "dropbox", folder_ids=["/Marketing"], include_subfolders=True)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_folder_picker.py:292: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = AsyncIOMotorDatabase(Database(MongoClient(host=['localhost:27017'], document_class=dict, tz_aware=False, connect=False, driver=DriverInfo(name='Motor', version='3.3.1', platform='asyncio')), 'test_database'))
+kind = 'dropbox', folder_ids = ['/Marketing'], include_subfolders = True
+
+    async def _seed_source(db, kind, folder_ids=None, include_subfolders=True):
+        lid = f"test-listing-{secrets.token_hex(4)}"
+        sid = f"test-src-{secrets.token_hex(4)}"
+        uid = f"test-user-{secrets.token_hex(4)}"
+        now = datetime.now(timezone.utc).isoformat()
+&gt;       await db.listings.insert_one({
+            "id": lid, "company_name": f"TestCo ({kind} picker)",
+            "seller_id": uid, "status": "draft", "created_at": now,
+        })
+E       RuntimeError: Task &lt;Task pending name='Task-12' coro=&lt;TestMultiFolderSync.test_dropbox_uses_native_recursive_flag() running at /app/backend/tests/test_folder_picker.py:292&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop
+
+tests/test_folder_picker.py:39: RuntimeError</failure></testcase></testsuite></testsuites>

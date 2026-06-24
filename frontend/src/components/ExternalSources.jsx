@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { CloudArrowDown, ArrowSquareOut, ArrowsClockwise, Plug, X, Warning } from "@phosphor-icons/react";
+import { CloudArrowDown, ArrowSquareOut, ArrowsClockwise, Plug, X, Warning, FolderOpen } from "@phosphor-icons/react";
 import { api } from "../lib/api";
+import FolderPickerModal from "./FolderPickerModal";
 
 /**
  * ExternalSources — per-listing panel for connecting Composio-backed file
@@ -24,8 +25,8 @@ export default function ExternalSources({ listingId, viewAsPrincipal = false }) 
   const [data, setData] = useState({ sources: [], supported: [] });
   const [loaded, setLoaded] = useState(false);
   const [picker, setPicker] = useState("");
-  const [folderId, setFolderId] = useState("");
   const [busy, setBusy] = useState(null); // "connect" | sid | null
+  const [folderPicker, setFolderPicker] = useState(null); // {sid, sourceKind, label, ids, labels, includeSubfolders} | null
   const pollRefs = useRef({}); // sid -> interval handle
 
   const load = async () => {
@@ -75,7 +76,7 @@ export default function ExternalSources({ listingId, viewAsPrincipal = false }) 
     setBusy("connect");
     try {
       const r = await api.post(`/listings/${listingId}/external-sources`, {
-        source_kind: picker, folder_id: folderId || null,
+        source_kind: picker,
       });
       const src = r.data;
       if (src.oauth_not_configured) {
@@ -88,12 +89,11 @@ export default function ExternalSources({ listingId, viewAsPrincipal = false }) 
         });
       } else {
         toast.success(`Opened ${src.label} login in a new tab`, {
-          description: "Complete the OAuth handshake — we'll detect it automatically.",
+          description: "Complete the OAuth handshake — we'll detect it and prompt you to pick folders.",
         });
         if (src.redirect_url) window.open(src.redirect_url, "_blank", "noopener,noreferrer");
       }
       setPicker("");
-      setFolderId("");
       await load();
       if (!src.oauth_not_configured) startPolling(src.id);
     } catch (err) {
@@ -101,6 +101,20 @@ export default function ExternalSources({ listingId, viewAsPrincipal = false }) 
     } finally {
       setBusy(null);
     }
+  };
+
+  // Open the folder picker for one source. Works for both brand-new
+  // connections (no folders selected yet) and existing ones (user wants to
+  // change which folders mirror).
+  const openFolderPicker = (src) => {
+    setFolderPicker({
+      sid: src.id,
+      sourceKind: src.source_kind,
+      label: src.label,
+      ids: src.folder_ids || (src.folder_id ? [src.folder_id] : []),
+      labels: src.folder_labels || (src.folder_id ? [src.folder_id] : []),
+      includeSubfolders: src.include_subfolders !== false,
+    });
   };
 
   const reopenOAuth = (src) => {
@@ -214,8 +228,28 @@ export default function ExternalSources({ listingId, viewAsPrincipal = false }) 
                 <div className="text-xs text-[var(--wz-text-tertiary)] mt-0.5">
                   {s.file_count > 0 ? `${s.file_count} file${s.file_count === 1 ? "" : "s"} · ` : ""}
                   {s.last_sync_at ? `synced ${new Date(s.last_sync_at).toLocaleString()}` : "never synced"}
-                  {s.folder_id ? ` · folder ${s.folder_id}` : ""}
                 </div>
+                {/* Selected-folder summary. New multi-folder model first;
+                   fall back to the legacy single folder_id for older
+                   connections that haven't been re-picked yet. */}
+                {((s.folder_labels?.length || s.folder_ids?.length || s.folder_id) && s.status === "active") ? (
+                  <div className="text-[10px] mt-1 text-[var(--wz-text-secondary)] flex items-start gap-1 flex-wrap" data-testid={`source-folders-${s.id}`}>
+                    <FolderOpen size={10} className="mt-0.5 shrink-0 opacity-60" />
+                    {(s.folder_labels?.length ? s.folder_labels : (s.folder_ids?.length ? s.folder_ids : [s.folder_id])).slice(0, 4).map((lbl, i) => (
+                      <span key={i} className="pill text-[10px]" style={{ background: "transparent", borderColor: "var(--wz-border)" }}>{lbl}</span>
+                    ))}
+                    {(s.folder_labels?.length || s.folder_ids?.length || 0) > 4 && (
+                      <span className="pill text-[10px]" style={{ background: "transparent", borderColor: "var(--wz-border)" }}>
+                        +{(s.folder_labels?.length || s.folder_ids?.length) - 4} more
+                      </span>
+                    )}
+                    {s.include_subfolders === false ? (
+                      <span className="text-[10px] opacity-60">(top-level only)</span>
+                    ) : (
+                      <span className="text-[10px] opacity-60">(incl. subfolders)</span>
+                    )}
+                  </div>
+                ) : null}
                 {s.last_error && (
                   <div className="text-[10px] mt-1 text-[var(--wz-danger)] flex items-start gap-1 break-all">
                     <Warning size={10} className="mt-0.5 shrink-0" /> {s.last_error}
@@ -232,6 +266,17 @@ export default function ExternalSources({ listingId, viewAsPrincipal = false }) 
                       title="Re-open the OAuth window"
                     >
                       <ArrowSquareOut size={12} /> Open OAuth
+                    </button>
+                  )}
+                  {s.status === "active" && (
+                    <button
+                      onClick={() => openFolderPicker(s)}
+                      data-testid={`source-pick-folders-${s.id}`}
+                      className="text-xs text-[var(--wz-text-secondary)] hover:text-[var(--wz-gold)] flex items-center gap-1"
+                      title="Choose which folders to mirror"
+                    >
+                      <FolderOpen size={12} />
+                      {(s.folder_ids?.length || s.folder_id) ? "Edit folders" : "Pick folders"}
                     </button>
                   )}
                   {s.status === "active" && (
@@ -277,15 +322,6 @@ export default function ExternalSources({ listingId, viewAsPrincipal = false }) 
                 <option key={s.kind} value={s.kind}>{s.label}</option>
               ))}
             </select>
-            <input
-              type="text"
-              data-testid="source-folder-id"
-              className="wz-input text-xs flex-1"
-              value={folderId}
-              onChange={(e) => setFolderId(e.target.value)}
-              placeholder="Folder ID / path (optional · leave blank for root)"
-              title="If you want to scope the mirror to one folder, paste its ID. Leave blank to mirror your drive root."
-            />
             <button
               onClick={connect}
               disabled={!picker || busy === "connect"}
@@ -295,7 +331,28 @@ export default function ExternalSources({ listingId, viewAsPrincipal = false }) 
               <CloudArrowDown size={12} /> {busy === "connect" ? "Opening…" : "Connect"}
             </button>
           </div>
+          <p className="text-[10px] text-[var(--wz-text-tertiary)] mt-2">
+            After you sign in, you'll be prompted to pick which folder(s) to mirror — no folder IDs or paths to copy.
+          </p>
         </div>
+      )}
+
+      {folderPicker && (
+        <FolderPickerModal
+          open
+          listingId={listingId}
+          sid={folderPicker.sid}
+          sourceKind={folderPicker.sourceKind}
+          providerLabel={folderPicker.label}
+          initialFolderIds={folderPicker.ids}
+          initialFolderLabels={folderPicker.labels}
+          initialIncludeSubfolders={folderPicker.includeSubfolders}
+          onClose={() => setFolderPicker(null)}
+          onSaved={async () => {
+            await load();
+            startSyncPolling(folderPicker.sid);
+          }}
+        />
       )}
     </div>
   );

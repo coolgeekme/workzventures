@@ -238,8 +238,8 @@ class TestBoxFolderRecursion:
             count = await server.db.listing_staged_files.count_documents(
                 {"listing_id": fixture["lid"]}
             )
-            # Per-batch loop is capped at 100 by the existing `for f in files_meta[:100]`.
-            assert count <= 100, f"expected ≤100 files due to per-sync cap, got {count}"
+            # Per-sync cap is 200 across all selected folders.
+            assert count <= 200, f"expected ≤200 files due to per-sync cap, got {count}"
             assert count > 0, "expected at least some files to be pulled"
         finally:
             await _cleanup(server.db, fixture)
