@@ -499,3 +499,13 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Root cause**: `_compute_account_scope` (server.py:278) used a negative heuristic — "owns 0 listings AND admins 0 orgs ⇒ collaborator". That mis-classified every brand-new admin-invited user (agent / seller / buyer) as collaborator, forcing them onto the stripped COLLAB_NAV ("My Collaborations" + "Security") instead of their real role-based nav.
 - **Fix**: Replaced with a positive check — scope is "collaborator" ONLY when the user is referenced in some `listings.collaborators[].user_id` AND owns zero listings AND admins zero orgs AND isn't a platform admin. Anyone admin-invited / self-registered / org_admin / listing-owner / platform admin is "principal".
 - **Tests**: `tests/test_admin_invite_role_scope.py` (5 PASS) — invited-agent-is-principal, invited-seller-is-principal, invited-buyer-is-principal, principal-persists-across-login, listing-collab-still-resolves-to-collaborator. Verified end-to-end by testing agent (iteration_21.json) — 10/10 pytest cases pass, including a true-positive collaborator path.
+
+## Iter-27 (Feb 2026) — Bug fix: Box external source sync — `Tool BOX_LIST_FILES not found`
+- **Reported**: Seller hit `list failed: Composio action BOX_LIST_FILES failed: Tool BOX_LIST_FILES not found (code 2401)` when syncing a Box source.
+- **Root cause**: Composio renamed the Box list action. Current slug is **`BOX_LIST_ITEMS_IN_FOLDER`** (requires `folder_id`, `"0"` = root).
+- **Fix** (`server.py`):
+  - `COMPOSIO_FILE_SOURCES['box']['list']` → `BOX_LIST_ITEMS_IN_FOLDER`.
+  - When seller doesn't pick a folder, default `folder_id="0"` (Box's root) before calling the action — Box requires the arg.
+  - Sync loop now skips `entries` where `type != 'file'` (Box returns folders + web_links alongside files, which would otherwise be passed to `BOX_DOWNLOAD_FILE` and fail).
+- **Tests**: `/app/backend/tests/test_box_slug_fix.py` (6 PASS) + 18/18 regression PASS across admin-invite-scope, vault-preview, preview-images suites. Verified by testing agent (`/app/test_reports/iteration_22.json`).
+
