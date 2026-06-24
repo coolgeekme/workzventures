@@ -4982,13 +4982,67 @@ async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
 
     files_meta = _extract_files_array(list_resp.get("data"))
 
+    # Box (and the few other providers that return a `type` discriminator on
+    # each entry) list folders + web_links alongside files. We expand those
+    # by recursing into subfolders so a seller can point at the root and
+    # still pick up files that live in `My Box / Documents / *`. Depth and
+    # total-file caps keep us bounded if a Box account has thousands of
+    # nested folders.
+    skipped_non_file = 0
+    explored_folders = 0
+    if src["source_kind"] == "box":
+        MAX_DEPTH = 4
+        MAX_TOTAL = 100
+        # Seed queue with subfolders discovered in the root response.
+        subfolders: list[tuple[str, int]] = []  # (folder_id, depth)
+        kept_files: list[dict] = []
+        for f in files_meta:
+            ft = (f.get("type") or "").lower()
+            if ft == "folder":
+                if f.get("id"):
+                    subfolders.append((str(f["id"]), 1))
+            elif ft == "file":
+                kept_files.append(f)
+            elif ft == "" or ft is None:
+                # Some Composio responses omit `type` — keep them and let the
+                # download attempt sort it out.
+                kept_files.append(f)
+            else:
+                skipped_non_file += 1
+        while subfolders and len(kept_files) < MAX_TOTAL:
+            fid, depth = subfolders.pop(0)
+            if depth > MAX_DEPTH:
+                continue
+            try:
+                sub_raw = await _composio_action_execute(
+                    cfg["list"], src["composio_connected_id"],
+                    {"folder_id": fid},
+                    user_id=src.get("entity_id"),
+                )
+                sub_resp = _normalise_composio_response(sub_raw)
+                if not sub_resp.get("successful"):
+                    errors.append(f"folder {fid}: list failed ({str(sub_resp.get('error'))[:120]})")
+                    continue
+                explored_folders += 1
+                sub_meta = _extract_files_array(sub_resp.get("data"))
+                for f in sub_meta:
+                    ft = (f.get("type") or "").lower()
+                    if ft == "folder" and f.get("id"):
+                        subfolders.append((str(f["id"]), depth + 1))
+                    elif ft in ("", "file", None):
+                        kept_files.append(f)
+                    else:
+                        skipped_non_file += 1
+            except Exception as e:
+                errors.append(f"folder {fid}: {str(e)[:120]}")
+        files_meta = kept_files
+
     for f in files_meta[:100]:
-        # Box (and SharePoint) return folders + web_links inside the same
-        # `entries` array as files. Skip non-file entries — trying to
-        # download a folder via BOX_DOWNLOAD_FILE returns a 400 with no
-        # useful error and would otherwise spam `errors` for every folder.
+        # Defensive: still skip any non-file remnant (non-Box providers may
+        # also return mixed entries on some toolkits).
         ftype = (f.get("type") or "").lower()
         if ftype and ftype != "file":
+            skipped_non_file += 1
             continue
         external_id = f.get("id") or f.get("file_id") or f.get("ID")
         name = f.get("name") or f.get("filename") or f.get("title") or external_id
@@ -5074,13 +5128,28 @@ async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
     )
     final_error = "; ".join(errors[:3]) if errors else None
     # If we got 0 files AND no errors, the list call probably parsed wrong —
-    # surface the raw sample so we can see what shape it actually was.
-    if pulled == 0 and not final_error and not files_meta:
-        final_error = (
-            "List returned 0 files. If your folder actually has files, paste this "
-            "back to your engineer to fix the response parser: "
-            f"{sample_response[:600] if sample_response else '(no sample captured)'}"
-        )
+    # OR the connected folder is empty / contains only non-file entries.
+    # Surface a clear, actionable message in both cases.
+    if pulled == 0 and not final_error:
+        if explored_folders > 0 or skipped_non_file > 0:
+            parts = []
+            if explored_folders > 0:
+                parts.append(f"{explored_folders} subfolder(s)")
+            if skipped_non_file > 0:
+                parts.append(f"{skipped_non_file} non-file item(s)")
+            final_error = (
+                f"Connected, but no downloadable files found after scanning "
+                f"{' and '.join(parts)}. Move files into the folder you connected, "
+                "OR pick a specific subfolder containing files when you reconnect."
+            )
+        elif not files_meta:
+            final_error = (
+                "List returned 0 files. If your folder actually has files, paste this "
+                "back to your engineer to fix the response parser: "
+                f"{sample_response[:600] if sample_response else '(no sample captured)'}"
+            )
+        # else: we had file entries but every download failed — `errors` would
+        # have surfaced individual reasons; nothing further to add.
     await db.listing_external_sources.update_one(
         {"id": sid},
         {"$set": {"syncing": False, "last_sync_at": now_utc().isoformat(),
