@@ -4958,7 +4958,17 @@ async def browse_external_source_folders(
     if not src:
         raise HTTPException(status_code=404, detail="Source not found")
     if src.get("status") != "active":
-        raise HTTPException(status_code=400, detail="Connection isn't active yet. Finish the OAuth handshake and try again.")
+        # Return the documented {folders, can_browse, err} envelope so the
+        # picker modal can render a friendly "finish OAuth first" message
+        # in-context, rather than the seller seeing a generic network error.
+        return {
+            "folders": [],
+            "parent_id": parent_id,
+            "can_browse": False,
+            "err": "Connection isn't active yet. Finish the OAuth handshake in the source row, then re-open the picker.",
+            "source_kind": src["source_kind"],
+            "requires_oauth": True,
+        }
     result = await _browse_folder(src, parent_id)
     result["source_kind"] = src["source_kind"]
     return result

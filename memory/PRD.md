@@ -521,3 +521,19 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Tests**: `tests/test_box_recursive_sync.py` (4 PASS): nested-files-pulled, empty-root-actionable-error, default-folder-id=0, total-cap-respected. + 12/12 regression PASS. Verified by testing agent (`iteration_23.json`) — Composio live smoke confirms slug + recursion path reaches Composio (rejected only with `ConnectedAccountNotFound`, as expected for the fake test connection).
 - **Infra**: Added `/app/backend/pytest.ini` with `asyncio_mode=auto` + session-scoped loops (motor MongoDB client requires single-loop binding).
 
+
+## Iter-29 (Feb 2026) — Feature: visual folder picker for external file sources
+- **Ask**: "Can we make it easier for the user to connect to another platform like Google Drive or Box and give them the ability to manually select what folder to share? Giving them the ability to click/select a folder would be the easiest."
+- **Scope chosen**: all 5 providers, multi-select folders per source, "include subfolders" toggle, modal picker, edit-folders button on existing sources.
+- **Backend**:
+  - New `GET /api/listings/{lid}/external-sources/{sid}/browse?parent_id=<id>` — returns `{folders:[{id,name}], parent_id, can_browse, err, source_kind}` (uniform envelope; `requires_oauth: true` when status≠active so the modal can prompt to finish OAuth).
+  - New `PATCH /api/listings/{lid}/external-sources/{sid}/folders` — saves `folder_ids`, `folder_labels`, `include_subfolders`; kicks an immediate sync; writes `listing.source.folders.updated` audit log; caps at 20 folders.
+  - `ExternalSourceCreate` now accepts `folder_ids`, `folder_labels`, `include_subfolders` (legacy `folder_id` still accepted and mirrored to `folder_ids[0]` for backwards-compat).
+  - **New helpers** `_browse_folder` (per-provider folder-only listing) and `_collect_files_under_folder` (per-provider BFS with `include_subfolders` toggle). OneDrive browsing goes via Composio Proxy → MS Graph because the predefined LIST_ITEMS tool only sees drive root. Dropbox uses its native `recursive:true` flag, no app-layer BFS.
+  - **Slug fixes (3 more dead slugs discovered during build)**: `ONE_DRIVE_LIST_FILES` → `ONE_DRIVE_ONEDRIVE_LIST_ITEMS`, `DROPBOX_LIST_FILES` → `DROPBOX_LIST_FILES_IN_FOLDER`, `DROPBOX_DOWNLOAD_FILE` → `DROPBOX_READ_FILE`. **SharePoint**: Composio doesn't expose file-list/download tools — sync degrades gracefully with a clear "not available" message; picker degrades to manual-ID entry.
+- **Frontend**:
+  - New `FolderPickerModal.jsx` — Finder-style: breadcrumb at top, folder list with checkboxes, "Select this folder" shortcut, breadcrumb-path labels on selected pills, include-subfolders toggle, manual-ID fallback for unsupported providers.
+  - `ExternalSources.jsx` — Removed folder-ID text input from connect form (single click → connect → pick); each active source row now shows selected-folder pills and a "Pick / Edit folders" button.
+- **Tests**: `tests/test_folder_picker.py` (8 mocked) + `tests/test_box_recursive_sync.py` (4) + 12 regression + 4 live (testing-agent-authored `test_folder_picker_live.py`) = **28/28 PASS**. Verified by testing agent (`iteration_24.json`) — 100% backend; frontend code-review clean (all data-testids present).
+- **Known tech debt** (testing agent flagged): `server.py` now 10,088 lines. External-source code (4408-5180) is the obvious next extraction candidate → `backend/integrations/external_sources.py`.
+
