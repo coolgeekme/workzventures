@@ -4410,7 +4410,7 @@ COMPOSIO_FILE_SOURCES = {
     "onedrive":    {"label": "OneDrive",     "app": "one_drive",    "list": "ONE_DRIVE_LIST_FILES",    "download": "ONE_DRIVE_DOWNLOAD_FILE"},
     "sharepoint":  {"label": "SharePoint",   "app": "share_point",  "list": "SHARE_POINT_LIST_FILES",  "download": "SHARE_POINT_DOWNLOAD_FILE"},
     "dropbox":     {"label": "Dropbox",      "app": "dropbox",      "list": "DROPBOX_LIST_FILES",      "download": "DROPBOX_DOWNLOAD_FILE"},
-    "box":         {"label": "Box",          "app": "box",          "list": "BOX_LIST_FILES",          "download": "BOX_DOWNLOAD_FILE"},
+    "box":         {"label": "Box",          "app": "box",          "list": "BOX_LIST_ITEMS_IN_FOLDER", "download": "BOX_DOWNLOAD_FILE"},
 }
 
 
@@ -4930,6 +4930,10 @@ async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
     if src.get("folder_id"):
         # Use the per-toolkit canonical key (e.g. `folderId` for Drive).
         list_input[folder_key] = src["folder_id"]
+    # Box requires `folder_id` even at the root. Default to "0" (Box's
+    # canonical root folder ID) when the seller didn't pick a folder.
+    if src["source_kind"] == "box" and not list_input.get(folder_key):
+        list_input[folder_key] = "0"
     # Google Drive's LIST_FILES caps default pageSize at 100 and includes a
     # `q` filter; passing pageSize ensures we ask for the full first batch.
     if src["source_kind"] == "googledrive":
@@ -4979,6 +4983,13 @@ async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
     files_meta = _extract_files_array(list_resp.get("data"))
 
     for f in files_meta[:100]:
+        # Box (and SharePoint) return folders + web_links inside the same
+        # `entries` array as files. Skip non-file entries — trying to
+        # download a folder via BOX_DOWNLOAD_FILE returns a 400 with no
+        # useful error and would otherwise spam `errors` for every folder.
+        ftype = (f.get("type") or "").lower()
+        if ftype and ftype != "file":
+            continue
         external_id = f.get("id") or f.get("file_id") or f.get("ID")
         name = f.get("name") or f.get("filename") or f.get("title") or external_id
         mime = f.get("mime_type") or f.get("mimeType") or f.get("content_type") or "application/octet-stream"
