@@ -509,3 +509,15 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
   - Sync loop now skips `entries` where `type != 'file'` (Box returns folders + web_links alongside files, which would otherwise be passed to `BOX_DOWNLOAD_FILE` and fail).
 - **Tests**: `/app/backend/tests/test_box_slug_fix.py` (6 PASS) + 18/18 regression PASS across admin-invite-scope, vault-preview, preview-images suites. Verified by testing agent (`/app/test_reports/iteration_22.json`).
 
+
+## Iter-28 (Feb 2026) — Bug fix: Box sync reports "synced" but stages 0 files
+- **Reported**: "listing says box folder is sync'd but when i view as buyer, there are no documents." Source row showed ACTIVE + synced timestamp + zero files + no error.
+- **Root cause**: Iter-27 added a defensive `type != 'file'` filter to drop non-file entries returned by the new `BOX_LIST_ITEMS_IN_FOLDER` slug. Box's root folder normally contains **only subfolders** (My Box → Documents/Marketing/etc), so the filter silently dropped every entry → 0 files pulled, no errors logged.
+- **Fix** (`server.py:4985-5040`):
+  - When `source_kind=='box'`, BFS-recurse into subfolders (`MAX_DEPTH=4`, `MAX_TOTAL=100` files).
+  - Classify each entry: `type=folder` → enqueue, `type=file` → keep, missing type → keep (some Composio responses omit it).
+  - Track `explored_folders` + `skipped_non_file` counters.
+- **Better diagnostic** (`server.py:5145-5170`): when `pulled==0 and not final_error`, set `last_error` to a seller-actionable string like _"Connected, but no downloadable files found after scanning N subfolder(s)… pick a specific subfolder containing files when you reconnect."_ Eliminates the previous silent-success failure mode.
+- **Tests**: `tests/test_box_recursive_sync.py` (4 PASS): nested-files-pulled, empty-root-actionable-error, default-folder-id=0, total-cap-respected. + 12/12 regression PASS. Verified by testing agent (`iteration_23.json`) — Composio live smoke confirms slug + recursion path reaches Composio (rejected only with `ConnectedAccountNotFound`, as expected for the fake test connection).
+- **Infra**: Added `/app/backend/pytest.ini` with `asyncio_mode=auto` + session-scoped loops (motor MongoDB client requires single-loop binding).
+
