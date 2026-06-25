@@ -6,7 +6,7 @@ import { useAuth } from "../lib/auth";
 import {
   FileText, Files, MagnifyingGlass, ListChecks, ShieldCheck,
   CloudArrowUp, CheckCircle, Warning, ArrowLeft, ChatCircleDots, PaperPlaneTilt,
-  Certificate, Clock, Eye, Lock, LockOpen,
+  Certificate, Clock, Eye, Lock, LockOpen, Copy, X,
 } from "@phosphor-icons/react";
 import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
 import VaultActivity from "../components/VaultActivity";
@@ -53,6 +53,12 @@ export default function DealRoomDetail() {
   const [emailRecipients, setEmailRecipients] = useState("");
   const [emailNote, setEmailNote] = useState("");
   const [emailing, setEmailing] = useState(false);
+  // Iter-35: Co-pilot thread search — buyers may want to find an earlier
+  // answer about "termination" or "ARR" without scrolling 100 messages.
+  const [copilotSearch, setCopilotSearch] = useState("");
+  // Tracks which message just had its content copied so we can flip the
+  // icon to a check for ~1.2s as visual feedback.
+  const [copiedMsgId, setCopiedMsgId] = useState(null);
 
   const load = () => api.get(`/deal-rooms/${id}`).then((r) => setRoom(r.data));
   const loadCopilot = () => api.get(`/deal-rooms/${id}/copilot`).then((r) => setMessages(r.data));
@@ -299,6 +305,37 @@ export default function DealRoomDetail() {
       toast.success("PDF downloaded");
     } catch (e) {
       toast.error(e?.response?.data?.detail || "PDF export failed");
+    }
+  };
+
+  // Iter-35: copy a Co-pilot answer to the clipboard. Falls back to a
+  // hidden textarea + execCommand for older browsers / insecure contexts
+  // (e.g. some embedded review environments).
+  const copyMessage = async (msg) => {
+    let text = msg.content || "";
+    if (msg.citations?.length) {
+      text += "\n\nSources: " + msg.citations
+        .map((c) => `${c.filename}${c.page ? ` p.${c.page}` : ""}`)
+        .join(" · ");
+    }
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.focus(); ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      setCopiedMsgId(msg.id);
+      toast.success("Copied to clipboard");
+      setTimeout(() => setCopiedMsgId((cur) => (cur === msg.id ? null : cur)), 1200);
+    } catch {
+      toast.error("Copy failed — select the text manually");
     }
   };
 
@@ -967,14 +1004,43 @@ export default function DealRoomDetail() {
       {tab === "copilot" && (
         <div className="mt-6 grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6" data-testid="copilot-tab">
           <div className="wz-card flex flex-col" style={{ minHeight: "520px" }}>
-            <div className="px-5 py-3 border-b border-[var(--wz-border)] flex items-center justify-between">
+            <div className="px-5 py-3 border-b border-[var(--wz-border)] flex items-center justify-between gap-3 flex-wrap">
               <div className="flex items-center gap-2">
                 <ChatCircleDots size={16} className={accentClass} />
                 <div className="font-display tracking-tight">Vault Co-pilot</div>
               </div>
-              <span className="font-mono-wz text-[10px] text-[var(--wz-text-tertiary)]">
-                grounded in {room.files.length} file{room.files.length === 1 ? "" : "s"}
-              </span>
+              <div className="flex items-center gap-3 flex-wrap">
+                {messages.length > 0 && (
+                  <div className="relative" data-testid="copilot-search-wrapper">
+                    <MagnifyingGlass
+                      size={12}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 text-[var(--wz-text-tertiary)] pointer-events-none"
+                    />
+                    <input
+                      type="text"
+                      placeholder="Search this thread…"
+                      className="wz-input text-xs pl-6 pr-6 py-1 w-44 sm:w-56"
+                      value={copilotSearch}
+                      onChange={(e) => setCopilotSearch(e.target.value)}
+                      data-testid="copilot-search-input"
+                    />
+                    {copilotSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setCopilotSearch("")}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[var(--wz-text-tertiary)] hover:text-[var(--wz-text-primary)]"
+                        data-testid="copilot-search-clear"
+                        aria-label="Clear search"
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+                )}
+                <span className="font-mono-wz text-[10px] text-[var(--wz-text-tertiary)]">
+                  grounded in {room.files.length} file{room.files.length === 1 ? "" : "s"}
+                </span>
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4" data-testid="copilot-messages">
@@ -983,14 +1049,53 @@ export default function DealRoomDetail() {
                   Ask the Co-pilot anything about the uploaded materials. Answers cite the source file in brackets.
                 </div>
               )}
-              {messages.map((m) => (
+              {(() => {
+                // Filter the thread by the search query. Matches against
+                // the message body OR any cited filename so a search for
+                // "DPA" finds the answer that cited DPA.pdf.
+                const q = copilotSearch.trim().toLowerCase();
+                const filtered = q
+                  ? messages.filter((m) => {
+                      if ((m.content || "").toLowerCase().includes(q)) return true;
+                      return (m.citations || []).some(
+                        (c) => (c.filename || "").toLowerCase().includes(q),
+                      );
+                    })
+                  : messages;
+                if (q && filtered.length === 0) {
+                  return (
+                    <div
+                      className="text-center text-xs text-[var(--wz-text-tertiary)] py-12"
+                      data-testid="copilot-search-empty"
+                    >
+                      No messages match &ldquo;{copilotSearch}&rdquo;.
+                    </div>
+                  );
+                }
+                return filtered.map((m) => (
                 <div key={m.id} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`} data-testid={`msg-${m.role}`}>
-                  <div className={`max-w-[78%] px-4 py-3 border ${
+                  <div className={`group max-w-[78%] px-4 py-3 border relative ${
                     m.role === "user"
                       ? "border-[var(--wz-border)] bg-[var(--wz-surface-hover)]"
                       : "border-[var(--wz-gold)]/40 bg-[var(--wz-bg)]"
                   }`}>
-                    <div className="overline mb-1">{m.role === "user" ? m.user_name || "you" : "Co-pilot"}</div>
+                    <div className="flex items-center justify-between gap-3 mb-1">
+                      <div className="overline">{m.role === "user" ? m.user_name || "you" : "Co-pilot"}</div>
+                      {m.role === "assistant" && (
+                        <button
+                          type="button"
+                          onClick={() => copyMessage(m)}
+                          title="Copy response"
+                          aria-label="Copy response"
+                          className="text-[var(--wz-text-tertiary)] hover:text-[var(--wz-gold)] transition-colors opacity-60 group-hover:opacity-100"
+                          data-testid={`copilot-copy-${m.id}`}
+                        >
+                          {copiedMsgId === m.id
+                            ? <CheckCircle size={14} weight="fill" className="text-[var(--wz-positive)]" />
+                            : <Copy size={14} />}
+                        </button>
+                      )}
+                    </div>
                     <div className="text-sm leading-relaxed whitespace-pre-line">{m.content}</div>
                     {m.citations && m.citations.length > 0 && (
                       <div className="mt-3 pt-2 border-t border-[var(--wz-border)] flex flex-wrap gap-2">
@@ -1035,7 +1140,8 @@ export default function DealRoomDetail() {
                     )}
                   </div>
                 </div>
-              ))}
+                ));
+              })()}
               {asking && (
                 <div className="flex justify-start">
                   <div className="max-w-[78%] px-4 py-3 border border-[var(--wz-border)] flex items-center gap-2 text-xs text-[var(--wz-text-secondary)]">
