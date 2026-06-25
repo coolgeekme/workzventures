@@ -562,3 +562,17 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - `tests/test_findings_job_live.py` (4 PASS — testing-agent-authored): live preview-backend round-trip with Alex's "Backfill Test Co" deal room. POST < 1 s; polling reaches `completed` (~10 s for 8 files); zero Cloudflare 524s.
 - **30/30 backend tests pass**, including all 19 prior regression tests. Frontend renders cleanly with 0 console errors. Verified by testing agent (`iteration_25.json`).
 
+
+## Iter-31 (Feb 2026) — Vault Co-pilot now reads every file (incl. Composio-synced)
+- **Reported**: "The Co-pilot feature should be able to access any of the data in the data room, including the files shared via connection through Composio (just like in Findings)."
+- **Root cause**: `ask_copilot` (server.py:7560) had a **30-file** inventory cap (vs Findings's 200). Older Composio-mirrored files were silently dropped from the Claude prompt → Co-pilot answered "no documents" or omitted them. Also: (a) the per-file content was flat-truncated to 2,500 chars with no page markers, so citations were file-level only; (b) the backfill clone was gated to `status in (pending_nda, active, preview)` — closing-status rooms were stranded.
+- **Fix** (`server.py:7527-7700`):
+  - **File cap raised 30 → 200** (matches Findings).
+  - **Per-page markers** `<page n=X>` in the inventory (matches Findings).
+  - **Dynamic per-file char budget** (150 K / N files) so every file is represented even on big vaults; latency stays at 4-13 s for normal vaults.
+  - **Page-aware citation parser**: model returns `[filename p.N]`; legacy `[filename]` form still parsed and defaults to page 1. Citations now carry `{file_id, filename, page}` — the UI can deep-link straight to the cited page.
+  - **Backfill clone runs on every copilot call**, regardless of room status — newly Composio-synced files always surface in the next turn.
+  - **Truncation note** to the model when total_files > 200, so it warns the buyer instead of hallucinating about an unlisted file.
+- **Tests**: `tests/test_copilot_data_access.py` (6 PASS) + `tests/test_copilot_live.py` (3 PASS — testing-agent-authored live integration) + 26 regression = **35/35 PASS**. Verified by testing agent (`iteration_26.json`): live POST returned in 13s with 3 citations carrying `page` numbers, follow-up turn in 3.95s, frontend renders [filename p.N] badges with 0 console errors.
+- **Tech debt flagged**: testing agent rightly pointed out `_build_vault_inventory` is now duplicated between Findings and Co-pilot. Extract to `backend/services/vault_inventory.py` next iteration so the next feature consuming the inventory (research briefs, outreach copy) doesn't drift the cap again.
+
