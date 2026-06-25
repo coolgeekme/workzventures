@@ -5477,57 +5477,86 @@ async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
                 dl_args = {"path": f.get("_path") or external_id}
             else:
                 dl_args = {"file_id": external_id}
-            raw_dl = await _composio_action_execute(
-                cfg["download"], src["composio_connected_id"], dl_args,
-                user_id=src.get("entity_id"),
-            )
-            dl_resp = _normalise_composio_response(raw_dl)
+
             blob: bytes | None = None
             action_error: str | None = None
-            if not dl_resp.get("successful"):
-                action_error = str(dl_resp.get("error"))[:160]
-            else:
-                dl_raw = dl_resp.get("data") or {}
-                # Drive's DOWNLOAD_FILE returns either `file` (a string of bytes,
-                # possibly base64), or a presigned URL. Other connectors use
-                # `content_base64`, `data`, or just `file_content`. Try all.
-                b64 = (
-                    dl_raw.get("content_base64") or dl_raw.get("file_content")
-                    or (dl_raw.get("file") if isinstance(dl_raw.get("file"), str) else None)
-                )
-                url = dl_raw.get("download_url") or dl_raw.get("url")
-                if not url and isinstance(dl_raw.get("file"), dict):
-                    url = dl_raw["file"].get("url") or dl_raw["file"].get("download_url")
-                if b64:
-                    import base64 as _b64
-                    try:
-                        blob = _b64.b64decode(b64)
-                    except Exception:
-                        blob = None
-                if blob is None and url:
-                    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as c:
-                        rr = await c.get(url)
-                        if rr.status_code < 400:
-                            blob = rr.content
-            # FALLBACK: predefined action couldn't deliver bytes (known
-            # Composio bug — "Missing presigned URL in upload response" on
-            # Drive; sporadic on other connectors). Try Proxy Execute next,
-            # which talks to the underlying API (Google / MS Graph / Box)
-            # directly and skips Composio's R2 staging path entirely.
-            if blob is None:
+
+            # PRIMARY PATH: Composio Proxy Execute → native provider API.
+            # Why proxy-first for Box/Drive/OneDrive/SharePoint: their
+            # predefined `*_DOWNLOAD_FILE` actions base64-inline the file
+            # bytes into Composio's tool-response envelope, which has a
+            # ~10MB hard cap on the server side ("The tool response payload
+            # is too large"). Proxy execute streams the binary via R2 with
+            # a presigned URL → no size limit. Dropbox falls through to the
+            # predefined action because we don't have a proxy endpoint
+            # configured for it (its API requires a Dropbox-API-Arg header,
+            # not query params).
+            if kind in PROXY_DOWNLOAD_ENDPOINTS:
                 blob = await _composio_proxy_download(
                     src["source_kind"], src["composio_connected_id"],
                     external_id, mime_type=mime, user_id=src.get("entity_id"),
                 )
+
+            # FALLBACK PATH: predefined action. Wrapped in its own try/except
+            # so a Composio 502 (payload-too-large, rate-limit, etc.) doesn't
+            # bubble out and skip recording per-file errors.
             if blob is None:
-                # Surface the original action error if we have one, else a generic.
+                try:
+                    raw_dl = await _composio_action_execute(
+                        cfg["download"], src["composio_connected_id"], dl_args,
+                        user_id=src.get("entity_id"),
+                    )
+                    dl_resp = _normalise_composio_response(raw_dl)
+                    if not dl_resp.get("successful"):
+                        action_error = str(dl_resp.get("error"))[:160]
+                    else:
+                        dl_raw = dl_resp.get("data") or {}
+                        # Drive returns either `file` (string bytes, possibly base64),
+                        # or a presigned URL. Other connectors use `content_base64`,
+                        # `data`, or just `file_content`. Try them all.
+                        b64 = (
+                            dl_raw.get("content_base64") or dl_raw.get("file_content")
+                            or (dl_raw.get("file") if isinstance(dl_raw.get("file"), str) else None)
+                        )
+                        url = dl_raw.get("download_url") or dl_raw.get("url")
+                        if not url and isinstance(dl_raw.get("file"), dict):
+                            url = dl_raw["file"].get("url") or dl_raw["file"].get("download_url")
+                        if b64:
+                            import base64 as _b64
+                            try:
+                                blob = _b64.b64decode(b64)
+                            except Exception:
+                                blob = None
+                        if blob is None and url:
+                            async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as c:
+                                rr = await c.get(url)
+                                if rr.status_code < 400:
+                                    blob = rr.content
+                except HTTPException as e:
+                    # Composio returned 4xx/5xx — most commonly the "tool
+                    # response payload is too large" message for files
+                    # over ~10MB on the predefined action path. Surface
+                    # this so the seller sees what happened if proxy
+                    # ALSO failed (it usually doesn't, but log defensively).
+                    action_error = str(e.detail)[:160]
+
+            if blob is None:
                 errors.append(
-                    f"{name}: download failed via action + proxy"
-                    + (f" (action error: {action_error})" if action_error else "")
+                    f"{name}: download failed via proxy + action"
+                    + (f" (action: {action_error})" if action_error else "")
                 )
                 continue
-            if len(blob) > 50 * 1024 * 1024:
-                errors.append(f"{name}: exceeds 50 MB cap, skipped")
+            # Sanity cap so a runaway connection can't blow the pod. GridFS
+            # handles arbitrary size on the storage side; the cap exists to
+            # protect against accidental misconfigurations (e.g. a 5GB ISO).
+            # Per user request "no limit to the payload amount" — raised
+            # from 50MB → 500MB so org charts, signed COIs, deck rasters all
+            # mirror cleanly. Files larger than this are explicitly listed.
+            if len(blob) > 500 * 1024 * 1024:
+                errors.append(
+                    f"{name}: {len(blob) // (1024*1024)} MB exceeds the 500 MB per-file safety cap. "
+                    "Compress, split, or share via a direct preview link instead."
+                )
                 continue
             await _mirror_one_file(lid, sid, src["source_kind"], name, blob, mime, external_id, user_id)
             pulled += 1
@@ -7275,9 +7304,142 @@ async def vault_provenance_certificate(rid: str, request: Request, user=Depends(
     )
 
 
+async def _run_findings_job(job_id: str, rid: str, user_id: str) -> None:
+    """Heavy AI analysis task — runs in the background so the HTTP request
+    that kicked it returns immediately. Cloudflare otherwise 524s after
+    100 s. The frontend polls `/findings-job/{job_id}` until status
+    terminal (completed | failed).
+
+    No per-job time cap: institutional vaults can hold hundreds of large
+    files and the Claude pass may legitimately take several minutes. The
+    task awaits the LLM call directly (no `asyncio.wait_for`)."""
+    started = now_utc()
+    await db.findings_jobs.update_one(
+        {"id": job_id},
+        {"$set": {"status": "running", "started_at": started.isoformat()}},
+    )
+    try:
+        files = await db.deal_room_files.find({"room_id": rid}, {"_id": 0}).sort("uploaded_at", 1).to_list(50)
+        if not files:
+            await db.findings_jobs.update_one(
+                {"id": job_id},
+                {"$set": {"status": "failed", "error": "No files in room yet",
+                          "finished_at": now_utc().isoformat()}},
+            )
+            return
+
+        inventory = []
+        for idx, f in enumerate(files, start=1):
+            pages = f.get("pages") or []
+            if pages:
+                page_blocks = []
+                for p in pages[:6]:
+                    page_blocks.append(f"  <page n={p['page']}>\n  {p.get('text','')[:800]}\n  </page>")
+                body_block = "\n".join(page_blocks)
+            else:
+                body_block = (f.get("content") or "")[:1500]
+            inventory.append(
+                f"[{idx}] file_id={f['id']} · filename={f['filename']} · folder={f['folder']} · page_count={f.get('page_count', 1)}\n{body_block}"
+            )
+        files_block = "\n\n---\n\n".join(inventory)
+
+        sys = """You are a senior M&A diligence analyst. Given a numbered file inventory with per-page markers <page n=X>, produce STRICT JSON findings.
+Return: {"findings":[{"severity":"high|medium|low","workstream":"finance|legal|hr|it|operations|commercial","title":str,"description":str,"file_index":int,"page":int,"excerpt":str}]}
+Cap to 10 findings. Each excerpt MUST be a verbatim short quote (≤200 chars) drawn from the exact referenced page. "page" MUST be the integer from the <page n=X> tag the excerpt came from (use 1 if unknown). Be specific."""
+
+        raw = await call_claude(sys, f"File inventory:\n\n{files_block}\n\nReturn JSON now.", session_id=f"findings-{rid}-{job_id}")
+        data = safe_json_loads(raw)
+        findings = data.get("findings", []) if isinstance(data, dict) else []
+        inserted = []
+        for f in findings[:10]:
+            try:
+                idx = int(f.get("file_index", 0))
+            except Exception:
+                idx = 0
+            cited_file = files[idx - 1] if 1 <= idx <= len(files) else None
+            try:
+                page_num = int(f.get("page") or 1)
+            except Exception:
+                page_num = 1
+            page_count = (cited_file or {}).get("page_count", 1) or 1
+            if page_num < 1 or page_num > page_count:
+                page_num = 1
+            doc = {
+                "id": str(uuid.uuid4()),
+                "room_id": rid,
+                "severity": f.get("severity", "medium"),
+                "workstream": f.get("workstream", "operations"),
+                "title": (f.get("title") or "Untitled finding")[:200],
+                "description": (f.get("description") or "")[:1000],
+                "citation": {
+                    "file_id": cited_file["id"] if cited_file else None,
+                    "filename": cited_file["filename"] if cited_file else None,
+                    "page": page_num if cited_file else None,
+                    "excerpt": (f.get("excerpt") or "")[:240],
+                },
+                "created_at": now_utc().isoformat(),
+            }
+            inserted.append(doc)
+        if inserted:
+            await db.deal_room_findings.insert_many(inserted)
+            for d in inserted:
+                d.pop("_id", None)
+
+        duration = int((now_utc() - started).total_seconds() * 1000)
+        await db.findings_jobs.update_one(
+            {"id": job_id},
+            {"$set": {
+                "status": "completed",
+                "findings_count": len(inserted),
+                "files_analyzed": len(files),
+                "finished_at": now_utc().isoformat(),
+                "duration_ms": duration,
+            }},
+        )
+        await log_agent_activity(
+            "findings-agent",
+            f"room:{rid} · {len(inserted)} findings",
+            "completed",
+            user_id=user_id,
+            duration_ms=duration,
+        )
+        await log_audit(user_id, "dealroom.findings.generate", rid, {"count": len(inserted), "job_id": job_id})
+        # Bitcoin-anchored proof of findings (digest of the sorted findings JSON).
+        asyncio.create_task(notarize_event(
+            kind="vault.findings",
+            target_id=rid,
+            payload={
+                "vault_id": rid,
+                "buyer_id": user_id,
+                "generated_at": now_utc().isoformat(),
+                "findings": [
+                    {"id": d["id"], "severity": d["severity"], "workstream": d["workstream"],
+                     "title": d["title"], "citation": d.get("citation")}
+                    for d in inserted
+                ],
+            },
+            owner_user_id=user_id,
+            label=f"AI findings · {len(inserted)} items",
+        ))
+    except Exception as e:
+        await db.findings_jobs.update_one(
+            {"id": job_id},
+            {"$set": {"status": "failed", "error": str(e)[:500],
+                      "finished_at": now_utc().isoformat()}},
+        )
+        await log_agent_activity("findings-agent", f"room:{rid}", "failed",
+                                  user_id=user_id, friction=str(e)[:200])
+
+
 @api_router.post("/deal-rooms/{rid}/generate-findings")
 async def generate_findings(rid: str, user=Depends(get_current_user)):
-    """AI reads every uploaded file in the room and produces structured findings with citations."""
+    """Kick off AI findings generation as a background job. Returns
+    immediately with a job_id the client polls via `/findings-job/{job_id}`.
+
+    Previously this endpoint ran the Claude call synchronously, which
+    routinely hit Cloudflare's 100 s edge timeout for vaults with lots of
+    files — buyers saw a 524 with no recovery. The job pattern removes the
+    request-time ceiling entirely; the LLM can take as long as it needs."""
     room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
     if not room:
         raise HTTPException(status_code=404, detail="Vault not found")
@@ -7285,103 +7447,69 @@ async def generate_findings(rid: str, user=Depends(get_current_user)):
     if role not in ("buyer", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Only the buyer can generate findings")
 
-    files = await db.deal_room_files.find({"room_id": rid}, {"_id": 0}).sort("uploaded_at", 1).to_list(50)
-    if not files:
+    file_count = await db.deal_room_files.count_documents({"room_id": rid})
+    if file_count == 0:
         raise HTTPException(status_code=400, detail="No files in room yet")
 
-    # Build numbered file inventory with per-page markers so the model can cite pages
-    inventory = []
-    for idx, f in enumerate(files, start=1):
-        pages = f.get("pages") or []
-        if pages:
-            # Per-page excerpts, cap each page to 800 chars, max 6 pages per file to bound tokens
-            page_blocks = []
-            for p in pages[:6]:
-                page_blocks.append(f"  <page n={p['page']}>\n  {p.get('text','')[:800]}\n  </page>")
-            body_block = "\n".join(page_blocks)
-        else:
-            body_block = (f.get("content") or "")[:1500]
-        inventory.append(
-            f"[{idx}] file_id={f['id']} · filename={f['filename']} · folder={f['folder']} · page_count={f.get('page_count', 1)}\n{body_block}"
-        )
-    files_block = "\n\n---\n\n".join(inventory)
-
-    sys = """You are a senior M&A diligence analyst. Given a numbered file inventory with per-page markers <page n=X>, produce STRICT JSON findings.
-Return: {"findings":[{"severity":"high|medium|low","workstream":"finance|legal|hr|it|operations|commercial","title":str,"description":str,"file_index":int,"page":int,"excerpt":str}]}
-Cap to 10 findings. Each excerpt MUST be a verbatim short quote (≤200 chars) drawn from the exact referenced page. "page" MUST be the integer from the <page n=X> tag the excerpt came from (use 1 if unknown). Be specific."""
-
-    started = now_utc()
-    try:
-        raw = await call_claude(sys, f"File inventory:\n\n{files_block}\n\nReturn JSON now.", session_id=f"findings-{rid}")
-        data = safe_json_loads(raw)
-    except Exception as e:
-        await log_agent_activity("findings-agent", f"room:{rid}", "failed", user_id=user["id"], friction=str(e))
-        raise HTTPException(status_code=502, detail=f"AI findings failed: {e}")
-
-    findings = data.get("findings", []) if isinstance(data, dict) else []
-    inserted = []
-    for f in findings[:10]:
-        try:
-            idx = int(f.get("file_index", 0))
-        except Exception:
-            idx = 0
-        cited_file = files[idx - 1] if 1 <= idx <= len(files) else None
-        try:
-            page_num = int(f.get("page") or 1)
-        except Exception:
-            page_num = 1
-        page_count = (cited_file or {}).get("page_count", 1) or 1
-        if page_num < 1 or page_num > page_count:
-            page_num = 1
-        doc = {
-            "id": str(uuid.uuid4()),
-            "room_id": rid,
-            "severity": f.get("severity", "medium"),
-            "workstream": f.get("workstream", "operations"),
-            "title": (f.get("title") or "Untitled finding")[:200],
-            "description": (f.get("description") or "")[:1000],
-            "citation": {
-                "file_id": cited_file["id"] if cited_file else None,
-                "filename": cited_file["filename"] if cited_file else None,
-                "page": page_num if cited_file else None,
-                "excerpt": (f.get("excerpt") or "")[:240],
-            },
-            "created_at": now_utc().isoformat(),
-        }
-        inserted.append(doc)
-
-    if inserted:
-        await db.deal_room_findings.insert_many(inserted)
-        for d in inserted:
-            d.pop("_id", None)
-
-    duration = int((now_utc() - started).total_seconds() * 1000)
-    await log_agent_activity(
-        "findings-agent",
-        f"room:{rid} · {len(inserted)} findings",
-        "completed",
-        user_id=user["id"],
-        duration_ms=duration,
+    # If a job is already running, don't queue a second one — return the
+    # in-flight job so the client can resume polling.
+    inflight = await db.findings_jobs.find_one(
+        {"room_id": rid, "status": {"$in": ["pending", "running"]}},
+        {"_id": 0},
+        sort=[("created_at", -1)],
     )
-    await log_audit(user["id"], "dealroom.findings.generate", rid, {"count": len(inserted)})
-    # Bitcoin-anchored proof of findings (digest of the sorted findings JSON)
-    asyncio.create_task(notarize_event(
-        kind="vault.findings",
-        target_id=rid,
-        payload={
-            "vault_id": rid,
-            "buyer_id": user["id"],
-            "generated_at": now_utc().isoformat(),
-            "findings": [
-                {"id": d["id"], "severity": d["severity"], "workstream": d["workstream"],
-                 "title": d["title"], "citation": d.get("citation")}
-                for d in inserted
-            ],
-        },
-        owner_user_id=user["id"],
-        label=f"AI findings · {len(inserted)} items",
-    ))
-    return {"ok": True, "findings": inserted, "files_analyzed": len(files)}
+    if inflight:
+        return {"job_id": inflight["id"], "status": inflight["status"],
+                "already_running": True,
+                "created_at": inflight.get("created_at")}
+
+    job_id = str(uuid.uuid4())
+    await db.findings_jobs.insert_one({
+        "id": job_id,
+        "room_id": rid,
+        "requested_by": user["id"],
+        "status": "pending",
+        "files_to_analyze": file_count,
+        "findings_count": 0,
+        "created_at": now_utc().isoformat(),
+        "started_at": None,
+        "finished_at": None,
+        "error": None,
+    })
+    asyncio.create_task(_run_findings_job(job_id, rid, user["id"]))
+    return {"job_id": job_id, "status": "pending", "already_running": False,
+            "files_to_analyze": file_count}
+
+
+@api_router.get("/deal-rooms/{rid}/findings-job/{job_id}")
+async def get_findings_job(rid: str, job_id: str, user=Depends(get_current_user)):
+    """Poll endpoint for the AI findings job. Returns the job document so
+    the UI can display 'Analyzing N files… (started 32s ago)' and switch
+    to a completed/failed state when the task finishes."""
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    await participant_check(room, user)
+    job = await db.findings_jobs.find_one({"id": job_id, "room_id": rid}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@api_router.get("/deal-rooms/{rid}/findings-job")
+async def get_latest_findings_job(rid: str, user=Depends(get_current_user)):
+    """Convenience: return the most recent job for this room so a buyer who
+    refreshes the page mid-run can re-attach to the polling cycle without
+    needing the original job_id."""
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    await participant_check(room, user)
+    job = await db.findings_jobs.find_one(
+        {"room_id": rid}, {"_id": 0},
+        sort=[("created_at", -1)],
+    )
+    return job or {}
 
 
 # --- Co-pilot (chat against the file corpus, with citations) ---

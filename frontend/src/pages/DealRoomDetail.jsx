@@ -48,6 +48,42 @@ export default function DealRoomDetail() {
     api.get("/drl-templates").then((r) => setTemplates(r.data));
   }, [id]);
 
+  // On mount, if a findings job is already in flight for this room (e.g.
+  // user refreshed the page mid-run), re-attach to the polling loop so
+  // they see the result land instead of being stranded.
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const jr = await api.get(`/deal-rooms/${id}/findings-job`);
+        const job = jr.data;
+        if (cancelled || !job || !job.id) return;
+        if (job.status !== "pending" && job.status !== "running") return;
+        setBusy(true);
+        toast.info("Resuming analysis already in progress…");
+        while (!cancelled) {
+          await new Promise((res) => setTimeout(res, 2500));
+          let cur;
+          try {
+            cur = (await api.get(`/deal-rooms/${id}/findings-job/${job.id}`)).data;
+          } catch { continue; }
+          if (cur.status === "completed") {
+            toast.success(`${cur.findings_count} findings generated`);
+            await load();
+            break;
+          }
+          if (cur.status === "failed") {
+            toast.error(cur.error || "Analysis failed");
+            break;
+          }
+        }
+        setBusy(false);
+      } catch { /* no in-flight job, nothing to do */ }
+    })();
+    return () => { cancelled = true; };
+  }, [id]);
+
   if (!room) return <div className="px-8 py-8 text-sm text-[var(--wz-text-secondary)]">Loading the Vault…</div>;
 
   const isBuyer = user?.id === room.buyer_id;
@@ -154,12 +190,48 @@ export default function DealRoomDetail() {
   const generateFindings = async () => {
     setBusy(true);
     try {
+      // Kick off the background job. We get back a job_id immediately —
+      // Cloudflare's 100s edge timeout no longer matters because the AI
+      // analysis runs in a background task and we just poll for status.
       const r = await api.post(`/deal-rooms/${id}/generate-findings`);
-      toast.success(`${r.data.findings.length} findings generated from ${r.data.files_analyzed} files`);
-      load();
+      const jobId = r.data.job_id;
+      if (r.data.already_running) {
+        toast.info("An analysis is already running — picking up where it left off…");
+      } else {
+        toast.info(`Analyzing ${r.data.files_to_analyze || ""} file${r.data.files_to_analyze === 1 ? "" : "s"}… we'll notify you the moment it completes.`);
+      }
+      // Poll every 2.5s. No client-side timeout — sellers can have
+      // hundreds of large files and the Claude pass may take minutes.
+      const pollFor = async (jid) => {
+        while (true) {
+          await new Promise((res) => setTimeout(res, 2500));
+          let job;
+          try {
+            const jr = await api.get(`/deal-rooms/${id}/findings-job/${jid}`);
+            job = jr.data;
+          } catch (err) {
+            // Network blip — keep polling rather than aborting. The job
+            // is still running server-side.
+            continue;
+          }
+          if (job.status === "completed") {
+            toast.success(`${job.findings_count} findings generated from ${job.files_analyzed} files`);
+            await load();
+            return;
+          }
+          if (job.status === "failed") {
+            toast.error(job.error || "Analysis failed");
+            return;
+          }
+          // status pending|running → keep polling
+        }
+      };
+      await pollFor(jobId);
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Failed");
-    } finally { setBusy(false); }
+      toast.error(e?.response?.data?.detail || "Failed to start analysis");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const askCopilot = async (e) => {
