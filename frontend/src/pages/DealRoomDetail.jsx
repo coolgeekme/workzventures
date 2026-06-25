@@ -86,7 +86,6 @@ export default function DealRoomDetail() {
   // when the user picks a different version from the dropdown.
   useEffect(() => {
     if (selectedSnapshotId) loadSnapshotDetail(selectedSnapshotId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSnapshotId]);
 
   // On mount, if a findings job is already in flight for this room (e.g.
@@ -1095,6 +1094,87 @@ export default function DealRoomDetail() {
       {/* TAB: Activity — Bitcoin-anchored audit trail of every Vault action */}
       {tab === "activity" && (
         <VaultActivity roomId={id} accentClass={accentClass} />
+      )}
+
+      {/* Email findings PDF modal */}
+      {emailModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => !emailing && setEmailModal(false)}
+          data-testid="email-findings-modal"
+        >
+          <div
+            className="wz-card max-w-md w-full p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <div className="font-display tracking-tight text-lg">Email findings report</div>
+                <div className="text-xs text-[var(--wz-text-secondary)] mt-1">
+                  Sends a branded PDF of this snapshot via NextCapOS. Each delivery is logged.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => !emailing && setEmailModal(false)}
+                className="text-[var(--wz-text-tertiary)] hover:text-[var(--wz-text-primary)]"
+                data-testid="email-findings-close"
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="overline block mb-1">Recipients</label>
+                <input
+                  type="text"
+                  placeholder="alice@firm.com, bob@firm.com"
+                  className="wz-input w-full text-sm"
+                  value={emailRecipients}
+                  onChange={(e) => setEmailRecipients(e.target.value)}
+                  disabled={emailing}
+                  data-testid="email-findings-recipients"
+                />
+                <div className="text-[10px] text-[var(--wz-text-tertiary)] mt-1">
+                  Comma, semicolon or space separated · max 10
+                </div>
+              </div>
+              <div>
+                <label className="overline block mb-1">Note (optional)</label>
+                <textarea
+                  rows={3}
+                  placeholder="Sharing the latest diligence findings for review…"
+                  className="wz-input w-full text-sm"
+                  value={emailNote}
+                  onChange={(e) => setEmailNote(e.target.value)}
+                  disabled={emailing}
+                  data-testid="email-findings-note"
+                />
+              </div>
+            </div>
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setEmailModal(false)}
+                disabled={emailing}
+                className="wz-btn wz-btn-secondary text-xs"
+                data-testid="email-findings-cancel"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={sendFindingsEmail}
+                disabled={emailing || !emailRecipients.trim()}
+                className="wz-btn wz-btn-gold text-xs flex items-center gap-2"
+                data-testid="email-findings-send"
+              >
+                {emailing ? "Sending…" : "Send PDF"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Watermarked in-browser PDF / Office preview modal */}

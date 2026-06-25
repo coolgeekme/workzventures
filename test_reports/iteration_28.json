@@ -1,0 +1,30 @@
+{
+  "summary": "iter-34 Findings Snapshots feature validated end-to-end (backend + frontend). 10/10 pytest unit tests PASS in test_findings_snapshots.py (list, detail+diff, PDF export, email send, diff helper). LIVE backend e2e confirmed: GET /findings-snapshots returns ordered snapshots with fresh_files_since_last_run; GET /findings-snapshots/{sid} returns findings array + diff (new/resolved/unchanged); GET .../pdf returns HTTP 200 application/pdf with valid %PDF- header and content-disposition 'Findings_Backfill_Test_Co_<date>.pdf'; POST .../email returns 200 sent=1 to mira@workz.example.com. Frontend Playwright e2e (buyer alex on 'Backfill Test Co' room, route /app/rooms/{rid}) confirmed: tab-findings click reveals findings-snapshot-picker (7 options, first labelled 'Latest · DATE · 5 findings'), findings-export-pdf button downloads PDF via XHR (200/application/pdf) with sonner success toast, findings-email opens email-findings-modal with recipients input + note textarea + Cancel + Send PDF, submission POST returns 200 and modal closes + clears, switching snapshots in the dropdown rerenders findings list and recomputes findings-diff-badge (e.g. 'vs prior: +5 new'). Executive-summary card, severity-breakdown pills (3 HIGH / 2 MEDIUM / 0 LOW), 5 finding-citation-open-{id} chips, and PdfPreview deep-link all render correctly after a fresh /generate-findings run. The async findings job pattern (POST /deal-rooms/{rid}/generate-findings → poll GET /deal-rooms/{rid}/findings-job/{jid}) completes in <2.5s on this 8-file room and stamps job_id on every finding doc.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_findings_snapshots.py",
+    "/app/test_reports/pytest/findings_snapshots_iter28.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Legacy findings rows (pre iter-34) on production-like vaults have no job_id stamp, so opening any of the 6 legacy snapshots in 'Backfill Test Co' shows '0 high / 0 medium / 0 low' + empty findings list under the picker — visually confusing because the picker label still says 'N findings' (it counts from findings_jobs.findings_count, while the body filters deal_room_findings by job_id). Not a regression — new runs work correctly — but consider a one-time backfill migration that stamps the most recent prior job_id onto unstamped findings (or hides legacy snapshots whose findings cannot be resolved) so historical entries in the dropdown don't render as empty.",
+    "Old findings_jobs rows also lack severity_breakdown + executive_summary; the UI falls back to '0/0/0' pills gracefully but the Executive-summary card silently hides — same migration could backfill these from the findings docs to keep the dropdown experience consistent.",
+    "Empty/preview vaults (status='preview') do not surface the Findings tab content path at all for the buyer in our test — couldn't validate the 'no snapshots → Generate findings button' path on a preview vault. This appears to be NDA/state-gated. Confirmed via code review of DealRoomDetail.jsx lines 788-965 that snapshots.length===0 branch renders the Generate button (works in unit/mocked tests); main agent can verify visually on a fresh NDA-signed empty vault."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (10/10 pytest, 4/4 LIVE endpoints)", "frontend": "100% (picker, PDF export, Email modal+send, diff badge, snapshot switch, exec-summary card, severity pills, citation deep-link)"},
+  "test_credentials": "alex@workz.example.com / WorkzPass123! (buyer); mira@workz.example.com used as Email-modal recipient.",
+  "seed_data_creation": "No new seed. Used existing 'Backfill Test Co' active room (rid=4de70ac4-86e9-45b7-adb7-b95c6b975ddf). Triggered one new findings run via POST /generate-findings to validate job_id stamping + diff vs prior. New job_id=7eb4f576-e45f-419b-9531-de0754e8884a (5 findings, sev: 3 high / 2 medium / 0 low).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "iter-34 Findings Snapshots is shipped and working. Canonical regression test: /app/backend/tests/test_findings_snapshots.py (10 tests covering list ordering, fresh-file count, diff helper, PDF magic bytes + filename, email Resend mocking, 400 on empty recipients). Frontend testids to assert on Findings tab: findings-snapshot-picker (native <select>), findings-export-pdf, findings-email, email-findings-modal (contains input + textarea + Send PDF/Cancel), findings-diff-badge, findings-fresh-banner (only renders when fresh_files_since_last_run > 0), finding-citation-open-{id}. Route: /app/rooms/{rid}. PDF endpoint: /api/deal-rooms/{rid}/findings-snapshots/{sid}/pdf. Email endpoint: /api/deal-rooms/{rid}/findings-snapshots/{sid}/email. Resend IS configured (real send succeeded with sent=1). Note: legacy snapshots in old vaults have null severity_breakdown/executive_summary/job_id-on-findings — fresh runs after iter-34 populate all three correctly.",
+  "rca of the issue": "No bug requiring RCA. The transient visual oddity (severity pills showing 0/0/0 and 'No findings yet' body) on the initial UI run was traced to legacy findings docs lacking job_id (0/30 stamped). Fresh /generate-findings job correctly stamps job_id, severity_breakdown, executive_summary — verified by querying Mongo and reloading the UI. Recommendation captured under critical_code_review_comments for optional backfill."
+}
