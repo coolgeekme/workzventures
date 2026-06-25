@@ -7525,8 +7525,10 @@ async def get_latest_findings_job(rid: str, user=Depends(get_current_user)):
 
 # --- Co-pilot (chat against the file corpus, with citations) ---
 COPILOT_SYS = """You are the NextCapOS Vault Co-pilot — a senior M&A diligence analyst assisting a buyer.
-You answer questions strictly from the provided file inventory. Cite the file you draw from inline as [filename].
-If the answer is not in the files, say so explicitly. Keep answers under 220 words. Tone: institutional, terse, analytical."""
+You answer questions strictly from the provided file inventory. The inventory uses per-page markers <page n=X>.
+Cite the file AND page you drew from inline using the format [filename p.N] (e.g. [DPA.pdf p.3]). Cite every claim.
+If the answer is not in the inventory, say so explicitly. Be precise — verbatim figures, dates, named parties.
+Keep answers under 250 words. Tone: institutional, terse, analytical."""
 
 
 @api_router.get("/deal-rooms/{rid}/copilot")
@@ -7563,7 +7565,9 @@ async def ask_copilot(rid: str, body: CopilotAsk, user=Depends(get_current_user)
 
     # Self-heal: pick up any staged listing files (manual or external-source synced)
     # added after this Vault was opened, so the Copilot's context window is fresh.
-    if room.get("listing_id") and room.get("status") in ("pending_nda", "active", "preview"):
+    # Now runs regardless of status (defensive — every legitimate copilot caller
+    # has already passed participant_check + NDA gate above).
+    if room.get("listing_id"):
         try:
             await _clone_listing_files_into_room(
                 room["listing_id"], rid, room.get("seller_id") or user["id"], only_missing=True
@@ -7571,8 +7575,15 @@ async def ask_copilot(rid: str, body: CopilotAsk, user=Depends(get_current_user)
         except Exception as e:
             logger.warning(f"copilot: backfill clone failed for {rid}: {e}")
 
-    # Build context from files
-    files = await db.deal_room_files.find({"room_id": rid}, {"_id": 0}).sort("uploaded_at", 1).to_list(30)
+    # Read the full room — same cap as Findings (200) so a buyer can ask
+    # about ANY file in the vault, including those mirrored from Composio
+    # connections (Box / Drive / OneDrive / SharePoint / Dropbox). Files
+    # are read oldest-first so the inventory order is stable across turns
+    # and citations [filename p.N] remain consistent.
+    FILE_CAP = 200
+    total_files = await db.deal_room_files.count_documents({"room_id": rid})
+    files = await db.deal_room_files.find({"room_id": rid}, {"_id": 0}).sort("uploaded_at", 1).to_list(FILE_CAP)
+    truncated_inventory = total_files > FILE_CAP
     if not files:
         empty_reply = "No documents have been uploaded to this Vault yet. Ask the seller to upload diligence materials, then re-ask."
         asst_msg = {
@@ -7590,14 +7601,38 @@ async def ask_copilot(rid: str, body: CopilotAsk, user=Depends(get_current_user)
         asst_msg.pop("_id", None)
         return {"user_message": user_msg, "assistant_message": asst_msg}
 
-    # Build inventory with excerpts
+    # Dynamic per-file budget: total inventory text ≤ ~150 K chars (well
+    # inside Claude Sonnet's input window). For small vaults this means
+    # rich per-page detail; for large vaults each file gets a tighter slice
+    # but EVERY file is represented — buyer can still ask about file 187.
+    CHAR_BUDGET = 150_000
+    per_file_chars = max(800, min(6_000, CHAR_BUDGET // max(len(files), 1)))
+    # When per-file budget is generous, slice fewer-larger pages; when
+    # tight, slice more-smaller pages so the model still sees breadth.
+    pages_per_file = 6 if per_file_chars >= 3_000 else 3 if per_file_chars >= 1_500 else 2
+    chars_per_page = per_file_chars // pages_per_file
+
     inventory_lines = []
-    for f in files:
-        content = (f.get("content") or "")[:2500]
+    for idx, f in enumerate(files, start=1):
+        pages = f.get("pages") or []
+        if pages:
+            page_blocks = []
+            for p in pages[:pages_per_file]:
+                txt = (p.get("text") or "")[:chars_per_page]
+                page_blocks.append(f"  <page n={p.get('page', 1)}>\n  {txt}\n  </page>")
+            body_block = "\n".join(page_blocks)
+        else:
+            # Older mirrored files (or unsupported extract types) may have
+            # only `content` — render it as page 1.
+            txt = (f.get("content") or "")[:per_file_chars]
+            body_block = f"  <page n=1>\n  {txt}\n  </page>"
+        source_kind = (f.get("source") or {}).get("kind") if isinstance(f.get("source"), dict) else None
+        provenance = f" · source={source_kind}" if source_kind else ""
         inventory_lines.append(
-            f"== {f['filename']} (folder={f['folder']}) ==\n{content}"
+            f"[{idx}] filename={f['filename']} · folder={f.get('folder', 'other')}"
+            f" · page_count={f.get('page_count', 1)}{provenance}\n{body_block}"
         )
-    inventory = "\n\n".join(inventory_lines)
+    inventory = "\n\n---\n\n".join(inventory_lines)
 
     # Recent conversation (last 8 messages)
     history = await db.deal_room_messages.find(
@@ -7607,10 +7642,19 @@ async def ask_copilot(rid: str, body: CopilotAsk, user=Depends(get_current_user)
     history.reverse()
     transcript = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in history)
 
+    truncation_note = ""
+    if truncated_inventory:
+        truncation_note = (
+            f"\nNOTE: This Vault contains {total_files} files; only the {FILE_CAP} oldest "
+            "are shown above. If the buyer asks about a file not listed, say so "
+            "and suggest narrowing by folder.\n"
+        )
+
     prompt = (
-        f"FILE INVENTORY (only source you may cite):\n{inventory}\n\n"
-        + (f"PRIOR CONVERSATION:\n{transcript}\n\n" if transcript else "")
-        + f"BUYER QUESTION: {body.message}\n\nAnswer now."
+        f"FILE INVENTORY (only source you may cite — uses <page n=X> markers):\n{inventory}\n"
+        + truncation_note
+        + (f"\nPRIOR CONVERSATION:\n{transcript}\n" if transcript else "")
+        + f"\nBUYER QUESTION: {body.message}\n\nAnswer now."
     )
 
     started = now_utc()
@@ -7620,13 +7664,36 @@ async def ask_copilot(rid: str, body: CopilotAsk, user=Depends(get_current_user)
         logger.exception("Copilot failed")
         raise HTTPException(status_code=502, detail=f"Co-pilot failed: {e}")
 
-    # Extract cited filenames the model used in [filename] brackets
+    # Extract cited [filename p.N] OR legacy [filename] citations. The
+    # page-aware form lets the UI deep-link directly to that page in the
+    # preview pane; the legacy form (no page) defaults to page 1.
     import re
-    cited_names = set(re.findall(r"\[([^\[\]]+\.[a-zA-Z0-9]+)\]", answer or ""))
     citations = []
-    for f in files:
-        if f["filename"] in cited_names:
-            citations.append({"file_id": f["id"], "filename": f["filename"]})
+    seen_keys: set[tuple[str, int]] = set()
+    # Page-aware first.
+    for m in re.finditer(r"\[([^\[\]]+?\.[a-zA-Z0-9]+)\s+p\.(\d+)\]", answer or ""):
+        fname = m.group(1).strip()
+        try:
+            page = int(m.group(2))
+        except ValueError:
+            page = 1
+        key = (fname, page)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        match = next((f for f in files if f["filename"] == fname), None)
+        if match:
+            citations.append({"file_id": match["id"], "filename": fname, "page": page})
+    # Legacy form for backward-compat.
+    for m in re.finditer(r"\[([^\[\]]+?\.[a-zA-Z0-9]+)\](?!\s*p\.)", answer or ""):
+        fname = m.group(1).strip()
+        key = (fname, 1)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        match = next((f for f in files if f["filename"] == fname), None)
+        if match:
+            citations.append({"file_id": match["id"], "filename": fname, "page": 1})
 
     asst_msg = {
         "id": str(uuid.uuid4()),

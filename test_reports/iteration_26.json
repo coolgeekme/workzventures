@@ -1,0 +1,38 @@
+{
+  "summary": "Verified Co-pilot data-access bug fix end-to-end. (A) NEW pytest suite tests/test_copilot_data_access.py — all 6 tests PASS: (1) Composio-mirrored file appears in inventory with source=box tag and citation returns {file_id, page}, (2) 120-file vault has every file present (no truncation warning), (3) 220-file vault explicitly mentions 'only the 200 oldest', (4) legacy [filename]-only citation falls back to page 1, (5) backfill clone fires on every copilot call regardless of room status, (6) 200-file dynamic budget keeps prompt under 250K chars. (B) Backend regression — all 26 prior tests across test_box_recursive_sync (4), test_folder_picker (8), test_preview_images (7), test_large_files_and_findings_job (7) PASS. (C) NEW live integration tests/test_copilot_live.py against the preview backend — all 3 PASS: POST /api/deal-rooms/{rid}/copilot returned 200 in 13.02s (well under Cloudflare's 100s) with assistant_message.citations[i] containing {file_id, filename, page}; the user's 3 citations all overlapped with the vault's real file_ids and the response was NOT 'No documents have been uploaded'; GET /api/deal-rooms/{rid}/copilot history surfaces the new `page` field on every citation (verified 3 citations across 1 message); a small follow-up question completed in 3.95s confirming the dynamic 150K/N char budget keeps latency low. (D) Frontend smoke as alex@workz.example.com — login OK, /app/rooms renders 8 rooms, opened 'Backfill Test Co' (rid=4de70ac4-86e9-45b7-adb7-b95c6b975ddf), clicked Co-pilot tab, panel rendered with 'Vault Co-pilot · grounded in 8 files', the previous live-test question 'What files are in this vault? Please list each filename.' shows a complete answer enumerating all 8 files across Financials/Legal/Other folders, EACH listed with per-page markers in the new format [TEST_pre.txt p.1] / [TEST_post.txt p.1] / [TEST_iter22_access.txt p.1], plus three clickable citation badges at the bottom. ZERO JS console errors, ZERO pageerrors. Total: 35/35 tests passing (6 new copilot + 26 regression + 3 new live). Backend success rate 100%, Frontend smoke 100%.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_copilot_data_access.py",
+    "/app/backend/tests/test_copilot_live.py",
+    "/app/test_reports/pytest/iter26_copilot.xml",
+    "/app/test_reports/pytest/iter26_regression.xml",
+    "/app/test_reports/pytest/iter26_copilot_live.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now well over 10,000 lines. The ask_copilot helper (lines 7564-7700) shares ~80% of its structure with the findings inventory builder (per-page <page n=X> markers, file_id tagging, source=box hint, char budget). Extract the inventory builder into a shared helper backend/services/vault_inventory.py — duplicated code paths between Findings and Co-pilot is exactly the kind of drift that caused the 30-file cap miss in the first place.",
+    "FILE_CAP=200 is now a magic constant scattered in ask_copilot. Surface it as DOCUMENT_INVENTORY_CAP in a constants module (or top-of-file constant) so future endpoints (research briefs, outreach generation, vault Q&A in the buyer console) consume the same value. The current Findings-vs-Copilot 200/200 parity is correct but easy to drift again on the next feature.",
+    "The dynamic char budget (150K total / N files) is a fixed per-call ceiling; large institutional vaults at 200 files still get only 750 chars per file which truncates structured tables (financials, term sheets) mid-row. Consider a two-tier budget: K-most-relevant files (BM25/embedding-ranked) get a wider slice, the rest a summary line — same total budget, much higher precision on the cited files. Not a blocker for this iteration.",
+    "Page-aware citation parser (server.py ~7660) silently falls back to page=1 when the model returns the legacy [filename] form. This is correct for backwards-compat with old messages in history, but the test suite should also assert the parser handles malformed cases like [p.3] (no filename) and [filename p.abc] (non-integer page) gracefully — neither is currently exercised in test_copilot_data_access.py.",
+    "Backfill clone (_clone_listing_files_into_room) now fires on every POST /copilot call regardless of room status. Confirmed by test (e). However it runs synchronously inside the request — if a vault adds 50+ new Composio-mirrored files between turns, the buyer's next copilot message will block on clone + Claude. Should be moved to a background task or an idempotent 'is_clone_in_sync' check that skips the clone when the listing and room have identical file inventories.",
+    "test_copilot_live.py reuses the same room across all three tests; if Mira (seller) purges 'Backfill Test Co' or the demo sweeper hits it mid-suite, all three tests will skip silently. Consider creating a per-suite test room as a fixture to remove that external dependency."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_copilot_live.py (NEW — 3 live integration tests against the preview backend)"
+  ],
+  "success_rate": {"backend": "100% (35/35 — 6 new copilot + 26 regression + 3 new live)", "frontend": "100% (login + room list + Co-pilot tab rendered grounded-in-8-files header, 8-file enumeration with [filename p.N] markers, 3 clickable citation badges, 0 console/page errors)"},
+  "test_credentials": "alex@workz.example.com / WorkzPass123! (buyer) — verified live against the preview backend.",
+  "seed_data_creation": "test_copilot_live.py reuses Alex's pre-existing 'Backfill Test Co' deal room (rid=4de70ac4-86e9-45b7-adb7-b95c6b975ddf) on Mira's side. Each live POST appends two messages (user + assistant) to that room's copilot history — left in Mongo as evidence; will auto-purge via the 48h demo sweeper.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "test_copilot_live.py is the canonical live regression for the Co-pilot data-access fix. Run via `cd /app/backend && python -m pytest tests/test_copilot_live.py -v -p no:warnings`. The test asserts (a) 200 response with assistant_message.citations[i] containing {file_id, filename, page}, (b) at least one citation overlaps with a real vault file_id, (c) latency < 100s (Cloudflare edge timeout) and < 60s for small vaults. The token field returned by /api/auth/login is `token` (NOT `access_token`) — historical gotcha. Files for a deal room are returned on GET /api/deal-rooms/{rid}.files (NOT a separate /files endpoint). Co-pilot tab is the 4th tab in DealRoomDetail; selector `text=/Co-pilot/i` works.",
+  "rca of the issue": "Original RCA (verified during this iteration): Co-pilot's ask_copilot helper hard-coded a 30-file inventory cap whereas Findings used 200; older Composio-mirrored files were silently dropped from the prompt, so Co-pilot answered 'no documents' or omitted them. Fix raised the cap to 200 to match Findings, added <page n=X> markers per file (same pattern Findings already uses), updated the COPILOT_SYS prompt to require [filename p.N] citations, added a page-aware citation parser with legacy fallback (page=1), and runs the backfill clone regardless of room status so newly-mirrored files always reach the Co-pilot context. Dynamic char budget (150K total / N files) keeps end-to-end latency at 4-13s for ≤30 files — well inside Cloudflare's 100s edge timeout."
+}
