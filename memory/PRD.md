@@ -576,3 +576,14 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Tests**: `tests/test_copilot_data_access.py` (6 PASS) + `tests/test_copilot_live.py` (3 PASS — testing-agent-authored live integration) + 26 regression = **35/35 PASS**. Verified by testing agent (`iteration_26.json`): live POST returned in 13s with 3 citations carrying `page` numbers, follow-up turn in 3.95s, frontend renders [filename p.N] badges with 0 console errors.
 - **Tech debt flagged**: testing agent rightly pointed out `_build_vault_inventory` is now duplicated between Findings and Co-pilot. Extract to `backend/services/vault_inventory.py` next iteration so the next feature consuming the inventory (research briefs, outreach copy) doesn't drift the cap again.
 
+
+## Iter-32 (Feb 2026) — Citation deep-link to cited page in PdfPreview
+- **Ask** (accepted from prior enhancement offer): "wire the citation badge through to the PdfPreview viewer with ?page=3 so buyers jump straight to the cited evidence."
+- **What changed**:
+  - **`PdfPreview.jsx`**: new `initialPage` prop. Used to seed `pageNumber` when the modal opens; clamped to the document's real page count once the PDF loads (Claude occasionally cites p.12 on a 10-page doc — we snap to the last page so the buyer still sees something usable).
+  - **`DealRoomDetail.jsx`**:
+    - Co-pilot citation pills are now `<button>` elements (`data-testid="copilot-citation-<msg>-<idx>"`) that resolve `c.file_id` (or fallback `c.filename`) against `room.files`, call `setPreviewPage(c.page)` + `setPreviewFile(cited)`. Disabled state + tooltip if the file was removed.
+    - Findings tab citation header (`finding-citation-open-<id>`) is now identically clickable — same one-click "buyer reads the AI claim → opens the actual evidence" loop.
+    - New `previewPage` state on the page; reset to 1 on modal close and when opening a file from the regular file list (so existing flows are unchanged).
+- **Tests**: 6/6 backend copilot tests still pass (no contract change). Frontend lint clean. Smoke screenshots verified: click citation → modal opens on the cited file with the watermark + view-only stamp; 0 console errors.
+

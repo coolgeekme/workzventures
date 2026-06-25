@@ -68,9 +68,12 @@ function WatermarkOverlay({ text }) {
  *  - onClose: () => void
  *  - roomId: vault id
  *  - file: { id, filename, content_type, download_allowed }
+ *  - initialPage: optional 1-indexed page to open at (used by Co-pilot
+ *    citation deep-links — clicking [filename p.3] jumps straight to that
+ *    evidence). Falls back to 1 if omitted or out of range.
  *  - onDownload: optional callback (only invoked if file.download_allowed)
  */
-export default function PdfPreview({ open, onClose, roomId, file, onDownload }) {
+export default function PdfPreview({ open, onClose, roomId, file, onDownload, initialPage }) {
   const { user } = useAuth();
   const [blobUrl, setBlobUrl] = useState(null);
   const [textBody, setTextBody] = useState(null);
@@ -104,7 +107,10 @@ export default function PdfPreview({ open, onClose, roomId, file, onDownload }) 
     let active = true;
     setLoading(true);
     setErrorMsg(null);
-    setPageNumber(1);
+    // Seed the starting page from the caller (Co-pilot citation deep-link
+    // passes `initialPage` so the buyer lands on the cited evidence, not
+    // page 1). Clamped to the PDF's real page count once it loads below.
+    setPageNumber(Math.max(1, Number(initialPage) || 1));
     setPageCount(0);
     setBlobUrl(null);
     setTextBody(null);
@@ -151,7 +157,7 @@ export default function PdfPreview({ open, onClose, roomId, file, onDownload }) 
       active = false;
       if (blobUrl) window.URL.revokeObjectURL(blobUrl);
     };
-  }, [open, file?.id, roomId]);
+  }, [open, file?.id, roomId, initialPage]);
 
   // Measure modal width for responsive page sizing.
   useEffect(() => {
@@ -291,6 +297,11 @@ export default function PdfPreview({ open, onClose, roomId, file, onDownload }) 
               file={blobUrl}
               onLoadSuccess={({ numPages }) => {
                 setPageCount(numPages);
+                // Clamp the seeded page to the document's real length —
+                // Co-pilot may cite p.12 of a 10-page PDF if the model
+                // miscounts; we silently snap back to the last page so the
+                // buyer at least sees something usable.
+                setPageNumber((curr) => Math.max(1, Math.min(curr, numPages)));
                 setLoading(false);
               }}
               onLoadError={(err) => {

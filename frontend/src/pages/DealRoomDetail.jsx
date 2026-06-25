@@ -38,6 +38,9 @@ export default function DealRoomDetail() {
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
   const [previewFile, setPreviewFile] = useState(null);
+  // Page to deep-link to inside the PDF preview modal. Set by Co-pilot
+  // citation clicks so [filename p.3] jumps straight to page 3.
+  const [previewPage, setPreviewPage] = useState(1);
 
   const load = () => api.get(`/deal-rooms/${id}`).then((r) => setRoom(r.data));
   const loadCopilot = () => api.get(`/deal-rooms/${id}/copilot`).then((r) => setMessages(r.data));
@@ -507,7 +510,7 @@ export default function DealRoomDetail() {
                           but have extracted text — backend serves them). */}
                       {(f.gridfs_id || f.has_text) && (
                         <button
-                          onClick={() => setPreviewFile(f)}
+                          onClick={() => { setPreviewPage(1); setPreviewFile(f); }}
                           className="text-xs text-[var(--wz-text-secondary)] hover:text-white inline-flex items-center gap-1"
                           data-testid={`preview-${f.id}`}
                         >
@@ -706,14 +709,39 @@ export default function DealRoomDetail() {
                     </div>
                     <div className="font-medium">{f.title}</div>
                     <p className="text-sm text-[var(--wz-text-secondary)] mt-2 leading-relaxed">{f.description}</p>
-                    {f.citation?.filename && (
-                      <blockquote className="mt-3 border-l-2 border-[var(--wz-gold)] pl-4 text-xs italic text-[var(--wz-text-secondary)]" data-testid={`citation-${f.id}`}>
-                        <span className="font-mono-wz text-[var(--wz-gold)] not-italic">
-                          {f.citation.filename}{f.citation.page ? ` · p.${f.citation.page}` : ""}
-                        </span>
-                        {f.citation.excerpt && <> — &ldquo;{f.citation.excerpt}&rdquo;</>}
-                      </blockquote>
-                    )}
+                    {f.citation?.filename && (() => {
+                      const cited = (room?.files || []).find(
+                        (rf) => rf.id === f.citation.file_id || rf.filename === f.citation.filename,
+                      );
+                      const pageNum = Math.max(1, Number(f.citation.page) || 1);
+                      const canOpen = !!cited;
+                      return (
+                        <blockquote
+                          className="mt-3 border-l-2 border-[var(--wz-gold)] pl-4 text-xs italic text-[var(--wz-text-secondary)]"
+                          data-testid={`citation-${f.id}`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!canOpen) return;
+                              setPreviewPage(pageNum);
+                              setPreviewFile(cited);
+                            }}
+                            disabled={!canOpen}
+                            title={canOpen
+                              ? `Open ${f.citation.filename} at page ${pageNum}`
+                              : `${f.citation.filename} — file no longer in vault`}
+                            data-testid={`finding-citation-open-${f.id}`}
+                            className={`font-mono-wz text-[var(--wz-gold)] not-italic ${
+                              canOpen ? "hover:underline cursor-pointer" : "opacity-60 cursor-not-allowed"
+                            }`}
+                          >
+                            {f.citation.filename}{f.citation.page ? ` · p.${f.citation.page}` : ""}
+                          </button>
+                          {f.citation.excerpt && <> — &ldquo;{f.citation.excerpt}&rdquo;</>}
+                        </blockquote>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
@@ -758,9 +786,43 @@ export default function DealRoomDetail() {
                     <div className="text-sm leading-relaxed whitespace-pre-line">{m.content}</div>
                     {m.citations && m.citations.length > 0 && (
                       <div className="mt-3 pt-2 border-t border-[var(--wz-border)] flex flex-wrap gap-2">
-                        {m.citations.map((c) => (
-                          <span key={c.file_id} className="pill pill-gold">{c.filename}</span>
-                        ))}
+                        {m.citations.map((c, ci) => {
+                          // Resolve the cited file to the real row so we
+                          // can pass it to PdfPreview. Citations from
+                          // older messages may carry only `filename`, so
+                          // fall back to a name match.
+                          const cited = (room?.files || []).find(
+                            (rf) => rf.id === c.file_id || rf.filename === c.filename,
+                          );
+                          const pageNum = Math.max(1, Number(c.page) || 1);
+                          const disabled = !cited;
+                          return (
+                            <button
+                              key={`${c.file_id || c.filename}-${pageNum}-${ci}`}
+                              type="button"
+                              onClick={() => {
+                                if (!cited) return;
+                                setPreviewPage(pageNum);
+                                setPreviewFile(cited);
+                              }}
+                              disabled={disabled}
+                              title={disabled
+                                ? `${c.filename} — file no longer in vault`
+                                : `Open ${c.filename} at page ${pageNum}`}
+                              data-testid={`copilot-citation-${m.id}-${ci}`}
+                              className={`pill pill-gold transition-colors ${
+                                disabled
+                                  ? "opacity-50 cursor-not-allowed"
+                                  : "hover:bg-[var(--wz-gold)] hover:text-[var(--wz-bg)] cursor-pointer"
+                              }`}
+                            >
+                              {c.filename}
+                              {pageNum > 1 && (
+                                <span className="opacity-70 ml-1">· p.{pageNum}</span>
+                              )}
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -828,9 +890,10 @@ export default function DealRoomDetail() {
       {/* Watermarked in-browser PDF / Office preview modal */}
       <PdfPreview
         open={!!previewFile}
-        onClose={() => setPreviewFile(null)}
+        onClose={() => { setPreviewFile(null); setPreviewPage(1); }}
         roomId={id}
         file={previewFile}
+        initialPage={previewPage}
         onDownload={async () => {
           if (!previewFile) return;
           try {
