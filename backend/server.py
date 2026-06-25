@@ -7319,7 +7319,16 @@ async def _run_findings_job(job_id: str, rid: str, user_id: str) -> None:
         {"$set": {"status": "running", "started_at": started.isoformat()}},
     )
     try:
-        files = await db.deal_room_files.find({"room_id": rid}, {"_id": 0}).sort("uploaded_at", 1).to_list(50)
+        # Pull every file in the room. Cap at 200 to keep the Claude
+        # prompt under the model's input window; if the vault has more,
+        # we surface the truncation in the job doc so the buyer knows the
+        # analysis skipped the tail (and can re-trigger after reorganizing).
+        # Files are read oldest-first so the inventory order is stable
+        # across runs and the cited file_index numbers don't drift.
+        FILE_CAP = 200
+        total_files = await db.deal_room_files.count_documents({"room_id": rid})
+        files = await db.deal_room_files.find({"room_id": rid}, {"_id": 0}).sort("uploaded_at", 1).to_list(FILE_CAP)
+        truncated = total_files > FILE_CAP
         if not files:
             await db.findings_jobs.update_one(
                 {"id": job_id},
@@ -7392,6 +7401,8 @@ Cap to 10 findings. Each excerpt MUST be a verbatim short quote (≤200 chars) d
                 "status": "completed",
                 "findings_count": len(inserted),
                 "files_analyzed": len(files),
+                "total_files_in_room": total_files,
+                "truncated": truncated,
                 "finished_at": now_utc().isoformat(),
                 "duration_ms": duration,
             }},

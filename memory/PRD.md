@@ -537,3 +537,28 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Tests**: `tests/test_folder_picker.py` (8 mocked) + `tests/test_box_recursive_sync.py` (4) + 12 regression + 4 live (testing-agent-authored `test_folder_picker_live.py`) = **28/28 PASS**. Verified by testing agent (`iteration_24.json`) — 100% backend; frontend code-review clean (all data-testids present).
 - **Known tech debt** (testing agent flagged): `server.py` now 10,088 lines. External-source code (4408-5180) is the obvious next extraction candidate → `backend/integrations/external_sources.py`.
 
+
+## Iter-30 (Feb 2026) — Two bug fixes: Box payload-too-large + Findings 524 timeout
+### Bug 1: Box `BOX_DOWNLOAD_FILE` "tool response payload is too large"
+- **Reported**: `Apzme org. chart 6-12-26 (detailed).pdf: Composio action BOX_DOWNLOAD_FILE failed: {"error":{"message":"The tool response payload is too large…"}}`
+- **Root cause**: Composio's predefined `*_DOWNLOAD_FILE` actions base64-inline the file bytes into their JSON envelope, which has a ~10 MB hard cap on the server side. The previous code tried this action FIRST and only fell back to Composio Proxy on `successful=false` — but a Composio 502 raises an `HTTPException`, which the outer try/except caught and recorded as a per-file error without ever trying the proxy path.
+- **Fix** (`server.py:5473-5577`): inverted the order. For Box / Drive / OneDrive / SharePoint we now try **Composio Proxy Execute first** (streams via R2 presigned URLs — no payload cap). The predefined action is the fallback for the one provider (Dropbox) where we don't have a proxy endpoint configured. The fallback path is wrapped in its own try/except so a Composio 502 doesn't bubble out.
+- **Cap lift**: per user request "no limit to the payload amount", the per-file sanity cap was raised 50 MB → 500 MB.
+
+### Bug 2: Findings analysis Cloudflare 524 ("origin did not respond within allowed time")
+- **Reported**: "We can't have any limits when analyzing. Some companies may have a lot of data to review."
+- **Root cause**: `POST /api/deal-rooms/{rid}/generate-findings` ran the Claude pass synchronously inside the request handler. Vaults with more than ~5-10 files routinely exceeded Cloudflare's 100 s edge timeout → buyer saw a 524 with no recovery.
+- **Fix** (`server.py:7307-7510`): converted to a background-job pattern.
+  - New `_run_findings_job(job_id, rid, user_id)` runs the Claude call in an `asyncio.create_task`.
+  - `POST /generate-findings` now returns `{job_id, status:'pending', files_to_analyze, already_running}` in <0.5 s.
+  - New `GET /findings-job/{job_id}` and `GET /findings-job` (latest) for polling.
+  - File cap raised 50 → 200; `truncated: bool` + `total_files_in_room` surfaced in the job doc when the cap is hit.
+  - In-flight dedupe: a second click returns the existing job rather than spawning a duplicate.
+  - Failure path: Claude exceptions mark job `status='failed'` with `error` — never silently stuck on `running`.
+- **Frontend** (`DealRoomDetail.jsx`): `generateFindings` now polls `/findings-job/{job_id}` every 2.5 s with no client-side timeout. Mount-time `useEffect` re-attaches to any in-flight job (page-refresh resilience). Toasts on completion / failure.
+
+### Tests
+- `tests/test_large_files_and_findings_job.py` (7 PASS): proxy-first avoids predefined action, 502 falls through gracefully, 60 MB file mirrors under the 500 MB cap, background task transitions states + writes findings, Claude exceptions → failed, in-flight returned not duplicated, handler returns <0.5 s.
+- `tests/test_findings_job_live.py` (4 PASS — testing-agent-authored): live preview-backend round-trip with Alex's "Backfill Test Co" deal room. POST < 1 s; polling reaches `completed` (~10 s for 8 files); zero Cloudflare 524s.
+- **30/30 backend tests pass**, including all 19 prior regression tests. Frontend renders cleanly with 0 console errors. Verified by testing agent (`iteration_25.json`).
+
