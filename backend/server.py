@@ -13,7 +13,7 @@ import shutil
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import secrets
-from mailer import send_email, link as mail_link
+from mailer import send_email, send_email_with_attachment, link as mail_link
 from typing import List, Optional, Literal, Dict, Any, Tuple
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Header, Request
@@ -28,7 +28,7 @@ import jwt as pyjwt
 import httpx
 import io
 from fastapi import UploadFile, File, Form
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 
 try:
     from pypdf import PdfReader
@@ -6129,7 +6129,36 @@ async def get_deal_room(rid: str, user=Depends(get_current_user)):
         fr.pop("content", None)
         room["files"].append(fr)
     room["requests"] = await db.deal_room_requests.find({"room_id": rid}, {"_id": 0}).sort("created_at", 1).to_list(200)
-    room["findings"] = await db.deal_room_findings.find({"room_id": rid}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    # Findings: return ONLY the latest snapshot's findings instead of every
+    # finding ever generated (iter-34). Older snapshots are accessible via
+    # /findings-snapshots. Findings without a `job_id` are legacy rows from
+    # pre-snapshot runs — we include them as a synthetic snapshot ONLY when
+    # no current snapshot exists, so the UI degrades cleanly.
+    latest_job = await db.findings_jobs.find_one(
+        {"room_id": rid, "status": "completed"},
+        {"_id": 0},
+        sort=[("created_at", -1)],
+    )
+    if latest_job:
+        room["findings"] = await db.deal_room_findings.find(
+            {"room_id": rid, "job_id": latest_job["id"]}, {"_id": 0},
+        ).sort("created_at", -1).to_list(200)
+        room["latest_findings_snapshot"] = {
+            "job_id": latest_job["id"],
+            "created_at": latest_job.get("finished_at") or latest_job.get("created_at"),
+            "findings_count": latest_job.get("findings_count", 0),
+            "files_analyzed": latest_job.get("files_analyzed", 0),
+            "total_files_in_room": latest_job.get("total_files_in_room", 0),
+            "executive_summary": latest_job.get("executive_summary", ""),
+            "severity_breakdown": latest_job.get("severity_breakdown") or {"high": 0, "medium": 0, "low": 0},
+        }
+    else:
+        # No snapshot yet — fall back to any unstamped legacy findings so
+        # rooms analyzed before iter-34 don't lose their data.
+        room["findings"] = await db.deal_room_findings.find(
+            {"room_id": rid, "job_id": {"$exists": False}}, {"_id": 0},
+        ).sort("created_at", -1).to_list(200)
+        room["latest_findings_snapshot"] = None
     # Activity audit: log a `dealroom.view` event but rate-limit to once-per-hour
     # per user so the timeline isn't flooded by page reloads / polling. Skip for
     # preview vaults (QA mode) to keep their audit clean.
@@ -7376,6 +7405,11 @@ Cap to 10 findings. Each excerpt MUST be a verbatim short quote (≤200 chars) d
             doc = {
                 "id": str(uuid.uuid4()),
                 "room_id": rid,
+                # NEW: stamp the snapshot ID so this finding belongs to ONE
+                # specific Analyze run. Prior to iter-34 findings accumulated
+                # across runs with no way to filter — the UI showed every
+                # finding ever generated.
+                "job_id": job_id,
                 "severity": f.get("severity", "medium"),
                 "workstream": f.get("workstream", "operations"),
                 "title": (f.get("title") or "Untitled finding")[:200],
@@ -7394,6 +7428,38 @@ Cap to 10 findings. Each excerpt MUST be a verbatim short quote (≤200 chars) d
             for d in inserted:
                 d.pop("_id", None)
 
+        # Executive summary: one short Claude pass synthesizing the
+        # findings into a 1-2 sentence headline. Useful at the top of the
+        # PDF + in the snapshot list. Cheap (~200 tokens out) and bounded
+        # so a failure here doesn't fail the whole job.
+        executive_summary = ""
+        if inserted:
+            try:
+                summary_input = "\n".join(
+                    f"- [{d['severity']}/{d['workstream']}] {d['title']}: {d['description'][:160]}"
+                    for d in inserted
+                )
+                exec_sys = (
+                    "You are an M&A diligence analyst. Given a list of findings, write a "
+                    "1-2 sentence executive summary that a senior partner can read in 5 seconds. "
+                    "No preamble, no markdown. Mention the most material risk by name. "
+                    "If everything is low severity, say so explicitly."
+                )
+                executive_summary = (await call_claude(
+                    exec_sys, summary_input,
+                    session_id=f"findings-summary-{rid}-{job_id}",
+                ) or "").strip()[:600]
+            except Exception as se:
+                logger.warning(f"findings job {job_id} exec summary failed: {se}")
+                executive_summary = ""
+
+        # Severity breakdown for the snapshot list UI (so we don't have to
+        # re-query findings just to render badges in the picker).
+        severity_breakdown = {"high": 0, "medium": 0, "low": 0}
+        for d in inserted:
+            sev = d.get("severity", "medium")
+            severity_breakdown[sev] = severity_breakdown.get(sev, 0) + 1
+
         duration = int((now_utc() - started).total_seconds() * 1000)
         await db.findings_jobs.update_one(
             {"id": job_id},
@@ -7403,6 +7469,8 @@ Cap to 10 findings. Each excerpt MUST be a verbatim short quote (≤200 chars) d
                 "files_analyzed": len(files),
                 "total_files_in_room": total_files,
                 "truncated": truncated,
+                "executive_summary": executive_summary,
+                "severity_breakdown": severity_breakdown,
                 "finished_at": now_utc().isoformat(),
                 "duration_ms": duration,
             }},
@@ -7521,6 +7589,328 @@ async def get_latest_findings_job(rid: str, user=Depends(get_current_user)):
         sort=[("created_at", -1)],
     )
     return job or {}
+
+
+@api_router.get("/deal-rooms/{rid}/findings-snapshots")
+async def list_findings_snapshots(rid: str, user=Depends(get_current_user)):
+    """Snapshot picker backend. Returns every completed Findings run for
+    this Vault, latest first. Each snapshot carries enough metadata to
+    render the picker dropdown without an extra round-trip — exec summary,
+    findings count, severity breakdown, files analyzed."""
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    await participant_check(room, user)
+    jobs = await db.findings_jobs.find(
+        {"room_id": rid, "status": "completed"},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(50)
+
+    # "Fresh files" since latest analysis → drives the "5 new files · Re-run" banner.
+    fresh_count = 0
+    if jobs:
+        try:
+            last_run_iso = jobs[0].get("finished_at") or jobs[0].get("started_at") or jobs[0].get("created_at")
+            fresh_count = await db.deal_room_files.count_documents({
+                "room_id": rid,
+                "uploaded_at": {"$gt": last_run_iso},
+                "deleted_at": {"$exists": False},
+            })
+        except Exception:
+            fresh_count = 0
+    return {"snapshots": jobs, "fresh_files_since_last_run": fresh_count}
+
+
+def _diff_findings(current: list[dict], prior: list[dict]) -> dict:
+    """Match findings across snapshots on (workstream, normalized title).
+    Claude rephrases descriptions but rarely renames the title for the
+    same risk."""
+    def key(d):
+        return ((d.get("workstream") or "").lower(),
+                (d.get("title") or "").strip().lower())
+    cur_by = {key(d): d for d in current}
+    pri_by = {key(d): d for d in prior}
+    new = [cur_by[k] for k in cur_by if k not in pri_by]
+    resolved = [pri_by[k] for k in pri_by if k not in cur_by]
+    unchanged = [cur_by[k] for k in cur_by if k in pri_by]
+    return {"new": new, "resolved": resolved, "unchanged": unchanged}
+
+
+@api_router.get("/deal-rooms/{rid}/findings-snapshots/{job_id}")
+async def get_findings_snapshot(rid: str, job_id: str, user=Depends(get_current_user)):
+    """Findings for one snapshot + diff vs prior. Powers the picker detail
+    view and the +N/-M/=K diff badge."""
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    await participant_check(room, user)
+    job = await db.findings_jobs.find_one({"id": job_id, "room_id": rid}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    findings = await db.deal_room_findings.find(
+        {"room_id": rid, "job_id": job_id}, {"_id": 0},
+    ).sort("created_at", -1).to_list(200)
+    prior_job = await db.findings_jobs.find_one(
+        {"room_id": rid, "status": "completed",
+         "created_at": {"$lt": job["created_at"]}},
+        {"_id": 0},
+        sort=[("created_at", -1)],
+    )
+    diff_summary = None
+    if prior_job:
+        prior_findings = await db.deal_room_findings.find(
+            {"room_id": rid, "job_id": prior_job["id"]}, {"_id": 0},
+        ).to_list(200)
+        diff = _diff_findings(findings, prior_findings)
+        diff_summary = {
+            "new": len(diff["new"]),
+            "resolved": len(diff["resolved"]),
+            "unchanged": len(diff["unchanged"]),
+            "prior_job_id": prior_job["id"],
+            "prior_finished_at": prior_job.get("finished_at"),
+        }
+    return {"job": job, "findings": findings, "diff": diff_summary}
+
+
+def _build_findings_pdf(job: dict, findings: list[dict], room: dict) -> bytes:
+    """Branded PDF: header → exec summary → findings by severity →
+    verbatim-excerpt evidence appendix. Uses ReportLab (already in stack)."""
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether,
+    )
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=LETTER,
+        leftMargin=0.75 * inch, rightMargin=0.75 * inch,
+        topMargin=0.6 * inch, bottomMargin=0.6 * inch,
+        title=f"NextCapOS Findings · {room.get('listing_name', 'Vault')}",
+        author="NextCapOS",
+    )
+    styles = getSampleStyleSheet()
+    BLOOM_NAVY = colors.HexColor("#0B1B3D")
+    BLOOM_GOLD = colors.HexColor("#C9A14A")
+    SEV_COLOR = {
+        "high": colors.HexColor("#B91C1C"),
+        "medium": colors.HexColor("#B45309"),
+        "low": colors.HexColor("#15803D"),
+    }
+    h1 = ParagraphStyle("h1", parent=styles["Heading1"], textColor=BLOOM_NAVY, fontSize=18, leading=22)
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], textColor=BLOOM_NAVY, fontSize=13, leading=16, spaceBefore=16)
+    overline = ParagraphStyle("overline", parent=styles["BodyText"], fontSize=8,
+                              textColor=colors.HexColor("#666"), spaceAfter=2)
+    body = ParagraphStyle("body", parent=styles["BodyText"], fontSize=10, leading=14)
+    quote = ParagraphStyle("quote", parent=styles["BodyText"], fontSize=9, leading=12,
+                           leftIndent=12, textColor=colors.HexColor("#444"),
+                           borderColor=BLOOM_GOLD, borderPadding=4)
+    title_style = ParagraphStyle("title", parent=styles["BodyText"], fontSize=11,
+                                 leading=14, textColor=BLOOM_NAVY, spaceAfter=2,
+                                 fontName="Helvetica-Bold")
+
+    elems: list = []
+    elems.append(Paragraph("AI DILIGENCE FINDINGS", overline))
+    elems.append(Paragraph(room.get("listing_name") or "Vault Report", h1))
+    elems.append(Spacer(1, 4))
+    meta_bits = []
+    if job.get("finished_at"):
+        meta_bits.append(f"Generated {job['finished_at'][:10]}")
+    if job.get("files_analyzed"):
+        meta_bits.append(f"{job['files_analyzed']} files analyzed")
+    if job.get("findings_count") is not None:
+        meta_bits.append(f"{job['findings_count']} findings")
+    elems.append(Paragraph(" &nbsp; · &nbsp; ".join(meta_bits) or "—", body))
+
+    sev = job.get("severity_breakdown") or {"high": 0, "medium": 0, "low": 0}
+    chip_data = [[
+        Paragraph(f"<b>{sev.get('high', 0)}</b> high", body),
+        Paragraph(f"<b>{sev.get('medium', 0)}</b> medium", body),
+        Paragraph(f"<b>{sev.get('low', 0)}</b> low", body),
+    ]]
+    chip_tbl = Table(chip_data, colWidths=[1.2 * inch] * 3)
+    chip_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, 0), SEV_COLOR["high"]),
+        ("BACKGROUND", (1, 0), (1, 0), SEV_COLOR["medium"]),
+        ("BACKGROUND", (2, 0), (2, 0), SEV_COLOR["low"]),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    elems.append(Spacer(1, 10))
+    elems.append(chip_tbl)
+
+    summary_text = (job.get("executive_summary") or "").strip()
+    if summary_text:
+        elems.append(Paragraph("EXECUTIVE SUMMARY", overline))
+        elems.append(Paragraph("Headline", h2))
+        elems.append(Paragraph(summary_text, body))
+
+    elems.append(Paragraph("FINDINGS", overline))
+    elems.append(Paragraph("Detailed analysis", h2))
+    sev_order = ["high", "medium", "low"]
+    findings_by_sev = {s: [f for f in findings if f.get("severity") == s] for s in sev_order}
+    if not any(findings_by_sev.values()):
+        elems.append(Paragraph("<i>No findings in this snapshot.</i>", body))
+    for s in sev_order:
+        bucket = findings_by_sev[s]
+        if not bucket:
+            continue
+        elems.append(Spacer(1, 8))
+        sev_label = Paragraph(f"<font color='{SEV_COLOR[s].hexval()}'><b>{s.upper()} SEVERITY · {len(bucket)}</b></font>", body)
+        elems.append(sev_label)
+        for f in bucket:
+            cit = f.get("citation") or {}
+            cit_str = ""
+            if cit.get("filename"):
+                cit_str = f"<b>{cit['filename']}</b>"
+                if cit.get("page"):
+                    cit_str += f" · p.{cit['page']}"
+            block = [
+                Paragraph(f.get("title") or "Untitled finding", title_style),
+                Paragraph(f"<i>workstream:</i> {f.get('workstream', '—')}", body),
+                Paragraph((f.get("description") or "").replace("\n", "<br/>"), body),
+            ]
+            if cit.get("excerpt") and cit_str:
+                block.append(Spacer(1, 2))
+                block.append(Paragraph(f"&ldquo;{cit['excerpt']}&rdquo; — {cit_str}", quote))
+            block.append(Spacer(1, 6))
+            elems.append(KeepTogether(block))
+
+    cited = [f for f in findings if (f.get("citation") or {}).get("excerpt")]
+    if cited:
+        elems.append(PageBreak())
+        elems.append(Paragraph("EVIDENCE APPENDIX", overline))
+        elems.append(Paragraph("Verbatim excerpts", h2))
+        elems.append(Paragraph(
+            "Quoted text below is drawn verbatim from the cited file at the "
+            "cited page — included so reviewers can verify the AI's claims "
+            "without opening each source document.", body))
+        elems.append(Spacer(1, 8))
+        for f in cited:
+            cit = f["citation"]
+            cit_str = f"{cit.get('filename', '?')}"
+            if cit.get("page"):
+                cit_str += f" · p.{cit['page']}"
+            block = [
+                Paragraph(f"<b>{f.get('title')}</b> · <font color='#666'>{cit_str}</font>", body),
+                Paragraph(f"&ldquo;{cit.get('excerpt')}&rdquo;", quote),
+                Spacer(1, 8),
+            ]
+            elems.append(KeepTogether(block))
+
+    elems.append(Spacer(1, 14))
+    footer = ParagraphStyle("footer", parent=styles["BodyText"], fontSize=7,
+                            textColor=colors.HexColor("#999"), alignment=1)
+    elems.append(Paragraph(
+        f"Snapshot ID {job.get('id', '—')[:8]} · Generated by NextCapOS AI · "
+        f"This is a machine-generated analysis. Verify all claims against source files.",
+        footer,
+    ))
+
+    doc.build(elems)
+    pdf = buf.getvalue()
+    buf.close()
+    return pdf
+
+
+@api_router.get("/deal-rooms/{rid}/findings-snapshots/{job_id}/pdf")
+async def export_findings_pdf(rid: str, job_id: str, user=Depends(get_current_user)):
+    """Stream the branded PDF. Buyer clicks Export PDF → instant download."""
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    await participant_check(room, user)
+    job = await db.findings_jobs.find_one({"id": job_id, "room_id": rid}, {"_id": 0})
+    if not job or job.get("status") != "completed":
+        raise HTTPException(status_code=404, detail="Snapshot not found or not completed")
+    findings = await db.deal_room_findings.find(
+        {"room_id": rid, "job_id": job_id}, {"_id": 0},
+    ).sort("created_at", -1).to_list(200)
+    pdf_bytes = _build_findings_pdf(job, findings, room)
+    await log_audit(user["id"], "vault.findings.pdf_export", rid, {"job_id": job_id})
+    slug = (room.get("listing_name") or "vault").replace(" ", "_")[:40]
+    date_part = (job.get("finished_at") or now_utc().isoformat())[:10]
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="Findings_{slug}_{date_part}.pdf"'},
+    )
+
+
+class FindingsEmailRequest(BaseModel):
+    recipients: List[EmailStr]
+    note: Optional[str] = None
+
+
+@api_router.post("/deal-rooms/{rid}/findings-snapshots/{job_id}/email")
+async def email_findings_pdf(
+    rid: str, job_id: str, body: FindingsEmailRequest,
+    user=Depends(get_current_user),
+):
+    """Auditable share — emails PDF via Resend; each send logged."""
+    if not body.recipients:
+        raise HTTPException(status_code=400, detail="At least one recipient required")
+    if len(body.recipients) > 10:
+        raise HTTPException(status_code=400, detail="Max 10 recipients per send")
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    await participant_check(room, user)
+    job = await db.findings_jobs.find_one({"id": job_id, "room_id": rid}, {"_id": 0})
+    if not job or job.get("status") != "completed":
+        raise HTTPException(status_code=404, detail="Snapshot not found or not completed")
+    findings = await db.deal_room_findings.find(
+        {"room_id": rid, "job_id": job_id}, {"_id": 0},
+    ).sort("created_at", -1).to_list(200)
+    pdf_bytes = _build_findings_pdf(job, findings, room)
+
+    slug = (room.get("listing_name") or "vault").replace(" ", "_")[:40]
+    date_part = (job.get("finished_at") or now_utc().isoformat())[:10]
+    fname = f"Findings_{slug}_{date_part}.pdf"
+
+    subject = f"NextCapOS Diligence Findings · {room.get('listing_name', 'Vault')}"
+    html_body = (
+        f"<p>{user.get('name', 'A buyer')} shared an AI-generated diligence "
+        f"findings report for <b>{room.get('listing_name', 'a vault')}</b> "
+        f"with you via NextCapOS.</p>"
+        + (f"<blockquote>{body.note}</blockquote>" if body.note else "")
+        + f"<p>The full report is attached. Generated "
+          f"{(job.get('finished_at') or '')[:10]} · "
+          f"{job.get('findings_count', 0)} findings across "
+          f"{job.get('files_analyzed', 0)} files analyzed.</p>"
+    )
+
+    sent_count = 0
+    failures = []
+    for r in body.recipients:
+        try:
+            await send_email_with_attachment(
+                to=r,
+                subject=subject,
+                html=html_body,
+                attachment_filename=fname,
+                attachment_bytes=pdf_bytes,
+                attachment_mime="application/pdf",
+            )
+            sent_count += 1
+        except Exception as e:
+            failures.append({"to": r, "error": str(e)[:140]})
+
+    await log_audit(user["id"], "vault.findings.email", rid, {
+        "job_id": job_id,
+        "recipients": list(body.recipients),
+        "sent": sent_count,
+        "failed": [f["to"] for f in failures],
+    })
+    return {"ok": sent_count > 0, "sent": sent_count, "failures": failures}
+
+
 
 
 # --- Co-pilot (chat against the file corpus, with citations) ---

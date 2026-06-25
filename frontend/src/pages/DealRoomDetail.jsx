@@ -41,15 +41,53 @@ export default function DealRoomDetail() {
   // Page to deep-link to inside the PDF preview modal. Set by Co-pilot
   // citation clicks so [filename p.3] jumps straight to page 3.
   const [previewPage, setPreviewPage] = useState(1);
+  // Findings snapshots (iter-34): list of completed Analyze runs, the
+  // selected snapshot's job_id (latest by default), the diff vs prior,
+  // and the count of files added since the latest run (drives the
+  // "Re-analyze" banner).
+  const [snapshots, setSnapshots] = useState([]);
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState(null);
+  const [snapshotDetail, setSnapshotDetail] = useState(null); // { job, findings, diff }
+  const [freshFilesCount, setFreshFilesCount] = useState(0);
+  const [emailModal, setEmailModal] = useState(false);
+  const [emailRecipients, setEmailRecipients] = useState("");
+  const [emailNote, setEmailNote] = useState("");
+  const [emailing, setEmailing] = useState(false);
 
   const load = () => api.get(`/deal-rooms/${id}`).then((r) => setRoom(r.data));
   const loadCopilot = () => api.get(`/deal-rooms/${id}/copilot`).then((r) => setMessages(r.data));
+  const loadSnapshots = async () => {
+    try {
+      const r = await api.get(`/deal-rooms/${id}/findings-snapshots`);
+      setSnapshots(r.data.snapshots || []);
+      setFreshFilesCount(r.data.fresh_files_since_last_run || 0);
+      // Auto-select the latest snapshot the first time we load.
+      if ((r.data.snapshots || []).length > 0 && !selectedSnapshotId) {
+        setSelectedSnapshotId(r.data.snapshots[0].id);
+      }
+    } catch { /* no snapshots yet */ }
+  };
+  const loadSnapshotDetail = async (jobId) => {
+    if (!jobId) { setSnapshotDetail(null); return; }
+    try {
+      const r = await api.get(`/deal-rooms/${id}/findings-snapshots/${jobId}`);
+      setSnapshotDetail(r.data);
+    } catch { setSnapshotDetail(null); }
+  };
 
   useEffect(() => {
     load();
     loadCopilot();
+    loadSnapshots();
     api.get("/drl-templates").then((r) => setTemplates(r.data));
   }, [id]);
+
+  // Load the selected snapshot's full detail (findings + diff vs prior)
+  // when the user picks a different version from the dropdown.
+  useEffect(() => {
+    if (selectedSnapshotId) loadSnapshotDetail(selectedSnapshotId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSnapshotId]);
 
   // On mount, if a findings job is already in flight for this room (e.g.
   // user refreshed the page mid-run), re-attach to the polling loop so
@@ -220,6 +258,10 @@ export default function DealRoomDetail() {
           if (job.status === "completed") {
             toast.success(`${job.findings_count} findings generated from ${job.files_analyzed} files`);
             await load();
+            // Reload snapshots so the new run shows up in the picker.
+            await loadSnapshots();
+            // Force the new snapshot to be selected — it'll be `job.id`.
+            setSelectedSnapshotId(jid);
             return;
           }
           if (job.status === "failed") {
@@ -234,6 +276,53 @@ export default function DealRoomDetail() {
       toast.error(e?.response?.data?.detail || "Failed to start analysis");
     } finally {
       setBusy(false);
+    }
+  };
+
+  // PDF export — backend streams `application/pdf` with a content-disposition
+  // header. We use fetch + blob so the URL retains the Bearer token via the
+  // axios interceptor, then trigger a hidden anchor download.
+  const exportFindingsPdf = async () => {
+    if (!selectedSnapshotId) return;
+    try {
+      const r = await api.get(
+        `/deal-rooms/${id}/findings-snapshots/${selectedSnapshotId}/pdf`,
+        { responseType: "blob" },
+      );
+      const url = URL.createObjectURL(new Blob([r.data], { type: "application/pdf" }));
+      const a = document.createElement("a");
+      a.href = url;
+      const cd = r.headers["content-disposition"] || "";
+      const m = /filename="([^"]+)"/.exec(cd);
+      a.download = m ? m[1] : `Findings_${selectedSnapshotId.slice(0, 8)}.pdf`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      toast.success("PDF downloaded");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "PDF export failed");
+    }
+  };
+
+  const sendFindingsEmail = async () => {
+    const recipients = emailRecipients.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
+    if (recipients.length === 0) { toast.error("Add at least one recipient"); return; }
+    setEmailing(true);
+    try {
+      const r = await api.post(
+        `/deal-rooms/${id}/findings-snapshots/${selectedSnapshotId}/email`,
+        { recipients, note: emailNote || undefined },
+      );
+      toast.success(`Sent to ${r.data.sent} recipient${r.data.sent === 1 ? "" : "s"}`);
+      if (r.data.failures?.length) {
+        toast.warning(`${r.data.failures.length} delivery failure(s) — check spam / addresses`);
+      }
+      setEmailModal(false);
+      setEmailRecipients("");
+      setEmailNote("");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Email send failed");
+    } finally {
+      setEmailing(false);
     }
   };
 
@@ -697,27 +786,119 @@ export default function DealRoomDetail() {
       )}
 
       {/* TAB: Findings */}
-      {tab === "findings" && (
+      {tab === "findings" && (() => {
+        // Source of truth: when a snapshot is selected we render its findings;
+        // otherwise fall back to room.findings (latest snapshot or legacy).
+        const displayedFindings = snapshotDetail?.findings || room.findings;
+        const activeJob = snapshotDetail?.job || room.latest_findings_snapshot;
+        const diff = snapshotDetail?.diff;
+        const execSummary = activeJob?.executive_summary;
+        const sevBreakdown = activeJob?.severity_breakdown || { high: 0, medium: 0, low: 0 };
+        const hasSnapshots = snapshots.length > 0;
+        return (
         <div className="mt-6">
-          <div className="wz-card p-5 mb-6 flex items-center justify-between flex-wrap gap-3" data-testid="findings-bar">
-            <div className="flex items-center gap-3">
-              <MagnifyingGlass size={18} className={accentClass} />
-              <div>
-                <div className="font-display tracking-tight">AI-generated diligence findings</div>
-                <div className="text-xs text-[var(--wz-text-secondary)] mt-1">
-                  Reads every uploaded file, returns risks with severity + workstream + cited excerpt.
+          {/* Smart banner: prompt re-analysis when ≥1 new file uploaded since latest run */}
+          {hasSnapshots && freshFilesCount > 0 && isBuyer && (
+            <div className="wz-card p-3 mb-4 border-l-2 border-[var(--wz-gold)] flex items-center justify-between gap-3 flex-wrap" data-testid="findings-fresh-banner">
+              <div className="text-xs text-[var(--wz-text-secondary)]">
+                <span className="font-mono-wz text-[var(--wz-gold)]">{freshFilesCount}</span> new file{freshFilesCount === 1 ? "" : "s"} since the last analysis · re-run to see fresh findings
+              </div>
+              <button
+                onClick={generateFindings}
+                disabled={busy}
+                className="wz-btn wz-btn-secondary text-xs"
+                data-testid="findings-fresh-rerun"
+              >
+                {busy ? "Re-analyzing…" : "Re-analyze"}
+              </button>
+            </div>
+          )}
+
+          <div className="wz-card p-5 mb-6" data-testid="findings-bar">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-3">
+                <MagnifyingGlass size={18} className={accentClass} />
+                <div>
+                  <div className="font-display tracking-tight">AI-generated diligence findings</div>
+                  <div className="text-xs text-[var(--wz-text-secondary)] mt-1">
+                    Reads every uploaded file, returns risks with severity + workstream + cited excerpt.
+                  </div>
                 </div>
               </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                {hasSnapshots && (
+                  <select
+                    value={selectedSnapshotId || ""}
+                    onChange={(e) => setSelectedSnapshotId(e.target.value)}
+                    className="wz-input text-xs"
+                    data-testid="findings-snapshot-picker"
+                  >
+                    {snapshots.map((s, i) => {
+                      const dt = new Date(s.finished_at || s.created_at);
+                      const label = i === 0
+                        ? `Latest · ${dt.toLocaleDateString()} · ${s.findings_count || 0} findings`
+                        : `${dt.toLocaleDateString()} ${dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · ${s.findings_count || 0} findings`;
+                      return <option key={s.id} value={s.id}>{label}</option>;
+                    })}
+                  </select>
+                )}
+                {selectedSnapshotId && (
+                  <>
+                    <button
+                      onClick={exportFindingsPdf}
+                      className="wz-btn wz-btn-secondary text-xs flex items-center gap-1"
+                      data-testid="findings-export-pdf"
+                      title="Download branded PDF report"
+                    >
+                      Export PDF
+                    </button>
+                    <button
+                      onClick={() => setEmailModal(true)}
+                      className="wz-btn wz-btn-secondary text-xs flex items-center gap-1"
+                      data-testid="findings-email"
+                      title="Email PDF to your team"
+                    >
+                      Email…
+                    </button>
+                  </>
+                )}
+                {isBuyer && (
+                  <button onClick={generateFindings} disabled={busy || room.files.length === 0} className="wz-btn wz-btn-gold flex items-center gap-2 text-xs" data-testid="generate-findings">
+                    {busy ? "Analyzing…" : hasSnapshots ? "Re-analyze" : "Generate findings"}
+                  </button>
+                )}
+              </div>
             </div>
-            {isBuyer && (
-              <button onClick={generateFindings} disabled={busy || room.files.length === 0} className="wz-btn wz-btn-gold flex items-center gap-2" data-testid="generate-findings">
-                {busy ? "Analyzing…" : "Generate findings"}
-              </button>
+            {/* Severity breakdown + diff badge */}
+            {activeJob && (
+              <div className="mt-4 flex items-center gap-2 flex-wrap text-xs">
+                <span className="pill pill-negative">{sevBreakdown.high || 0} high</span>
+                <span className="pill pill-amber">{sevBreakdown.medium || 0} medium</span>
+                <span className="pill pill-gold">{sevBreakdown.low || 0} low</span>
+                {diff && (
+                  <span className="text-[var(--wz-text-secondary)] ml-2" data-testid="findings-diff-badge">
+                    vs prior:{" "}
+                    {diff.new > 0 && <span className="text-[var(--wz-negative)]">+{diff.new} new</span>}
+                    {diff.new > 0 && (diff.resolved > 0 || diff.unchanged > 0) && " · "}
+                    {diff.resolved > 0 && <span className="text-[var(--wz-positive)]">-{diff.resolved} resolved</span>}
+                    {diff.resolved > 0 && diff.unchanged > 0 && " · "}
+                    {diff.unchanged > 0 && <span>{diff.unchanged} unchanged</span>}
+                  </span>
+                )}
+              </div>
             )}
           </div>
 
+          {/* Executive summary card */}
+          {execSummary && (
+            <div className="wz-card p-5 mb-6 border-l-2 border-[var(--wz-gold)]" data-testid="findings-exec-summary">
+              <div className="overline mb-1">Executive summary</div>
+              <p className="text-sm leading-relaxed">{execSummary}</p>
+            </div>
+          )}
+
           <div className="space-y-3" data-testid="findings-list">
-            {room.findings.map((f) => (
+            {displayedFindings.map((f) => (
               <div key={f.id} className="wz-card p-5" data-testid={`finding-${f.id}`}>
                 <div className="flex items-start gap-3">
                   <Warning
@@ -773,14 +954,15 @@ export default function DealRoomDetail() {
                 </div>
               </div>
             ))}
-            {room.findings.length === 0 && (
+            {displayedFindings.length === 0 && (
               <div className="wz-card p-10 text-center text-sm text-[var(--wz-text-tertiary)]">
                 No findings yet — {isBuyer ? "tap Generate findings above once files are uploaded." : "the buyer will run the analysis after files are exchanged."}
               </div>
             )}
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* TAB: Co-pilot */}
       {tab === "copilot" && (
