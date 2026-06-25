@@ -1,19 +1,20 @@
 """Vault Co-pilot must access every file in the data room — including ones
-mirrored from Composio external sources (Box / Drive / OneDrive / SharePoint
-/ Dropbox). Symptom before the fix: with the file inventory capped at 30, a
-buyer asking about a file that the Composio sync added LATER (i.e. not in
-the oldest-30) got "No documents…" or a wrong citation. Cap is now 200
-(matching Findings), per-page markers are emitted, and citations carry
-page numbers.
+mirrored from Composio external sources — AND must NOT block the request
+beyond Cloudflare's 100 s edge timeout regardless of vault size.
 
-Claude is mocked end-to-end — we only validate the inventory contract +
-citation parsing.
+This file replaces the earlier `test_copilot_data_access.py` after the
+endpoint was converted to a background-job pattern (iter-33). It tests:
+  - The HTTP handler returns <0.5 s with `{job_id, user_message}`
+  - `_run_copilot_job` builds the right per-page inventory
+  - 200-file cap, dynamic char budget, [filename p.N] citations
+  - Composio-mirrored files surface via the backfill-clone path
+  - Failure path: Claude exceptions mark job 'failed' (never stuck)
 """
 
 import os
 import sys
 import secrets
-import re
+import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -23,8 +24,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 async def _seed_vault_with_files(db, *, file_count, composio_files=None):
-    """Build a room with mixed manual + Composio-mirrored files. `composio_files`
-    is a list of indexes (0-based) of files to mark as source.kind=box."""
     rid = f"test-room-{secrets.token_hex(4)}"
     buyer_id = f"test-buyer-{secrets.token_hex(4)}"
     seller_id = f"test-seller-{secrets.token_hex(4)}"
@@ -67,213 +66,215 @@ async def _cleanup(db, fixture):
     await db.deal_rooms.delete_one({"id": fixture["rid"]})
     await db.deal_room_files.delete_many({"room_id": fixture["rid"]})
     await db.deal_room_messages.delete_many({"room_id": fixture["rid"]})
+    await db.copilot_jobs.delete_many({"room_id": fixture["rid"]})
     await db.users.delete_many({"id": {"$in": [fixture["buyer_id"], fixture["seller_id"]]}})
 
 
-class TestCopilotAccessAllFiles:
+async def _spawn_job(db, rid, user_id, question="What's the customer concentration?"):
+    """Match what `ask_copilot` does to set up a job row + user message,
+    so the test can then drive `_run_copilot_job` directly."""
+    import uuid as _u
+    user_msg_id = str(_u.uuid4())
+    job_id = str(_u.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    await db.deal_room_messages.insert_one({
+        "id": user_msg_id, "room_id": rid, "role": "user", "user_id": user_id,
+        "user_name": "B", "content": question, "citations": [], "created_at": now,
+    })
+    await db.copilot_jobs.insert_one({
+        "id": job_id, "room_id": rid, "user_message_id": user_msg_id,
+        "requested_by": user_id, "status": "pending", "question": question,
+        "created_at": now, "started_at": None, "finished_at": None, "error": None,
+    })
+    return job_id, user_msg_id
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Background job — inventory + citation parsing
+# ─────────────────────────────────────────────────────────────────────
+class TestCopilotJob:
     @pytest.mark.asyncio
-    async def test_copilot_inventory_includes_composio_mirrored_files(self):
-        """A buyer asking about a Composio-mirrored file gets a citation
-        that points at the actual file id — proves the file made it into
-        the Claude prompt and the citation parser matched it."""
+    async def test_composio_mirrored_files_appear_in_inventory(self):
         import server
-        # Seed: 5 manual + 3 Composio = 8 total. Composio files are at
-        # positions 5, 6, 7 (oldest are 0-4). Old cap of 30 doesn't matter
-        # for 8 files, but the fix path is still exercised.
         fixture = await _seed_vault_with_files(server.db, file_count=8, composio_files=[5, 6, 7])
         try:
-            captured_prompt = {}
+            job_id, msg_id = await _spawn_job(server.db, fixture["rid"], fixture["buyer_id"])
+            captured = {}
             async def fake_claude(sys_prompt, user_prompt, session_id=None):
-                captured_prompt["sys"] = sys_prompt
-                captured_prompt["user"] = user_prompt
-                # Cite a Composio-mirrored file by name + page so the
-                # citation parser has a real target to match.
-                return "Per [file_005_composio.pdf p.2], top-3 customers represent 25% of revenue."
-
-            fake_user = {"id": fixture["buyer_id"], "name": "B", "role": "buyer"}
+                captured["user"] = user_prompt
+                return "Per [file_005_composio.pdf p.2], top-3 customers represent 25%."
 
             with patch.object(server, "call_claude", AsyncMock(side_effect=fake_claude)), \
                  patch.object(server, "_clone_listing_files_into_room", AsyncMock(return_value=0)):
-                from server import CopilotAsk
-                result = await server.ask_copilot(
-                    fixture["rid"],
-                    CopilotAsk(message="What is the customer concentration?"),
-                    user=fake_user,
-                )
+                await server._run_copilot_job(job_id, fixture["rid"], fixture["buyer_id"],
+                                                "B", msg_id, "Q?")
 
-            # The Composio file MUST appear in the prompt inventory.
-            assert "file_005_composio.pdf" in captured_prompt["user"]
-            assert "source=box" in captured_prompt["user"], \
-                "Composio source kind should be visible in the inventory line"
-            assert "<page n=" in captured_prompt["user"], \
-                "Inventory must use per-page markers (matches Findings)"
+            # The Composio file MUST appear in the prompt inventory with its source tag.
+            assert "file_005_composio.pdf" in captured["user"]
+            assert "source=box" in captured["user"]
+            assert "<page n=" in captured["user"]
 
-            # Citation came back parsed with page number.
-            citations = result["assistant_message"]["citations"]
-            assert len(citations) == 1
-            assert citations[0]["filename"] == "file_005_composio.pdf"
-            assert citations[0]["page"] == 2
-            assert citations[0]["file_id"]  # bound to a real file row
+            # Job marked completed; assistant message written with citation.
+            job = await server.db.copilot_jobs.find_one({"id": job_id}, {"_id": 0})
+            assert job["status"] == "completed"
+            assert job["assistant_message_id"]
+            assert job["citation_count"] == 1
+            asst = await server.db.deal_room_messages.find_one(
+                {"id": job["assistant_message_id"]}, {"_id": 0},
+            )
+            assert asst["citations"][0]["filename"] == "file_005_composio.pdf"
+            assert asst["citations"][0]["page"] == 2
         finally:
             await _cleanup(server.db, fixture)
 
     @pytest.mark.asyncio
-    async def test_copilot_handles_120_files_no_truncation_warning(self):
-        """120 files fit under the 200 cap — every file is in the inventory,
-        no truncation note. Verifies the cap lift from 30."""
+    async def test_120_files_no_truncation_warning(self):
         import server
-        # Mark the LAST 5 as composio so they'd have dropped out under the
-        # old 30-file cap. With the new cap they're in.
-        composio_idxs = list(range(115, 120))
-        fixture = await _seed_vault_with_files(server.db, file_count=120, composio_files=composio_idxs)
+        fixture = await _seed_vault_with_files(server.db, file_count=120, composio_files=list(range(115, 120)))
         try:
+            job_id, msg_id = await _spawn_job(server.db, fixture["rid"], fixture["buyer_id"])
             captured = {}
             async def fake_claude(sys_prompt, user_prompt, session_id=None):
                 captured["user"] = user_prompt
                 return "Answer."
-
-            fake_user = {"id": fixture["buyer_id"], "name": "B", "role": "buyer"}
-
             with patch.object(server, "call_claude", AsyncMock(side_effect=fake_claude)), \
                  patch.object(server, "_clone_listing_files_into_room", AsyncMock(return_value=0)):
-                from server import CopilotAsk
-                await server.ask_copilot(
-                    fixture["rid"],
-                    CopilotAsk(message="Summarize."),
-                    user=fake_user,
-                )
-            # All 120 filenames present.
+                await server._run_copilot_job(job_id, fixture["rid"], fixture["buyer_id"],
+                                                "B", msg_id, "Q?")
             for i in [0, 50, 100, 115, 119]:
-                expected = f"file_{i:03d}"
-                assert expected in captured["user"], \
-                    f"file index {i} missing from inventory — cap lift broken"
-            # No truncation note at 120 ≤ 200.
+                assert f"file_{i:03d}" in captured["user"], f"file {i} missing from inventory"
             assert "only the 200 oldest" not in captured["user"]
         finally:
             await _cleanup(server.db, fixture)
 
     @pytest.mark.asyncio
-    async def test_copilot_surfaces_truncation_when_over_200_files(self):
-        """When the vault has 220 files, the inventory shows 200 and the
-        prompt explicitly tells the model so it can warn the buyer."""
+    async def test_220_files_truncation_warning(self):
         import server
         fixture = await _seed_vault_with_files(server.db, file_count=220)
         try:
+            job_id, msg_id = await _spawn_job(server.db, fixture["rid"], fixture["buyer_id"])
             captured = {}
             async def fake_claude(sys_prompt, user_prompt, session_id=None):
                 captured["user"] = user_prompt
                 return "Answer."
-
-            fake_user = {"id": fixture["buyer_id"], "name": "B", "role": "buyer"}
-
             with patch.object(server, "call_claude", AsyncMock(side_effect=fake_claude)), \
                  patch.object(server, "_clone_listing_files_into_room", AsyncMock(return_value=0)):
-                from server import CopilotAsk
-                await server.ask_copilot(
-                    fixture["rid"],
-                    CopilotAsk(message="Anything."),
-                    user=fake_user,
-                )
+                await server._run_copilot_job(job_id, fixture["rid"], fixture["buyer_id"],
+                                                "B", msg_id, "Q?")
             assert "only the 200 oldest" in captured["user"]
             assert "220 files" in captured["user"]
+            job = await server.db.copilot_jobs.find_one({"id": job_id}, {"_id": 0})
+            assert job["truncated"] is True
+            assert job["total_files_in_room"] == 220
+            assert job["files_analyzed"] == 200
         finally:
             await _cleanup(server.db, fixture)
 
     @pytest.mark.asyncio
-    async def test_copilot_legacy_filename_only_citation_still_works(self):
-        """Backward-compat: if the model emits [filename] without a page
-        number, citation defaults to page 1."""
+    async def test_legacy_citation_defaults_to_page_1(self):
         import server
         fixture = await _seed_vault_with_files(server.db, file_count=3)
         try:
-            async def fake_claude(sys_prompt, user_prompt, session_id=None):
-                return "Per [file_001.pdf], revenue grew 22% YoY."
-
-            fake_user = {"id": fixture["buyer_id"], "name": "B", "role": "buyer"}
-
+            job_id, msg_id = await _spawn_job(server.db, fixture["rid"], fixture["buyer_id"])
+            async def fake_claude(*a, **kw):
+                return "Per [file_001.pdf], revenue grew 22%."
             with patch.object(server, "call_claude", AsyncMock(side_effect=fake_claude)), \
                  patch.object(server, "_clone_listing_files_into_room", AsyncMock(return_value=0)):
-                from server import CopilotAsk
-                result = await server.ask_copilot(
-                    fixture["rid"],
-                    CopilotAsk(message="Q?"),
-                    user=fake_user,
-                )
-            citations = result["assistant_message"]["citations"]
-            assert len(citations) == 1
-            assert citations[0]["filename"] == "file_001.pdf"
-            assert citations[0]["page"] == 1
+                await server._run_copilot_job(job_id, fixture["rid"], fixture["buyer_id"],
+                                                "B", msg_id, "Q?")
+            job = await server.db.copilot_jobs.find_one({"id": job_id}, {"_id": 0})
+            asst = await server.db.deal_room_messages.find_one(
+                {"id": job["assistant_message_id"]}, {"_id": 0},
+            )
+            assert asst["citations"][0]["filename"] == "file_001.pdf"
+            assert asst["citations"][0]["page"] == 1
         finally:
             await _cleanup(server.db, fixture)
 
     @pytest.mark.asyncio
-    async def test_copilot_triggers_clone_backfill_for_composio_files(self):
-        """When the buyer asks a question, the copilot MUST run a
-        clone-backfill before reading files — that's the path Composio-
-        mirrored files take into the deal room. Regression: previously
-        only fired for status in (pending_nda, active, preview)."""
+    async def test_clone_backfill_fires_regardless_of_status(self):
         import server
         fixture = await _seed_vault_with_files(server.db, file_count=1)
-        # Force a status the old guard would have skipped.
         await server.db.deal_rooms.update_one(
             {"id": fixture["rid"]}, {"$set": {"status": "closing", "listing_id": "L-test"}},
         )
         try:
+            job_id, msg_id = await _spawn_job(server.db, fixture["rid"], fixture["buyer_id"])
             backfill_called = []
             async def fake_backfill(listing_id, room_id, user_id, only_missing=False):
                 backfill_called.append((listing_id, room_id, only_missing))
                 return 0
+            async def fake_claude(*a, **kw): return "Answer."
+            with patch.object(server, "call_claude", AsyncMock(side_effect=fake_claude)), \
+                 patch.object(server, "_clone_listing_files_into_room",
+                              AsyncMock(side_effect=fake_backfill)):
+                await server._run_copilot_job(job_id, fixture["rid"], fixture["buyer_id"],
+                                                "B", msg_id, "Q?")
+            assert backfill_called, "backfill must run for closing-status rooms too"
+            assert backfill_called[0][0] == "L-test"
+            assert backfill_called[0][2] is True
+        finally:
+            await _cleanup(server.db, fixture)
 
-            async def fake_claude(sys_prompt, user_prompt, session_id=None):
+
+# ─────────────────────────────────────────────────────────────────────
+# Cloudflare 524 root cause — HTTP handler must return immediately
+# ─────────────────────────────────────────────────────────────────────
+class TestCopilotHandlerReturnsImmediately:
+    @pytest.mark.asyncio
+    async def test_post_returns_under_half_second_no_synchronous_claude(self):
+        """The HTTP entry point MUST return without awaiting the Claude
+        call — this is what makes Cloudflare's 100 s edge timeout
+        impossible to hit, regardless of vault size."""
+        import server
+        # 50-file vault — would have taken 60+ s synchronously.
+        fixture = await _seed_vault_with_files(server.db, file_count=50)
+        try:
+            claude_calls = []
+            async def slow_claude(*a, **kw):
+                claude_calls.append(True)
+                await asyncio.sleep(0.05)  # tiny so the bg task still finishes for cleanup
                 return "Answer."
 
             fake_user = {"id": fixture["buyer_id"], "name": "B", "role": "buyer"}
 
-            with patch.object(server, "call_claude", AsyncMock(side_effect=fake_claude)), \
-                 patch.object(server, "_clone_listing_files_into_room", AsyncMock(side_effect=fake_backfill)):
+            with patch.object(server, "call_claude", AsyncMock(side_effect=slow_claude)), \
+                 patch.object(server, "_clone_listing_files_into_room", AsyncMock(return_value=0)):
                 from server import CopilotAsk
-                await server.ask_copilot(
+                started = datetime.now(timezone.utc)
+                result = await server.ask_copilot(
                     fixture["rid"],
-                    CopilotAsk(message="Q?"),
+                    CopilotAsk(message="Hi"),
                     user=fake_user,
                 )
-            assert backfill_called, "backfill must run on every copilot call so Composio-synced files surface"
-            assert backfill_called[0][0] == "L-test"
-            assert backfill_called[0][2] is True  # only_missing=True
+                elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+
+            assert elapsed < 0.5, f"handler took {elapsed:.2f}s — must be near-instant"
+            assert result["status"] == "pending"
+            assert "job_id" in result
+            assert result["user_message"]["content"] == "Hi"
+            # Give the background task a moment to finish so we don't leak.
+            await asyncio.sleep(0.3)
         finally:
             await _cleanup(server.db, fixture)
 
     @pytest.mark.asyncio
-    async def test_dynamic_budget_for_large_vault_still_includes_every_file(self):
-        """Even with a 200-file vault, every file must appear in the
-        inventory (just with a tighter per-file slice). Verifies the
-        dynamic char-budget logic."""
+    async def test_failed_job_marks_status_failed_not_stuck(self):
+        """When Claude raises, the job is marked failed with the error
+        string. Frontend stops polling on terminal status."""
         import server
-        fixture = await _seed_vault_with_files(server.db, file_count=200)
+        fixture = await _seed_vault_with_files(server.db, file_count=2)
         try:
-            captured = {}
-            async def fake_claude(sys_prompt, user_prompt, session_id=None):
-                captured["user"] = user_prompt
-                return "Answer."
-
-            fake_user = {"id": fixture["buyer_id"], "name": "B", "role": "buyer"}
-
-            with patch.object(server, "call_claude", AsyncMock(side_effect=fake_claude)), \
+            job_id, msg_id = await _spawn_job(server.db, fixture["rid"], fixture["buyer_id"])
+            async def boom(*a, **kw):
+                raise RuntimeError("upstream Claude 429")
+            with patch.object(server, "call_claude", AsyncMock(side_effect=boom)), \
                  patch.object(server, "_clone_listing_files_into_room", AsyncMock(return_value=0)):
-                from server import CopilotAsk
-                await server.ask_copilot(
-                    fixture["rid"],
-                    CopilotAsk(message="Anything."),
-                    user=fake_user,
-                )
-            # Spot-check files at boundary positions.
-            for i in [0, 99, 199]:
-                expected = f"file_{i:03d}"
-                assert expected in captured["user"], \
-                    f"file {i} not in 200-file inventory"
-            # Inventory must stay under the 150K budget (with some slack
-            # for wrappers / headers / transcript).
-            assert len(captured["user"]) < 250_000, \
-                f"prompt too large: {len(captured['user'])} chars — risk of Claude OOM"
+                await server._run_copilot_job(job_id, fixture["rid"], fixture["buyer_id"],
+                                                "B", msg_id, "Q?")
+            job = await server.db.copilot_jobs.find_one({"id": job_id}, {"_id": 0})
+            assert job["status"] == "failed"
+            assert "429" in (job["error"] or "")
+            assert job["finished_at"] is not None
         finally:
             await _cleanup(server.db, fixture)

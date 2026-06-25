@@ -7541,16 +7541,206 @@ async def get_copilot_history(rid: str, user=Depends(get_current_user)):
     return msgs
 
 
+async def _run_copilot_job(job_id: str, rid: str, user_id: str, user_name: str | None,
+                           user_msg_id: str, question: str) -> None:
+    """Heavy Co-pilot work — runs in a background task so the POST returns
+    immediately and Cloudflare's 100 s edge timeout never fires. Same
+    pattern as `_run_findings_job`. The frontend polls
+    `/copilot-job/{job_id}` until status terminal.
+
+    On completion writes the assistant message to `deal_room_messages` so
+    the existing `GET /copilot` history endpoint surfaces it on the next
+    fetch — no schema change needed for client renders."""
+    started = now_utc()
+    await db.copilot_jobs.update_one(
+        {"id": job_id},
+        {"$set": {"status": "running", "started_at": started.isoformat()}},
+    )
+    try:
+        room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+        if not room:
+            raise RuntimeError("Vault disappeared mid-run")
+
+        # Self-heal: clone any newly-staged listing files (incl. Composio-
+        # mirrored ones) into the room so this turn sees them.
+        if room.get("listing_id"):
+            try:
+                await _clone_listing_files_into_room(
+                    room["listing_id"], rid, room.get("seller_id") or user_id, only_missing=True,
+                )
+            except Exception as e:
+                logger.warning(f"copilot job {job_id}: backfill clone failed: {e}")
+
+        FILE_CAP = 200
+        total_files = await db.deal_room_files.count_documents({"room_id": rid})
+        files = await db.deal_room_files.find({"room_id": rid}, {"_id": 0}).sort("uploaded_at", 1).to_list(FILE_CAP)
+        truncated_inventory = total_files > FILE_CAP
+
+        if not files:
+            empty_reply = "No documents have been uploaded to this Vault yet. Ask the seller to upload diligence materials, then re-ask."
+            asst_msg = {
+                "id": str(uuid.uuid4()),
+                "room_id": rid,
+                "role": "assistant",
+                "user_id": "copilot",
+                "user_name": "Vault Co-pilot",
+                "content": empty_reply,
+                "citations": [],
+                "created_at": now_utc().isoformat(),
+            }
+            await db.deal_room_messages.insert_one(asst_msg)
+            asst_msg.pop("_id", None)
+            await db.copilot_jobs.update_one(
+                {"id": job_id},
+                {"$set": {"status": "completed", "assistant_message_id": asst_msg["id"],
+                          "files_analyzed": 0, "total_files_in_room": 0,
+                          "truncated": False,
+                          "finished_at": now_utc().isoformat(),
+                          "duration_ms": int((now_utc() - started).total_seconds() * 1000)}},
+            )
+            return
+
+        # Dynamic per-file budget: total inventory ≤ ~150 K chars (well
+        # inside Claude Sonnet's input window). Every file is represented.
+        CHAR_BUDGET = 150_000
+        per_file_chars = max(800, min(6_000, CHAR_BUDGET // max(len(files), 1)))
+        pages_per_file = 6 if per_file_chars >= 3_000 else 3 if per_file_chars >= 1_500 else 2
+        chars_per_page = per_file_chars // pages_per_file
+
+        inventory_lines = []
+        for idx, f in enumerate(files, start=1):
+            pages = f.get("pages") or []
+            if pages:
+                page_blocks = []
+                for p in pages[:pages_per_file]:
+                    txt = (p.get("text") or "")[:chars_per_page]
+                    page_blocks.append(f"  <page n={p.get('page', 1)}>\n  {txt}\n  </page>")
+                body_block = "\n".join(page_blocks)
+            else:
+                txt = (f.get("content") or "")[:per_file_chars]
+                body_block = f"  <page n=1>\n  {txt}\n  </page>"
+            source_kind = (f.get("source") or {}).get("kind") if isinstance(f.get("source"), dict) else None
+            provenance = f" · source={source_kind}" if source_kind else ""
+            inventory_lines.append(
+                f"[{idx}] filename={f['filename']} · folder={f.get('folder', 'other')}"
+                f" · page_count={f.get('page_count', 1)}{provenance}\n{body_block}"
+            )
+        inventory = "\n\n---\n\n".join(inventory_lines)
+
+        history = await db.deal_room_messages.find(
+            {"room_id": rid, "id": {"$ne": user_msg_id}},
+            {"_id": 0},
+        ).sort("created_at", -1).to_list(8)
+        history.reverse()
+        transcript = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in history)
+
+        truncation_note = ""
+        if truncated_inventory:
+            truncation_note = (
+                f"\nNOTE: This Vault contains {total_files} files; only the {FILE_CAP} oldest "
+                "are shown above. If the buyer asks about a file not listed, say so "
+                "and suggest narrowing by folder.\n"
+            )
+
+        prompt = (
+            f"FILE INVENTORY (only source you may cite — uses <page n=X> markers):\n{inventory}\n"
+            + truncation_note
+            + (f"\nPRIOR CONVERSATION:\n{transcript}\n" if transcript else "")
+            + f"\nBUYER QUESTION: {question}\n\nAnswer now."
+        )
+
+        answer = await call_claude(COPILOT_SYS, prompt, session_id=f"copilot-{rid}-{user_id}")
+
+        import re
+        citations = []
+        seen_keys: set[tuple[str, int]] = set()
+        for m in re.finditer(r"\[([^\[\]]+?\.[a-zA-Z0-9]+)\s+p\.(\d+)\]", answer or ""):
+            fname = m.group(1).strip()
+            try:
+                page = int(m.group(2))
+            except ValueError:
+                page = 1
+            key = (fname, page)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            match = next((f for f in files if f["filename"] == fname), None)
+            if match:
+                citations.append({"file_id": match["id"], "filename": fname, "page": page})
+        for m in re.finditer(r"\[([^\[\]]+?\.[a-zA-Z0-9]+)\](?!\s*p\.)", answer or ""):
+            fname = m.group(1).strip()
+            key = (fname, 1)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            match = next((f for f in files if f["filename"] == fname), None)
+            if match:
+                citations.append({"file_id": match["id"], "filename": fname, "page": 1})
+
+        asst_msg = {
+            "id": str(uuid.uuid4()),
+            "room_id": rid,
+            "role": "assistant",
+            "user_id": "copilot",
+            "user_name": "Vault Co-pilot",
+            "content": answer or "",
+            "citations": citations,
+            "created_at": now_utc().isoformat(),
+        }
+        await db.deal_room_messages.insert_one(asst_msg)
+        asst_msg.pop("_id", None)
+        duration = int((now_utc() - started).total_seconds() * 1000)
+        await db.copilot_jobs.update_one(
+            {"id": job_id},
+            {"$set": {
+                "status": "completed",
+                "assistant_message_id": asst_msg["id"],
+                "files_analyzed": len(files),
+                "total_files_in_room": total_files,
+                "truncated": truncated_inventory,
+                "citation_count": len(citations),
+                "finished_at": now_utc().isoformat(),
+                "duration_ms": duration,
+            }},
+        )
+        await log_agent_activity(
+            "vault-copilot",
+            f"ask:{question[:60]}",
+            "completed",
+            user_id=user_id,
+            duration_ms=duration,
+            meta={"citations": len(citations), "job_id": job_id},
+        )
+        await log_audit(user_id, "vault.copilot.ask", rid)
+    except Exception as e:
+        logger.exception(f"copilot job {job_id} failed")
+        await db.copilot_jobs.update_one(
+            {"id": job_id},
+            {"$set": {"status": "failed", "error": str(e)[:500],
+                      "finished_at": now_utc().isoformat()}},
+        )
+        await log_agent_activity("vault-copilot", f"ask:{question[:60]}", "failed",
+                                  user_id=user_id, friction=str(e)[:200])
+
+
 @api_router.post("/deal-rooms/{rid}/copilot")
 async def ask_copilot(rid: str, body: CopilotAsk, user=Depends(get_current_user)):
+    """Kick off the Co-pilot turn as a background job. Returns immediately
+    with `{job_id, user_message, status:'pending'}` so the request is well
+    under Cloudflare's 100 s edge timeout. Frontend polls
+    `/copilot-job/{job_id}` until status terminal.
+
+    Big vaults (hundreds of mirrored files) routinely took 60-180 s when
+    we ran Claude inside the request handler — production buyers saw
+    a 524 with no recovery. The job pattern removes the request-time
+    ceiling entirely."""
     room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
     if not room:
         raise HTTPException(status_code=404, detail="Vault not found")
-    role = await participant_check(room, user)
+    await participant_check(room, user)
     if room.get("status") == "pending_nda":
         raise HTTPException(status_code=400, detail="NDA must be accepted before using the Co-pilot")
 
-    # Store user message
     user_msg = {
         "id": str(uuid.uuid4()),
         "room_id": rid,
@@ -7562,164 +7752,40 @@ async def ask_copilot(rid: str, body: CopilotAsk, user=Depends(get_current_user)
         "created_at": now_utc().isoformat(),
     }
     await db.deal_room_messages.insert_one(user_msg)
-
-    # Self-heal: pick up any staged listing files (manual or external-source synced)
-    # added after this Vault was opened, so the Copilot's context window is fresh.
-    # Now runs regardless of status (defensive — every legitimate copilot caller
-    # has already passed participant_check + NDA gate above).
-    if room.get("listing_id"):
-        try:
-            await _clone_listing_files_into_room(
-                room["listing_id"], rid, room.get("seller_id") or user["id"], only_missing=True
-            )
-        except Exception as e:
-            logger.warning(f"copilot: backfill clone failed for {rid}: {e}")
-
-    # Read the full room — same cap as Findings (200) so a buyer can ask
-    # about ANY file in the vault, including those mirrored from Composio
-    # connections (Box / Drive / OneDrive / SharePoint / Dropbox). Files
-    # are read oldest-first so the inventory order is stable across turns
-    # and citations [filename p.N] remain consistent.
-    FILE_CAP = 200
-    total_files = await db.deal_room_files.count_documents({"room_id": rid})
-    files = await db.deal_room_files.find({"room_id": rid}, {"_id": 0}).sort("uploaded_at", 1).to_list(FILE_CAP)
-    truncated_inventory = total_files > FILE_CAP
-    if not files:
-        empty_reply = "No documents have been uploaded to this Vault yet. Ask the seller to upload diligence materials, then re-ask."
-        asst_msg = {
-            "id": str(uuid.uuid4()),
-            "room_id": rid,
-            "role": "assistant",
-            "user_id": "copilot",
-            "user_name": "Vault Co-pilot",
-            "content": empty_reply,
-            "citations": [],
-            "created_at": now_utc().isoformat(),
-        }
-        await db.deal_room_messages.insert_one(asst_msg)
-        user_msg.pop("_id", None)
-        asst_msg.pop("_id", None)
-        return {"user_message": user_msg, "assistant_message": asst_msg}
-
-    # Dynamic per-file budget: total inventory text ≤ ~150 K chars (well
-    # inside Claude Sonnet's input window). For small vaults this means
-    # rich per-page detail; for large vaults each file gets a tighter slice
-    # but EVERY file is represented — buyer can still ask about file 187.
-    CHAR_BUDGET = 150_000
-    per_file_chars = max(800, min(6_000, CHAR_BUDGET // max(len(files), 1)))
-    # When per-file budget is generous, slice fewer-larger pages; when
-    # tight, slice more-smaller pages so the model still sees breadth.
-    pages_per_file = 6 if per_file_chars >= 3_000 else 3 if per_file_chars >= 1_500 else 2
-    chars_per_page = per_file_chars // pages_per_file
-
-    inventory_lines = []
-    for idx, f in enumerate(files, start=1):
-        pages = f.get("pages") or []
-        if pages:
-            page_blocks = []
-            for p in pages[:pages_per_file]:
-                txt = (p.get("text") or "")[:chars_per_page]
-                page_blocks.append(f"  <page n={p.get('page', 1)}>\n  {txt}\n  </page>")
-            body_block = "\n".join(page_blocks)
-        else:
-            # Older mirrored files (or unsupported extract types) may have
-            # only `content` — render it as page 1.
-            txt = (f.get("content") or "")[:per_file_chars]
-            body_block = f"  <page n=1>\n  {txt}\n  </page>"
-        source_kind = (f.get("source") or {}).get("kind") if isinstance(f.get("source"), dict) else None
-        provenance = f" · source={source_kind}" if source_kind else ""
-        inventory_lines.append(
-            f"[{idx}] filename={f['filename']} · folder={f.get('folder', 'other')}"
-            f" · page_count={f.get('page_count', 1)}{provenance}\n{body_block}"
-        )
-    inventory = "\n\n---\n\n".join(inventory_lines)
-
-    # Recent conversation (last 8 messages)
-    history = await db.deal_room_messages.find(
-        {"room_id": rid, "id": {"$ne": user_msg["id"]}},
-        {"_id": 0},
-    ).sort("created_at", -1).to_list(8)
-    history.reverse()
-    transcript = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in history)
-
-    truncation_note = ""
-    if truncated_inventory:
-        truncation_note = (
-            f"\nNOTE: This Vault contains {total_files} files; only the {FILE_CAP} oldest "
-            "are shown above. If the buyer asks about a file not listed, say so "
-            "and suggest narrowing by folder.\n"
-        )
-
-    prompt = (
-        f"FILE INVENTORY (only source you may cite — uses <page n=X> markers):\n{inventory}\n"
-        + truncation_note
-        + (f"\nPRIOR CONVERSATION:\n{transcript}\n" if transcript else "")
-        + f"\nBUYER QUESTION: {body.message}\n\nAnswer now."
-    )
-
-    started = now_utc()
-    try:
-        answer = await call_claude(COPILOT_SYS, prompt, session_id=f"copilot-{rid}-{user['id']}")
-    except Exception as e:
-        logger.exception("Copilot failed")
-        raise HTTPException(status_code=502, detail=f"Co-pilot failed: {e}")
-
-    # Extract cited [filename p.N] OR legacy [filename] citations. The
-    # page-aware form lets the UI deep-link directly to that page in the
-    # preview pane; the legacy form (no page) defaults to page 1.
-    import re
-    citations = []
-    seen_keys: set[tuple[str, int]] = set()
-    # Page-aware first.
-    for m in re.finditer(r"\[([^\[\]]+?\.[a-zA-Z0-9]+)\s+p\.(\d+)\]", answer or ""):
-        fname = m.group(1).strip()
-        try:
-            page = int(m.group(2))
-        except ValueError:
-            page = 1
-        key = (fname, page)
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        match = next((f for f in files if f["filename"] == fname), None)
-        if match:
-            citations.append({"file_id": match["id"], "filename": fname, "page": page})
-    # Legacy form for backward-compat.
-    for m in re.finditer(r"\[([^\[\]]+?\.[a-zA-Z0-9]+)\](?!\s*p\.)", answer or ""):
-        fname = m.group(1).strip()
-        key = (fname, 1)
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        match = next((f for f in files if f["filename"] == fname), None)
-        if match:
-            citations.append({"file_id": match["id"], "filename": fname, "page": 1})
-
-    asst_msg = {
-        "id": str(uuid.uuid4()),
-        "room_id": rid,
-        "role": "assistant",
-        "user_id": "copilot",
-        "user_name": "Vault Co-pilot",
-        "content": (answer or "").strip(),
-        "citations": citations,
-        "created_at": now_utc().isoformat(),
-    }
-    await db.deal_room_messages.insert_one(asst_msg)
-    duration = int((now_utc() - started).total_seconds() * 1000)
-    await log_agent_activity(
-        "vault-copilot",
-        f"ask:{body.message[:60]}",
-        "completed",
-        user_id=user["id"],
-        duration_ms=duration,
-        meta={"citations": len(citations)},
-    )
-    await log_audit(user["id"], "vault.copilot.ask", rid)
-
     user_msg.pop("_id", None)
-    asst_msg.pop("_id", None)
-    return {"user_message": user_msg, "assistant_message": asst_msg}
+
+    job_id = str(uuid.uuid4())
+    await db.copilot_jobs.insert_one({
+        "id": job_id,
+        "room_id": rid,
+        "user_message_id": user_msg["id"],
+        "requested_by": user["id"],
+        "status": "pending",
+        "question": body.message[:300],
+        "created_at": now_utc().isoformat(),
+        "started_at": None,
+        "finished_at": None,
+        "error": None,
+    })
+    asyncio.create_task(_run_copilot_job(
+        job_id, rid, user["id"], user.get("name"), user_msg["id"], body.message[:2000],
+    ))
+    return {"job_id": job_id, "status": "pending", "user_message": user_msg}
+
+
+@api_router.get("/deal-rooms/{rid}/copilot-job/{job_id}")
+async def get_copilot_job(rid: str, job_id: str, user=Depends(get_current_user)):
+    """Poll endpoint for a Co-pilot turn. When status='completed', the UI
+    re-fetches the message history via GET /copilot — the assistant
+    message has already been written there by the background task."""
+    room = await db.deal_rooms.find_one({"id": rid}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    await participant_check(room, user)
+    job = await db.copilot_jobs.find_one({"id": job_id, "room_id": rid}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
 
 
 # -----------------------------------------------------------------------------

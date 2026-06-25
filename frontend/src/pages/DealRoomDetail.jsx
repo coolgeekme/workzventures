@@ -244,8 +244,35 @@ export default function DealRoomDetail() {
     const q = question;
     setQuestion("");
     try {
+      // Kick off background job — returns {job_id, user_message} immediately.
+      // Cloudflare's 100s edge timeout no longer applies because Claude
+      // runs in a background task on the server.
       const r = await api.post(`/deal-rooms/${id}/copilot`, { message: q });
-      setMessages((prev) => [...prev, r.data.user_message, r.data.assistant_message]);
+      const { job_id: jobId, user_message } = r.data;
+      // Render the buyer's question right away so the chat feels live.
+      setMessages((prev) => [...prev, user_message]);
+      // Poll until terminal. No client-side timeout — big vaults can take
+      // several minutes to analyze and that's expected.
+      while (true) {
+        await new Promise((res) => setTimeout(res, 2500));
+        let job;
+        try {
+          job = (await api.get(`/deal-rooms/${id}/copilot-job/${jobId}`)).data;
+        } catch {
+          continue; // transient network blip — keep polling
+        }
+        if (job.status === "completed") {
+          // Re-fetch the message history so the new assistant message
+          // (written by the background task) appears with citations.
+          await loadCopilot();
+          break;
+        }
+        if (job.status === "failed") {
+          toast.error(job.error || "Co-pilot failed");
+          break;
+        }
+        // pending|running → keep polling
+      }
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Co-pilot failed");
       setQuestion(q);
