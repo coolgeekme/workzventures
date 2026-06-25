@@ -601,3 +601,24 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Tests** (`tests/test_copilot_data_access.py` rewritten — 7 PASS) + `tests/test_copilot_live_iter33.py` (3 LIVE PASS, testing-agent-authored) + 26 regression = **36/36 PASS**. Verified by testing agent (`iteration_27.json`): LIVE POST returned in **0.11 s**; polling progressed pending → running → completed; assistant message + citations persisted correctly.
 - **Pattern locked**: Findings + Co-pilot now share the identical `_run_*_job` + poll-endpoint shape. The next long-Claude feature (pitch-deck analysis, research briefs) can be built straight against this scaffold.
 
+
+
+## Iter-34 (Feb 2026) — Findings Snapshots: history, diff, PDF export, email share
+- **Ask**: "Can the platform generate a pdf report from Findings? Is there a better way to organize current and past Findings?"
+- **What changed**:
+  - **Backend (`server.py`)**:
+    - Every completed findings job is now a first-class snapshot. Each finding doc carries a `job_id` stamp linking it back to the run that produced it.
+    - `GET /api/deal-rooms/{rid}/findings-snapshots` → ordered list of completed jobs with `findings_count`, `severity_breakdown`, `executive_summary`, and `fresh_files_since_last_run` (drives the "Re-analyze" banner).
+    - `GET /api/deal-rooms/{rid}/findings-snapshots/{job_id}` → `{job, findings, diff}` where `diff` = `{new, resolved, unchanged}` vs the immediately prior snapshot.
+    - `GET /api/deal-rooms/{rid}/findings-snapshots/{job_id}/pdf` → branded `application/pdf` via reportlab with `Findings_<listing>_<date>.pdf` content-disposition.
+    - `POST /api/deal-rooms/{rid}/findings-snapshots/{job_id}/email` → fan-out via Resend (max 10 recipients) with the PDF attached + optional note; each send written to the audit log as `vault.findings.email`.
+  - **Frontend (`DealRoomDetail.jsx`)**:
+    - Snapshot picker (`findings-snapshot-picker`) — native `<select>` listing every run with friendly label "Latest · DATE · N findings" → "DATE TIME · N findings".
+    - Severity-breakdown pills + `findings-diff-badge` ("vs prior: +new -resolved unchanged") under the toolbar.
+    - Executive-summary card (`findings-exec-summary`) per snapshot.
+    - `findings-export-pdf` button (XHR-blob download, preserves Bearer token via axios interceptor).
+    - `findings-email` button → `email-findings-modal` (recipients input, optional note textarea, Send PDF / Cancel). Multi-recipient parser splits on `,;` and whitespace; success toast reports `sent` count and warns on per-address `failures[]`.
+    - Smart `findings-fresh-banner` only renders when `fresh_files_since_last_run > 0` for buyers, prompting a one-click Re-analyze.
+- **Tests**: `tests/test_findings_snapshots.py` — 10/10 PASS (list/order, fresh-file count, diff helper, PDF magic bytes + filename pattern, email Resend mocking, 400 on empty recipients). Frontend testing agent confirmed 100% pass on Playwright e2e for picker / Export PDF / Email modal / snapshot switching / diff badge (`iteration_28.json`).
+- **Notes**:
+  - Pre-iter-34 legacy findings docs lack `job_id` — they remain accessible via `room.findings` fallback but historical entries in the dropdown may show 0/0/0 severity until a fresh run is performed. Backfill migration noted for future cleanup.
