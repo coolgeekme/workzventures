@@ -878,8 +878,9 @@ export default function DealRoomDetail() {
                 disabled={asking || !question.trim() || room.status === "pending_nda"}
                 className="wz-btn wz-btn-gold flex items-center gap-2"
                 data-testid="copilot-send"
+                data-copilot-status={asking ? "analyzing" : "idle"}
               >
-                <PaperPlaneTilt size={14} /> {asking ? "…" : "Ask"}
+                <PaperPlaneTilt size={14} /> {asking ? "Analyzing…" : "Ask"}
               </button>
             </form>
           </div>

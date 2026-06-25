@@ -587,3 +587,17 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
     - New `previewPage` state on the page; reset to 1 on modal close and when opening a file from the regular file list (so existing flows are unchanged).
 - **Tests**: 6/6 backend copilot tests still pass (no contract change). Frontend lint clean. Smoke screenshots verified: click citation → modal opens on the cited file with the watermark + view-only stamp; 0 console errors.
 
+
+## Iter-33 (Feb 2026) — Bug fix: Co-pilot Cloudflare 524 timeout on large vaults
+- **Reported**: "When i ask a question in co-pilot, i get this error in production: The origin web server did not respond to Cloudflare within the allowed time. Data Rooms will contain a lot of information and could take a long time for the platform to review."
+- **Root cause**: After iter-31 raised the Co-pilot inventory to 200 files (matching Findings), bigger vaults pushed the synchronous Claude call past Cloudflare's 100 s edge timeout — exactly the same root cause we already fixed for Findings in iter-30.
+- **Fix** (`server.py:7544-7787`): same background-job pattern as Findings.
+  - New `_run_copilot_job(job_id, rid, user_id, user_name, user_msg_id, question)` runs Claude in an `asyncio.create_task`.
+  - `POST /api/deal-rooms/{rid}/copilot` now returns `{job_id, status:'pending', user_message}` in **<0.5 s** regardless of vault size.
+  - New `GET /api/deal-rooms/{rid}/copilot-job/{job_id}` for polling.
+  - Background task writes the assistant message into `deal_room_messages` so the existing `GET /copilot` history endpoint continues to work for client renders (no schema change).
+  - Failure path: Claude exceptions mark job `status='failed'` with `error` — never silently stuck.
+- **Frontend** (`DealRoomDetail.jsx`): `askCopilot` polls `/copilot-job/{job_id}` every 2.5 s with no client-side timeout; on completion calls `loadCopilot()` to refresh the message history. Button label switches to **"Analyzing…"** with `data-copilot-status="analyzing"` for deterministic test assertions.
+- **Tests** (`tests/test_copilot_data_access.py` rewritten — 7 PASS) + `tests/test_copilot_live_iter33.py` (3 LIVE PASS, testing-agent-authored) + 26 regression = **36/36 PASS**. Verified by testing agent (`iteration_27.json`): LIVE POST returned in **0.11 s**; polling progressed pending → running → completed; assistant message + citations persisted correctly.
+- **Pattern locked**: Findings + Co-pilot now share the identical `_run_*_job` + poll-endpoint shape. The next long-Claude feature (pitch-deck analysis, research briefs) can be built straight against this scaffold.
+
