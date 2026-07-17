@@ -656,3 +656,42 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Live e2e** (Ramp, buyer alex): `POST /valuation/estimate` returned in 21.8s with `base=$43.2B`, `low=$33.6B`, `high=$52.8B`, `confidence=high`, 18 sources merged, correctly identified June 2026 $44B Series F. Cache hit on second call: **175ms**. Frontend rendered band + drawer + all 18 clickable sources.
 - **Free-source-only** per user directive: uses only Perplexity, Brave, and the Emergent LLM key. Paid sources (Alpha Vantage / Finnhub / PitchBook / CB Insights) are queued for later phases.
 - **Next**: Phase A (full 5-method Valuation Workbench + memo PDF + snapshots) → Phase C (Committee approval workflow) → Phase B (Portfolio & NAV Console) → Phase D (ASC 820 compliance output).
+
+## Iter-37 (Feb 2026) — Valuation Workbench (Phase A of Valuation Suite)
+- **Ask**: Full 5-method valuation workbench + audit-ready memo PDF, per the user's IPEV / ASC 820 valuation policy. User chose: AI Autofill on create (auto-run), NextCapOS default template with ASC 820 disclaimer, and term-sheet upload as MVP.
+- **New backend modules** (keeps `server.py` from bloating further):
+  - `/app/backend/valuation_workbench.py` — 5 pure-Python method computations:
+    1. **Recent Transaction** — `post_money × time_decay_factor` (reuses Phase E's IPEV decay curve).
+    2. **Market Multiples** — `revenue × multiple × (1 − size_discount%)`.
+    3. **Venture Capital Method** — `terminal = revenue × multiple; PV = terminal / (1+IRR)^years; allocated = PV × ownership%`.
+    4. **Discounted Cash Flow (DCF)** — 5-year projection (Y1 revenue, growth, EBITDA margin, capex, tax) + Gordon Growth terminal; WACC discount; guardrail that WACC > terminal growth.
+    5. **Option Pricing (Black-Scholes)** — single-class waterfall using `math.erf` cdf, common = call option on enterprise value struck at total preferred liquidation pref.
+  - Plus `aggregate_band(methods, weights)` — weighted mean across methods that produced values; confidence heuristic based on spread (≤30% = high, ≤60% = medium, else low); band = base ± spread/2.
+  - `autofill_workbench()` — single Claude Sonnet 4.5 call over Perplexity + 3 parallel Brave queries; returns seed inputs for all 5 methods + a narrative + citations. Fail-soft with `_empty_workbench_seed` if the model 502s.
+  - `extract_term_sheet()` — Claude reads uploaded PDF/DOCX text, returns structured `{round_type, raised, post_money, liquidation_pref, participation, dividend_rate, confidence}`; auto-merges into `recent_transaction` + `option_pricing` inputs on upload.
+  - `/app/backend/valuation_pdf.py` — reportlab memo generator. Cover page (big fair-value figure + prepared-by table), Executive Summary (methodology contribution table), one section per method with inputs/outputs table, Assumptions Log, Sources Appendix. Every page carries an ASC 820 / IPEV footer with snapshot ID.
+- **New endpoints in `server.py`** (right after Phase E's `/valuation/estimate`):
+  - `POST /api/valuations` — create draft; kicks off `_run_autofill_job` async (like Findings pattern).
+  - `GET /api/valuations` — list, filters out `deleted_at`.
+  - `GET /api/valuations/{vid}` — fetch full doc; also filters `deleted_at` (fixed post-testing agent nit).
+  - `PATCH /api/valuations/{vid}` — merge inputs, recompute outputs + aggregate atomically.
+  - `POST /api/valuations/{vid}/autofill` + `GET .../autofill/status` — re-trigger + poll.
+  - `POST /api/valuations/{vid}/term-sheet` — upload + Claude extract + merge.
+  - `POST /api/valuations/{vid}/snapshots` — freeze immutable snapshot with label + narrative; increments `snapshot_count`, records to audit log.
+  - `GET /api/valuations/{vid}/snapshots` and `/{sid}` and `/{sid}/pdf` — list + fetch + branded reportlab PDF export.
+  - `DELETE /api/valuations/{vid}` — soft-delete (snapshots retained for audit).
+- **New DB collections**: `valuations` (draft), `valuation_snapshots` (immutable).
+- **New frontend**:
+  - `/app/frontend/src/pages/ValuationsList.jsx` — grid of user's valuations with fair-value pills + autofill status badges + confidence pill. "Start valuation" modal collects company_name / sector / one-liner / revenue hint / HQ.
+  - `/app/frontend/src/pages/ValuationWorkbench.jsx` — the flagship page. Header with fair-value band + narrative; 6 tabs (Summary + 5 methods); per-method editor with typed inputs (number/text/select/list) + computed value + notes; Save button batches multi-tab changes and recomputes; Term-sheet upload label; Re-autofill button; Snapshot modal with label + narrative; Snapshots panel with per-snapshot Memo PDF download button. **Autofill polling capped at 40 attempts (~2 min)** with a "taking longer than usual" state after 15 attempts (~45s).
+  - **Routes**: `/app/valuations` and `/app/valuations/:id` (both `<Protected>`).
+  - **Sidebar nav**: New "Valuations" item under `DILIGENCE` group, gold `Coins` icon (added to all three sidebar navs in Layout.jsx).
+  - **Research Hub CTA**: New "Full Valuation" button (`data-testid="research-value-btn"`) next to "Run Detailed Analysis" on every brief — POSTs `/valuations` with `research_id` + `autofill=true` and window.location's to the workbench.
+- **Tests**: 
+  - `tests/test_valuation_workbench.py` — **26/26 PASS** (pure math per method, aggregate confidence bands, autofill mocked, term-sheet mocked).
+  - `tests/test_valuation_workbench_live.py` (testing agent iter-29) — **15/15 PASS** on live HTTP endpoints (create → autofill status → snapshot → PDF magic bytes + ASC 820/IPEV text + immutability + term-sheet upload + soft-delete).
+  - Frontend Playwright e2e (iter-29) — **100% pass** on Stripe live autofill: base $159B (Feb 2026 tender-offer secondary), medium confidence, 23 sources, DCF edit save + recompute, snapshot + memo PDF download.
+- **Live smoke** on Ramp: autofill returned in ~9s with base $38B across 4 methods (Recent Transaction $44B Series F · VC Method $41B · DCF $7.9B · Option Pricing $41B), 7-page memo PDF valid (ASC 820 + IPEV + Executive Summary + all method sections).
+- **Fixed post-testing**: (a) `GET /api/valuations/{vid}` now filters `deleted_at` for parity with the LIST endpoint (soft-delete asymmetry); (b) frontend autofill poll capped at 40 attempts with slow-state UX.
+- **Next** in the Valuation Suite: Phase C (Committee approval workflow + OpenTimestamps anchoring) → Phase B (Portfolio & NAV Console for quarterly cadence) → Phase D (ASC 820 disclosure output + policy-clause evidence linking).
+

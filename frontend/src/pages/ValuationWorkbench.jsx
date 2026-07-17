@@ -85,6 +85,8 @@ export default function ValuationWorkbench() {
   const [uploading, setUploading] = useState(false);
   const [snapModal, setSnapModal] = useState(false);
   const pollRef = useRef(null);
+  const pollAttemptsRef = useRef(0);
+  const [pollSlow, setPollSlow] = useState(false);
 
   const load = useCallback(async () => {
     const r = await api.get(`/valuations/${id}`);
@@ -100,10 +102,20 @@ export default function ValuationWorkbench() {
 
   useEffect(() => { load(); loadSnapshots(); }, [load, loadSnapshots]);
 
-  // Poll autofill status while pending
+  // Poll autofill status while pending — cap at 40 attempts (~2 min) so a hung
+  // job never runs forever. After 15 attempts (~45s) flag the UI as "slow".
   useEffect(() => {
     if (!v || v.autofill_status !== "pending") return;
+    pollAttemptsRef.current = 0;
+    setPollSlow(false);
     pollRef.current = setInterval(async () => {
+      pollAttemptsRef.current += 1;
+      if (pollAttemptsRef.current > 15) setPollSlow(true);
+      if (pollAttemptsRef.current > 40) {
+        clearInterval(pollRef.current);
+        toast.error("Autofill is taking longer than expected — try Re-autofill.");
+        return;
+      }
       try {
         const r = await api.get(`/valuations/${id}/autofill/status`);
         if (r.data.autofill_status !== "pending") {
@@ -276,8 +288,14 @@ export default function ValuationWorkbench() {
           <div className="flex items-center gap-3">
             <div className="dot-blink" />
             <div>
-              <div className="text-sm font-medium">AI autofill in progress</div>
-              <div className="text-xs text-[var(--wz-text-tertiary)] mt-0.5">Grounding on Perplexity + Brave. Usually ~20-40s.</div>
+              <div className="text-sm font-medium">
+                {pollSlow ? "Autofill is taking longer than usual…" : "AI autofill in progress"}
+              </div>
+              <div className="text-xs text-[var(--wz-text-tertiary)] mt-0.5">
+                {pollSlow
+                  ? "Still working — click Re-autofill if it doesn't finish in another ~30s."
+                  : "Grounding on Perplexity + Brave. Usually ~20-40s."}
+              </div>
             </div>
           </div>
         </div>
