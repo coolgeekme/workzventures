@@ -238,8 +238,26 @@ export default function ValuationWorkbench() {
           <div>
             <div className="overline text-[var(--wz-gold)] flex items-center gap-1"><Coins size={11} /> Valuation Workbench</div>
             <h1 className="font-display text-4xl tracking-tight">{v.company_name}</h1>
-            <div className="text-xs text-[var(--wz-text-tertiary)] mt-1">
-              {v.sector || "—"} {v.headquarters ? `· ${v.headquarters}` : ""}
+            <div className="text-xs text-[var(--wz-text-tertiary)] mt-1 flex items-center gap-2 flex-wrap">
+              <span>{v.sector || "—"}{v.headquarters ? ` · ${v.headquarters}` : ""}</span>
+              {v.private_grounded && (
+                <span
+                  className="pill pill-gold text-[10px] flex items-center gap-1"
+                  title={`Vault-grounded on ${(v.vault_files_used || []).length} document(s)`}
+                  data-testid="wb-private-badge"
+                >
+                  🔒 private + web
+                </span>
+              )}
+              {v.deal_room_id && (
+                <Link
+                  to={`/app/rooms/${v.deal_room_id}`}
+                  className="text-[10px] text-[var(--wz-gold)] hover:underline"
+                  data-testid="wb-linked-vault"
+                >
+                  ← Vault
+                </Link>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">

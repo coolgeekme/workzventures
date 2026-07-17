@@ -11,6 +11,7 @@ import {
 import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
 import VaultActivity from "../components/VaultActivity";
 import PdfPreview from "../components/PdfPreview";
+import VaultValuationCard from "../components/VaultValuationCard";
 
 const FOLDERS = [
   { v: "financials", l: "Financials" },
@@ -546,6 +547,11 @@ export default function DealRoomDetail() {
           <ShieldCheck size={14} className="text-[var(--wz-positive)]" />
           NDA e-signed by <span className="text-white" style={{ fontStyle: "italic" }}>{room.nda_signed_name}</span> · {new Date(room.nda_accepted_by_buyer_at).toLocaleString()}
         </div>
+      )}
+
+      {/* Iter-38: Buyer-only Fair-Value card, grounded on the data room + web */}
+      {isBuyer && room.status === "active" && (
+        <VaultValuationCard roomId={id} roomStatus={room.status} />
       )}
 
       {/* Tabs */}

@@ -3009,12 +3009,75 @@ def _valuation_summary(v: dict) -> dict:
     }
 
 
+async def _gather_vault_private_evidence(rid: str) -> tuple[str, list[dict]]:
+    """Iter-38 — reuse the parsed pages Findings already extracted from vault
+    files. Returns `(evidence_text, files_used)`.
+
+    Heuristic filename detection prioritizes:
+      * term sheets / SAFEs / convertibles → recent_transaction + OPM
+      * cap tables / ownership → OPM preferred stack
+      * financial models / forecasts → DCF inputs
+      * everything else → general context (capped)
+    """
+    if not rid:
+        return "", []
+    files = await db.deal_room_files.find(
+        {"room_id": rid},
+        {"_id": 0, "id": 1, "filename": 1, "folder": 1, "pages": 1, "content": 1},
+    ).sort("uploaded_at", 1).to_list(60)
+    if not files:
+        return "", []
+
+    prio_regex = {
+        "TERM_SHEET":   re.compile(r"term.?sheet|safe|convertible|409a", re.I),
+        "CAP_TABLE":    re.compile(r"cap.?table|ownership|equity.?stack|share.?ledger", re.I),
+        "FINANCIALS":   re.compile(r"revenue|financial|forecast|model|budget|p&l|pnl|cash.?flow", re.I),
+    }
+    def _priority(fn: str) -> str:
+        for k, r in prio_regex.items():
+            if r.search(fn or ""):
+                return k
+        return "OTHER"
+
+    # Sort high-priority first so we don't run out of prompt budget on generic docs
+    order = {"TERM_SHEET": 0, "CAP_TABLE": 1, "FINANCIALS": 2, "OTHER": 3}
+    files.sort(key=lambda f: order[_priority(f.get("filename", ""))])
+
+    blocks: list[str] = []
+    used: list[dict] = []
+    total_chars = 0
+    CHAR_CAP = 11000  # ~2.8k tokens worth of private evidence
+    for idx, f in enumerate(files, 1):
+        if total_chars >= CHAR_CAP:
+            break
+        prio = _priority(f.get("filename", ""))
+        pages = f.get("pages") or []
+        if pages:
+            excerpts = "\n".join(f"  <p{p['page']}> {(p.get('text') or '')[:600]}" for p in pages[:4])
+        else:
+            excerpts = f"  {(f.get('content') or '')[:1200]}"
+        piece = f"[{idx} · {prio}] {f['filename']} ({f.get('folder', '/')})\n{excerpts}"
+        if total_chars + len(piece) > CHAR_CAP:
+            piece = piece[: CHAR_CAP - total_chars] + "…"
+        blocks.append(piece)
+        used.append({"id": f["id"], "filename": f["filename"], "priority": prio})
+        total_chars += len(piece)
+
+    return "\n\n---\n\n".join(blocks), used
+
+
 async def _run_autofill_job(valuation_id: str, user_id: str) -> None:
     """Background task: seed inputs for all 5 methods from web research."""
     try:
         v = await db.valuations.find_one({"id": valuation_id, "user_id": user_id})
         if not v:
             return
+        # Iter-38: if this valuation is linked to a Vault, pull authoritative
+        # private evidence from the Data Room's parsed files. Reuses the same
+        # `pages` text Findings already extracted (zero re-parse cost).
+        private_evidence, vault_files_used = "", []
+        if v.get("deal_room_id"):
+            private_evidence, vault_files_used = await _gather_vault_private_evidence(v["deal_room_id"])
         seed = await _autofill_wb(
             company_name=v["company_name"],
             sector=v.get("sector"),
@@ -3025,6 +3088,8 @@ async def _run_autofill_job(valuation_id: str, user_id: str) -> None:
             perplexity_fn=lambda p: query_perplexity(p),
             claude_fn=call_claude,
             safe_json=safe_json_loads,
+            private_evidence=private_evidence or None,
+            private_evidence_files=vault_files_used or None,
         )
         # Compute outputs from seeded inputs and aggregate.
         outputs = _compute_all(seed.get("inputs") or {})
@@ -3038,6 +3103,8 @@ async def _run_autofill_job(valuation_id: str, user_id: str) -> None:
                 "narrative": seed.get("narrative") or "",
                 "sources": seed.get("sources") or [],
                 "weights": dict(_DEFAULT_WEIGHTS),
+                "private_grounded": bool(seed.get("private_grounded")),
+                "vault_files_used": seed.get("vault_files_used") or [],
                 "autofill_status": "completed",
                 "autofilled_at": now_utc().isoformat(),
                 "updated_at": now_utc().isoformat(),
@@ -3046,6 +3113,8 @@ async def _run_autofill_job(valuation_id: str, user_id: str) -> None:
         await log_audit(user_id, "valuation.autofill.completed", valuation_id, {
             "base_usd": aggregate.get("base_usd"),
             "confidence": aggregate.get("confidence"),
+            "private_grounded": bool(seed.get("private_grounded")),
+            "vault_files_used": len(seed.get("vault_files_used") or []),
         })
     except Exception as e:
         logger.exception(f"valuation.autofill failed for {valuation_id}: {e}")
@@ -3061,9 +3130,20 @@ async def _run_autofill_job(valuation_id: str, user_id: str) -> None:
 
 @api_router.post("/valuations")
 async def create_valuation(body: ValuationCreate, user=Depends(get_current_user)):
-    """Create a draft valuation workbench. Autofill runs asynchronously."""
+    """Create a draft valuation workbench. Autofill runs asynchronously.
+
+    If `deal_room_id` is provided, this valuation is Vault-grounded — autofill
+    will fuse public web evidence with parsed vault documents (highest priority).
+    Access to the vault is verified before creation.
+    """
     if not body.company_name or not body.company_name.strip():
         raise HTTPException(status_code=400, detail="company_name is required")
+    # Iter-38: verify vault access when deal_room_id is set (NDA-signed buyers only)
+    if body.deal_room_id:
+        room = await db.deal_rooms.find_one({"id": body.deal_room_id})
+        if not room:
+            raise HTTPException(status_code=404, detail="Vault not found")
+        await participant_check(room, user)
     vid = str(uuid.uuid4())
     now = now_utc().isoformat()
     doc = {
@@ -3083,6 +3163,8 @@ async def create_valuation(body: ValuationCreate, user=Depends(get_current_user)
         "narrative": "",
         "sources": [],
         "weights": dict(_DEFAULT_WEIGHTS),
+        "private_grounded": False,
+        "vault_files_used": [],
         "autofill_status": "pending" if body.autofill else "skipped",
         "snapshot_count": 0,
         "latest_snapshot_id": None,
@@ -3090,7 +3172,10 @@ async def create_valuation(body: ValuationCreate, user=Depends(get_current_user)
         "updated_at": now,
     }
     await db.valuations.insert_one(doc)
-    await log_audit(user["id"], "valuation.create", vid, {"company_name": body.company_name})
+    await log_audit(user["id"], "valuation.create", vid, {
+        "company_name": body.company_name,
+        "deal_room_id": body.deal_room_id,
+    })
     if body.autofill:
         asyncio.create_task(_run_autofill_job(vid, user["id"]))
     doc.pop("_id", None)
@@ -3231,6 +3316,8 @@ async def create_snapshot(vid: str, body: SnapshotCreate, user=Depends(get_curre
         "weights": doc.get("weights") or {},
         "sources": doc.get("sources") or [],
         "company_name": doc.get("company_name"),
+        "private_grounded": bool(doc.get("private_grounded")),
+        "vault_files_used": doc.get("vault_files_used") or [],
     }
     await db.valuation_snapshots.insert_one(snapshot)
     await db.valuations.update_one(
@@ -3305,6 +3392,63 @@ async def delete_valuation(vid: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Valuation not found")
     await log_audit(user["id"], "valuation.delete", vid)
     return {"ok": True}
+
+
+# --- Iter-38: Vault-scoped valuation lookup + one-click "value this target" ---
+@api_router.get("/deal-rooms/{rid}/valuation")
+async def get_vault_valuation(rid: str, user=Depends(get_current_user)):
+    """Return the CURRENT user's valuation linked to this vault, or 404.
+
+    Access: buyer-private. Only the user who owns the valuation sees it — the
+    seller / other buyers never learn a peer buyer has valued the target.
+    """
+    room = await db.deal_rooms.find_one({"id": rid})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    await participant_check(room, user)
+    doc = await db.valuations.find_one(
+        {
+            "user_id": user["id"],
+            "deal_room_id": rid,
+            "deleted_at": {"$exists": False},
+        },
+        {"_id": 0},
+        sort=[("updated_at", -1)],
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="No valuation on this vault yet")
+    return doc
+
+
+@api_router.post("/deal-rooms/{rid}/valuation")
+async def create_vault_valuation(rid: str, user=Depends(get_current_user)):
+    """One-click: create a Valuation linked to this Vault, seeded with the
+    listing's company_name / sector / HQ. Autofill kicks off immediately."""
+    room = await db.deal_rooms.find_one({"id": rid})
+    if not room:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    await participant_check(room, user)
+    # Return the existing valuation if one already exists (idempotent one-click)
+    existing = await db.valuations.find_one(
+        {"user_id": user["id"], "deal_room_id": rid, "deleted_at": {"$exists": False}},
+        {"_id": 0},
+        sort=[("updated_at", -1)],
+    )
+    if existing:
+        return existing
+    listing = None
+    if room.get("listing_id"):
+        listing = await db.listings.find_one({"id": room["listing_id"]}, {"_id": 0})
+    payload = ValuationCreate(
+        company_name=(listing or {}).get("company_name") or room.get("listing_name") or "Target",
+        sector=(listing or {}).get("sector"),
+        one_liner=(listing or {}).get("one_liner") or (listing or {}).get("headline"),
+        headquarters=(listing or {}).get("hq") or (listing or {}).get("headquarters"),
+        deal_room_id=rid,
+        listing_id=room.get("listing_id"),
+        autofill=True,
+    )
+    return await create_valuation(payload, user)
 
 
 # -----------------------------------------------------------------------------

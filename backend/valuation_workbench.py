@@ -383,8 +383,15 @@ async def autofill_workbench(
     perplexity_fn: Callable[[str], Awaitable[dict]],
     claude_fn: Callable[[str, str], Awaitable[str]],
     safe_json: Callable[[str], dict],
+    private_evidence: str | None = None,          # Iter-38: Vault-grounded autofill
+    private_evidence_files: list[dict] | None = None,
 ) -> dict:
-    """Return `{inputs:{5 methods}, narrative, sources[]}` seeded from the web."""
+    """Return `{inputs:{5 methods}, narrative, sources[]}` seeded from the web.
+
+    When `private_evidence` is provided (typically extracted from a linked Vault's
+    files), it is passed to the model as AUTHORITATIVE insider information and
+    prioritized over public claims.
+    """
     import asyncio
     tx_query = f"{company_name} latest funding round Series post-money valuation date raised"
     mm_query = f"{company_name} revenue ARR employees comparable public companies stock ticker"
@@ -416,6 +423,23 @@ async def autofill_workbench(
     if headquarters: lines.append(f"HQ: {headquarters}")
     if estimated_revenue: lines.append(f"REVENUE HINT: {estimated_revenue}")
     lines.append("")
+
+    # AUTHORITATIVE section first — private evidence should be highest priority
+    # in the model's attention window. Public web signals are corroborating only.
+    if private_evidence:
+        lines.append("=== PRIVATE DATA ROOM EVIDENCE (AUTHORITATIVE) ===")
+        lines.append(
+            "The following excerpts are from documents DISCLOSED under NDA by the target company. "
+            "Prioritize these numbers over any conflicting public claims. Use exact figures where "
+            "given (revenue, cap-table, preferred stack). Flag public-only estimates when private "
+            "data doesn't cover a variable."
+        )
+        lines.append("")
+        lines.append(private_evidence[:12000])  # cap ~3k tokens
+        lines.append("")
+        lines.append("=== END PRIVATE EVIDENCE ===")
+        lines.append("")
+
     lines.append("PERPLEXITY BRIEFING:")
     lines.append((px.get("text") or "").strip()[:3500] or "(no briefing)")
     lines.append("")
@@ -440,6 +464,17 @@ async def autofill_workbench(
     if not any(k in parsed for k in ("recent_transaction", "market_multiples", "dcf")):
         return _empty_workbench_seed("model returned no method inputs")
 
+    # Merge public web sources + private evidence file references as citations.
+    sources = _merge_sources(px, brave_tx, brave_mm, brave_fin)
+    if private_evidence_files:
+        for f in private_evidence_files[:20]:
+            sources.append({
+                "url": None,
+                "title": f.get("filename") or "vault document",
+                "provider": "private_vault",
+                "file_id": f.get("id"),
+            })
+
     return {
         "inputs": {
             "recent_transaction": parsed.get("recent_transaction") or {},
@@ -449,7 +484,9 @@ async def autofill_workbench(
             "option_pricing":     parsed.get("option_pricing")     or {},
         },
         "narrative": parsed.get("narrative") or "",
-        "sources": _merge_sources(px, brave_tx, brave_mm, brave_fin),
+        "sources": sources,
+        "private_grounded": bool(private_evidence),
+        "vault_files_used": private_evidence_files or [],
     }
 
 

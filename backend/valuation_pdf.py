@@ -148,10 +148,17 @@ def build_memo_pdf(
     story.append(Paragraph(f"Confidence: {conf}", h_sub))
 
     story.append(Spacer(1, 0.6 * inch))
+    private_grounded = bool(valuation.get("private_grounded"))
+    vault_files_used = valuation.get("vault_files_used") or []
+    data_sources_line = (
+        f"Private Data Room ({len(vault_files_used)} file{'s' if len(vault_files_used) != 1 else ''}) + Public Web"
+        if private_grounded else "Public Web Only"
+    )
     story.append(_kv_table([
         ("Prepared By", prepared_by or "—"),
         ("Firm", firm_name),
         ("Measurement Date", measurement_date[:10]),
+        ("Data Sources", data_sources_line),
         ("Methodology", "IPEV Guidelines · ASC 820 Level 3"),
         ("Snapshot ID", (snapshot.get("id") or "")[:12]),
     ]))
