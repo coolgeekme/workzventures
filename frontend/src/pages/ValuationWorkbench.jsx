@@ -102,20 +102,19 @@ export default function ValuationWorkbench() {
 
   useEffect(() => { load(); loadSnapshots(); }, [load, loadSnapshots]);
 
-  // Poll autofill status while pending — cap at 40 attempts (~2 min) so a hung
-  // job never runs forever. After 15 attempts (~45s) flag the UI as "slow".
+  // Iter-44: Poll autofill status while pending. Claude runs 60-180s on
+  // heavy vaults (financial statements + cap-tables + web queries), so a
+  // hard 2-min cap was falsely reporting "timeout" and the UI never picked
+  // up the completed data. New behavior:
+  //   * 3s interval for the first minute (feels responsive)
+  //   * 10s interval after that (up to 5 min total)
+  //   * Also re-check when the tab regains focus.
   useEffect(() => {
     if (!v || v.autofill_status !== "pending") return;
     pollAttemptsRef.current = 0;
     setPollSlow(false);
-    pollRef.current = setInterval(async () => {
-      pollAttemptsRef.current += 1;
-      if (pollAttemptsRef.current > 15) setPollSlow(true);
-      if (pollAttemptsRef.current > 40) {
-        clearInterval(pollRef.current);
-        toast.error("Autofill is taking longer than expected — try Re-autofill.");
-        return;
-      }
+
+    const checkOnce = async () => {
       try {
         const r = await api.get(`/valuations/${id}/autofill/status`);
         if (r.data.autofill_status !== "pending") {
@@ -126,10 +125,39 @@ export default function ValuationWorkbench() {
           } else if (r.data.autofill_status === "failed") {
             toast.error("Autofill failed — enter inputs manually.");
           }
+          return true;
         }
       } catch { /* keep polling */ }
-    }, 3000);
-    return () => clearInterval(pollRef.current);
+      return false;
+    };
+
+    let phase = "fast"; // fast (3s, first 20 attempts) → slow (10s, +30 attempts)
+    const tick = async () => {
+      pollAttemptsRef.current += 1;
+      if (pollAttemptsRef.current > 20 && phase === "fast") {
+        setPollSlow(true);
+        phase = "slow";
+        clearInterval(pollRef.current);
+        pollRef.current = setInterval(tick, 10000);
+      }
+      // 20 fast (60s) + 30 slow (300s) = 6 min total, generous for heavy vaults.
+      if (pollAttemptsRef.current > 50) {
+        clearInterval(pollRef.current);
+        toast.error("Autofill still running in background — refresh the page to check.");
+        return;
+      }
+      await checkOnce();
+    };
+    pollRef.current = setInterval(tick, 3000);
+
+    // Also check immediately if user comes back to the tab.
+    const onVisible = () => { if (!document.hidden) checkOnce(); };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      clearInterval(pollRef.current);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [v, id, load]);
 
   // Merge a partial input change and save + recompute (debounced by user via explicit save)
@@ -311,10 +339,19 @@ export default function ValuationWorkbench() {
               </div>
               <div className="text-xs text-[var(--wz-text-tertiary)] mt-0.5">
                 {pollSlow
-                  ? "Still working — click Re-autofill if it doesn't finish in another ~30s."
-                  : "Grounding on Perplexity + Brave. Usually ~20-40s."}
+                  ? "Still working (heavy vaults can take 60-180s). We'll keep polling in the background — feel free to leave the page open."
+                  : "Grounding on Perplexity + Brave + your Vault. Usually ~20-40s."}
               </div>
             </div>
+            <button
+              type="button"
+              onClick={load}
+              className="ml-auto wz-btn text-xs flex items-center gap-1"
+              data-testid="wb-poll-check-now"
+              title="Manually check for the latest autofill result"
+            >
+              <ArrowClockwise size={11} /> Check now
+            </button>
           </div>
         </div>
       )}

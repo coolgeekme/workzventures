@@ -48,29 +48,53 @@ export default function VaultValuationCard({ roomId, roomStatus, canCreate = tru
 
   useEffect(() => { load(); }, [roomId]);
 
-  // Poll autofill if pending — cap at 40 attempts (~2 min) to prevent runaway
-  // polling if the backend gets stuck. Matches the safety net in ValuationWorkbench.
+  // Iter-44: Poll autofill if pending. Extended window (6 min) to handle
+  // heavy vaults where Claude takes 60-180s. Slows to 10s cadence after the
+  // first minute to save resources.
   useEffect(() => {
     if (state.val?.autofill_status !== "pending") return undefined;
     let attempts = 0;
-    const t = setInterval(async () => {
-      attempts += 1;
-      if (attempts > 40) {
-        clearInterval(t);
-        toast.error("Vault autofill is taking longer than expected — open the workbench to retry.");
-        return;
-      }
+    let handle;
+    let phase = "fast";
+
+    const checkOnce = async () => {
       try {
         const r = await api.get(`/valuations/${state.val.id}/autofill/status`);
         if (r.data.autofill_status !== "pending") {
+          if (handle) clearInterval(handle);
           load();
           if (r.data.autofill_status === "completed") {
             toast.success("Vault-grounded fair-value ready");
           }
+          return true;
         }
       } catch { /* keep polling */ }
-    }, 3000);
-    return () => clearInterval(t);
+      return false;
+    };
+
+    const tick = async () => {
+      attempts += 1;
+      if (attempts > 20 && phase === "fast") {
+        phase = "slow";
+        clearInterval(handle);
+        handle = setInterval(tick, 10000);
+      }
+      if (attempts > 50) {
+        clearInterval(handle);
+        toast.error("Vault autofill still running — open workbench to check status.");
+        return;
+      }
+      await checkOnce();
+    };
+    handle = setInterval(tick, 3000);
+
+    const onVisible = () => { if (!document.hidden) checkOnce(); };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      if (handle) clearInterval(handle);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [state.val?.id, state.val?.autofill_status]);
 
   const startValuation = async () => {

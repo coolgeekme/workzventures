@@ -1,5 +1,17 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
+
+## Iter-44 · Valuation Re-autofill Merge Fix (2026-02-17)
+**Bug**: Clicking "Re-autofill" on a Vault-grounded valuation appeared to LOSE inputs — fields that Claude populated on the first run would sometimes come back null on a re-run (Claude is non-deterministic), and the backend was blindly overwriting `inputs` with the new seed. Frontend polling also capped at 2 min which was too tight for heavy vaults (Claude 60-180s + web queries).
+
+**Fix**:
+- Backend `server.py`: New `_merge_autofill_inputs(existing, incoming)` helper — for each method+field, prefer the NEW non-null value, fall back to the OLD non-null value if the new call returned null. List fields (`comparable_tickers`, `source_urls`) union-merge with dedupe. Weights and narrative preserved across re-runs; sources accumulate.
+- Frontend `ValuationWorkbench.jsx` + `VaultValuationCard.jsx`: Polling window extended from 2 min (40×3s) to ~6 min (20 fast × 3s + 30 slow × 10s), with `visibilitychange` re-check when tab regains focus. Manual "Check now" button added on the pending banner.
+- Tests: `backend/tests/test_valuation_merge.py` — 6 unit tests cover null-preservation, list-union, untouched-methods, empty-input edges. All 39 valuation-related tests still pass.
+
+**Verified live** on preview: Helios MedTech vault-linked valuation kept 5+5+5+7+4 fields populated across 3 consecutive re-autofill runs; comparable_tickers accumulated to 9 unique tickers via union merge.
+
+
 ## Original problem statement
 Build an enterprise platform that combines:
 - Composio OAuth for LinkedIn + other professional networks

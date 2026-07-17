@@ -3133,6 +3133,60 @@ async def _gather_vault_private_evidence(rid: str) -> tuple[str, list[dict]]:
     return "\n\n---\n\n".join(blocks), used
 
 
+def _merge_autofill_inputs(existing: dict, incoming: dict) -> dict:
+    """Iter-44: Merge autofill seed values into existing per-method inputs.
+
+    Claude is non-deterministic — a re-run may return nulls for fields it
+    populated on a prior run (or vice versa). Blind-overwrite would make the
+    Workbench appear to "lose data" on Re-autofill. Instead:
+
+      * For each method, prefer the NEW non-null value; fall back to the OLD
+        non-null value if the new run returned null / "" / empty list.
+      * List fields (comparable_tickers, source_urls) union-merge (dedupe).
+      * Notes always take the newer one (fresher rationale).
+      * If a method wasn't touched by the new run at all, keep old inputs.
+    """
+    existing = existing or {}
+    incoming = incoming or {}
+    merged: dict = {}
+    all_methods = set(existing.keys()) | set(incoming.keys())
+    for method in all_methods:
+        old_m = existing.get(method) or {}
+        new_m = incoming.get(method) or {}
+        if not isinstance(old_m, dict): old_m = {}
+        if not isinstance(new_m, dict): new_m = {}
+        combined: dict = {}
+        for k in set(old_m.keys()) | set(new_m.keys()):
+            old_v = old_m.get(k)
+            new_v = new_m.get(k)
+            # List merge — union & dedupe (order preserved, new first).
+            if isinstance(old_v, list) or isinstance(new_v, list):
+                merged_list: list = []
+                seen: set = set()
+                for src in ((new_v or []), (old_v or [])):
+                    for item in src if isinstance(src, list) else []:
+                        key = item if isinstance(item, (str, int, float)) else str(item)
+                        if key not in seen:
+                            seen.add(key)
+                            merged_list.append(item)
+                combined[k] = merged_list
+                continue
+            # Scalar: prefer new non-null, fallback to old non-null.
+            new_is_empty = new_v is None or new_v == "" or new_v == 0 and k not in {
+                # These 0s are meaningful (rare but possible)
+                "current_ownership_pct", "common_share_pct", "size_discount_pct",
+                "capex_pct_revenue",
+            }
+            if not new_is_empty:
+                combined[k] = new_v
+            elif old_v not in (None, ""):
+                combined[k] = old_v
+            else:
+                combined[k] = new_v  # both empty — take whatever
+        merged[method] = combined
+    return merged
+
+
 async def _run_autofill_job(valuation_id: str, user_id: str) -> None:
     """Background task: seed inputs for all 5 methods from web research."""
     try:
@@ -3158,20 +3212,38 @@ async def _run_autofill_job(valuation_id: str, user_id: str) -> None:
             private_evidence=private_evidence or None,
             private_evidence_files=vault_files_used or None,
         )
-        # Compute outputs from seeded inputs and aggregate.
-        outputs = _compute_all(seed.get("inputs") or {})
-        aggregate = _aggregate_band(outputs)
+        # Iter-44: MERGE the new seed with any existing inputs so a re-run can
+        # never make the Workbench appear to "lose data" that a prior run had
+        # populated. Old non-null values win when the new call returned null.
+        existing_inputs = v.get("inputs") or {}
+        seeded_inputs = seed.get("inputs") or {}
+        merged_inputs = _merge_autofill_inputs(existing_inputs, seeded_inputs)
+        # Compute outputs from merged inputs and aggregate.
+        outputs = _compute_all(merged_inputs)
+        # Preserve caller-tuned weights across re-runs (no reset to defaults).
+        weights = v.get("weights") or dict(_DEFAULT_WEIGHTS)
+        aggregate = _aggregate_band(outputs, weights)
+        # Sources — union merge so citations accumulate across re-runs.
+        old_sources = v.get("sources") or []
+        new_sources = seed.get("sources") or []
+        seen_urls: set = set()
+        merged_sources: list = []
+        for src in (new_sources + old_sources):
+            key = src.get("url") or f"file:{src.get('file_id')}"
+            if key and key not in seen_urls:
+                seen_urls.add(key)
+                merged_sources.append(src)
         await db.valuations.update_one(
             {"id": valuation_id},
             {"$set": {
-                "inputs": seed.get("inputs") or {},
+                "inputs": merged_inputs,
                 "outputs": outputs,
                 "aggregate": aggregate,
-                "narrative": seed.get("narrative") or "",
-                "sources": seed.get("sources") or [],
-                "weights": dict(_DEFAULT_WEIGHTS),
-                "private_grounded": bool(seed.get("private_grounded")),
-                "vault_files_used": seed.get("vault_files_used") or [],
+                "narrative": seed.get("narrative") or v.get("narrative") or "",
+                "sources": merged_sources[:60],
+                "weights": weights,
+                "private_grounded": bool(seed.get("private_grounded") or v.get("private_grounded")),
+                "vault_files_used": seed.get("vault_files_used") or v.get("vault_files_used") or [],
                 "autofill_status": "completed",
                 "autofilled_at": now_utc().isoformat(),
                 "updated_at": now_utc().isoformat(),
@@ -3182,6 +3254,7 @@ async def _run_autofill_job(valuation_id: str, user_id: str) -> None:
             "confidence": aggregate.get("confidence"),
             "private_grounded": bool(seed.get("private_grounded")),
             "vault_files_used": len(seed.get("vault_files_used") or []),
+            "merged_with_prior": bool(existing_inputs),
         })
     except Exception as e:
         logger.exception(f"valuation.autofill failed for {valuation_id}: {e}")
