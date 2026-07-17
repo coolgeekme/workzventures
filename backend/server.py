@@ -2957,6 +2957,353 @@ async def get_cached_valuation(slug: str, user=Depends(get_current_user)):
     return doc
 
 
+# =============================================================================
+# VALUATION WORKBENCH (Phase A) — Full 5-method fair-value workbench
+# =============================================================================
+from valuation_workbench import (  # noqa: E402
+    autofill_workbench as _autofill_wb,
+    compute_all_methods as _compute_all,
+    aggregate_band as _aggregate_band,
+    extract_term_sheet as _extract_term_sheet,
+    DEFAULT_WEIGHTS as _DEFAULT_WEIGHTS,
+)
+from valuation_pdf import build_memo_pdf as _build_memo_pdf  # noqa: E402
+
+
+class ValuationCreate(BaseModel):
+    company_name: str
+    sector: Optional[str] = None
+    one_liner: Optional[str] = None
+    estimated_revenue: Optional[str] = None
+    headquarters: Optional[str] = None
+    research_id: Optional[str] = None
+    listing_id: Optional[str] = None
+    deal_room_id: Optional[str] = None
+    autofill: bool = True  # kick off AI autofill by default
+
+
+class ValuationInputsUpdate(BaseModel):
+    inputs: Dict[str, Dict[str, Any]]  # {method_key: {field: value}}
+    weights: Optional[Dict[str, float]] = None
+
+
+class SnapshotCreate(BaseModel):
+    label: Optional[str] = None
+    narrative: Optional[str] = None
+
+
+def _valuation_summary(v: dict) -> dict:
+    """Compact list-view projection of a valuation record."""
+    return {
+        "id": v["id"],
+        "company_name": v.get("company_name"),
+        "sector": v.get("sector"),
+        "headquarters": v.get("headquarters"),
+        "user_id": v.get("user_id"),
+        "created_at": v.get("created_at"),
+        "updated_at": v.get("updated_at"),
+        "autofill_status": v.get("autofill_status"),
+        "latest_snapshot_id": v.get("latest_snapshot_id"),
+        "aggregate": v.get("aggregate"),
+        "snapshot_count": v.get("snapshot_count", 0),
+    }
+
+
+async def _run_autofill_job(valuation_id: str, user_id: str) -> None:
+    """Background task: seed inputs for all 5 methods from web research."""
+    try:
+        v = await db.valuations.find_one({"id": valuation_id, "user_id": user_id})
+        if not v:
+            return
+        seed = await _autofill_wb(
+            company_name=v["company_name"],
+            sector=v.get("sector"),
+            one_liner=v.get("one_liner"),
+            estimated_revenue=v.get("estimated_revenue"),
+            headquarters=v.get("headquarters"),
+            brave_fn=search_brave,
+            perplexity_fn=lambda p: query_perplexity(p),
+            claude_fn=call_claude,
+            safe_json=safe_json_loads,
+        )
+        # Compute outputs from seeded inputs and aggregate.
+        outputs = _compute_all(seed.get("inputs") or {})
+        aggregate = _aggregate_band(outputs)
+        await db.valuations.update_one(
+            {"id": valuation_id},
+            {"$set": {
+                "inputs": seed.get("inputs") or {},
+                "outputs": outputs,
+                "aggregate": aggregate,
+                "narrative": seed.get("narrative") or "",
+                "sources": seed.get("sources") or [],
+                "weights": dict(_DEFAULT_WEIGHTS),
+                "autofill_status": "completed",
+                "autofilled_at": now_utc().isoformat(),
+                "updated_at": now_utc().isoformat(),
+            }},
+        )
+        await log_audit(user_id, "valuation.autofill.completed", valuation_id, {
+            "base_usd": aggregate.get("base_usd"),
+            "confidence": aggregate.get("confidence"),
+        })
+    except Exception as e:
+        logger.exception(f"valuation.autofill failed for {valuation_id}: {e}")
+        await db.valuations.update_one(
+            {"id": valuation_id},
+            {"$set": {
+                "autofill_status": "failed",
+                "autofill_error": str(e)[:400],
+                "updated_at": now_utc().isoformat(),
+            }},
+        )
+
+
+@api_router.post("/valuations")
+async def create_valuation(body: ValuationCreate, user=Depends(get_current_user)):
+    """Create a draft valuation workbench. Autofill runs asynchronously."""
+    if not body.company_name or not body.company_name.strip():
+        raise HTTPException(status_code=400, detail="company_name is required")
+    vid = str(uuid.uuid4())
+    now = now_utc().isoformat()
+    doc = {
+        "id": vid,
+        "user_id": user["id"],
+        "company_name": body.company_name.strip(),
+        "sector": body.sector,
+        "one_liner": body.one_liner,
+        "estimated_revenue": body.estimated_revenue,
+        "headquarters": body.headquarters,
+        "research_id": body.research_id,
+        "listing_id": body.listing_id,
+        "deal_room_id": body.deal_room_id,
+        "inputs": {k: {} for k in ("recent_transaction", "market_multiples", "vc_method", "dcf", "option_pricing")},
+        "outputs": {},
+        "aggregate": None,
+        "narrative": "",
+        "sources": [],
+        "weights": dict(_DEFAULT_WEIGHTS),
+        "autofill_status": "pending" if body.autofill else "skipped",
+        "snapshot_count": 0,
+        "latest_snapshot_id": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.valuations.insert_one(doc)
+    await log_audit(user["id"], "valuation.create", vid, {"company_name": body.company_name})
+    if body.autofill:
+        asyncio.create_task(_run_autofill_job(vid, user["id"]))
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/valuations")
+async def list_valuations(user=Depends(get_current_user)):
+    cur = db.valuations.find(
+        {"user_id": user["id"], "deleted_at": {"$exists": False}},
+        {"_id": 0},
+    ).sort("updated_at", -1)
+    items = await cur.to_list(200)
+    return [_valuation_summary(v) for v in items]
+
+
+@api_router.get("/valuations/{vid}")
+async def get_valuation(vid: str, user=Depends(get_current_user)):
+    doc = await db.valuations.find_one({"id": vid, "user_id": user["id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Valuation not found")
+    return doc
+
+
+@api_router.patch("/valuations/{vid}")
+async def update_valuation_inputs(vid: str, body: ValuationInputsUpdate, user=Depends(get_current_user)):
+    """Merge inputs into the working draft and recompute outputs + aggregate."""
+    doc = await db.valuations.find_one({"id": vid, "user_id": user["id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Valuation not found")
+    inputs = doc.get("inputs") or {}
+    for k, v in (body.inputs or {}).items():
+        inputs[k] = {**(inputs.get(k) or {}), **(v or {})}
+    weights = body.weights or doc.get("weights") or dict(_DEFAULT_WEIGHTS)
+    outputs = _compute_all(inputs)
+    aggregate = _aggregate_band(outputs, weights)
+    await db.valuations.update_one(
+        {"id": vid},
+        {"$set": {
+            "inputs": inputs, "outputs": outputs, "aggregate": aggregate,
+            "weights": weights, "updated_at": now_utc().isoformat(),
+        }},
+    )
+    return {"id": vid, "inputs": inputs, "outputs": outputs, "aggregate": aggregate, "weights": weights}
+
+
+@api_router.post("/valuations/{vid}/autofill")
+async def rerun_autofill(vid: str, user=Depends(get_current_user)):
+    doc = await db.valuations.find_one({"id": vid, "user_id": user["id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Valuation not found")
+    await db.valuations.update_one({"id": vid}, {"$set": {"autofill_status": "pending", "updated_at": now_utc().isoformat()}})
+    asyncio.create_task(_run_autofill_job(vid, user["id"]))
+    return {"id": vid, "autofill_status": "pending"}
+
+
+@api_router.get("/valuations/{vid}/autofill/status")
+async def poll_autofill(vid: str, user=Depends(get_current_user)):
+    doc = await db.valuations.find_one(
+        {"id": vid, "user_id": user["id"]},
+        {"_id": 0, "autofill_status": 1, "autofill_error": 1, "aggregate": 1, "inputs": 1, "outputs": 1, "narrative": 1, "sources": 1, "weights": 1, "autofilled_at": 1},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Valuation not found")
+    return doc
+
+
+@api_router.post("/valuations/{vid}/term-sheet")
+async def upload_term_sheet(vid: str, file: UploadFile = File(...), user=Depends(get_current_user)):
+    """Upload a term-sheet PDF/DOCX; Claude extracts round terms + preferred stack
+    and merges them into recent_transaction + option_pricing inputs."""
+    doc = await db.valuations.find_one({"id": vid, "user_id": user["id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Valuation not found")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    pages = extract_pages_from_bytes(file.filename or "term-sheet.pdf", data)
+    full_text = "\n\n".join((p.get("text") or "") for p in pages)
+    extracted = await _extract_term_sheet(pdf_text=full_text, claude_fn=call_claude, safe_json=safe_json_loads)
+
+    # Merge into RT + OPM inputs
+    inputs = doc.get("inputs") or {}
+    rt = inputs.get("recent_transaction") or {}
+    if extracted.get("post_money_usd"):    rt["post_money_usd"] = extracted["post_money_usd"]
+    if extracted.get("raised_usd"):        rt["raised_usd"] = extracted["raised_usd"]
+    if extracted.get("round_type"):        rt["round_type"] = extracted["round_type"]
+    if extracted.get("announced"):         rt["announced"] = extracted["announced"]
+    if "time_decay_factor" not in rt:      rt["time_decay_factor"] = 1.0
+    inputs["recent_transaction"] = rt
+
+    op = inputs.get("option_pricing") or {}
+    if extracted.get("total_preferred_liquidation_pref_usd"):
+        op["total_preferred_liquidation_pref_usd"] = extracted["total_preferred_liquidation_pref_usd"]
+    if extracted.get("post_money_usd") and "enterprise_value_usd" not in op:
+        op["enterprise_value_usd"] = extracted["post_money_usd"]
+    inputs["option_pricing"] = op
+
+    weights = doc.get("weights") or dict(_DEFAULT_WEIGHTS)
+    outputs = _compute_all(inputs)
+    aggregate = _aggregate_band(outputs, weights)
+    await db.valuations.update_one(
+        {"id": vid},
+        {"$set": {
+            "inputs": inputs, "outputs": outputs, "aggregate": aggregate,
+            "term_sheet_extracted": extracted,
+            "term_sheet_filename": file.filename,
+            "updated_at": now_utc().isoformat(),
+        }},
+    )
+    await log_audit(user["id"], "valuation.term_sheet.uploaded", vid, {"filename": file.filename, "confidence": extracted.get("confidence")})
+    return {"id": vid, "extracted": extracted, "inputs": inputs, "outputs": outputs, "aggregate": aggregate}
+
+
+@api_router.post("/valuations/{vid}/snapshots")
+async def create_snapshot(vid: str, body: SnapshotCreate, user=Depends(get_current_user)):
+    """Freeze the current draft into an immutable snapshot."""
+    doc = await db.valuations.find_one({"id": vid, "user_id": user["id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Valuation not found")
+    if not (doc.get("aggregate") or {}).get("base_usd"):
+        raise HTTPException(status_code=400, detail="Cannot snapshot an empty valuation")
+    sid = str(uuid.uuid4())
+    now = now_utc().isoformat()
+    snapshot = {
+        "id": sid,
+        "valuation_id": vid,
+        "user_id": user["id"],
+        "created_at": now,
+        "label": (body.label or "").strip() or f"Snapshot {doc.get('snapshot_count', 0) + 1}",
+        "narrative": body.narrative or doc.get("narrative") or "",
+        "inputs": doc.get("inputs") or {},
+        "outputs": doc.get("outputs") or {},
+        "aggregate": doc.get("aggregate") or {},
+        "weights": doc.get("weights") or {},
+        "sources": doc.get("sources") or [],
+        "company_name": doc.get("company_name"),
+    }
+    await db.valuation_snapshots.insert_one(snapshot)
+    await db.valuations.update_one(
+        {"id": vid},
+        {"$set": {
+            "latest_snapshot_id": sid,
+            "updated_at": now,
+        }, "$inc": {"snapshot_count": 1}},
+    )
+    await log_audit(user["id"], "valuation.snapshot.create", sid, {
+        "valuation_id": vid,
+        "base_usd": (snapshot["aggregate"] or {}).get("base_usd"),
+        "label": snapshot["label"],
+    })
+    snapshot.pop("_id", None)
+    return snapshot
+
+
+@api_router.get("/valuations/{vid}/snapshots")
+async def list_snapshots(vid: str, user=Depends(get_current_user)):
+    v = await db.valuations.find_one({"id": vid, "user_id": user["id"]}, {"_id": 0, "id": 1})
+    if not v:
+        raise HTTPException(status_code=404, detail="Valuation not found")
+    cur = db.valuation_snapshots.find({"valuation_id": vid}, {"_id": 0}).sort("created_at", -1)
+    return await cur.to_list(200)
+
+
+@api_router.get("/valuations/{vid}/snapshots/{sid}")
+async def get_snapshot(vid: str, sid: str, user=Depends(get_current_user)):
+    v = await db.valuations.find_one({"id": vid, "user_id": user["id"]}, {"_id": 0, "id": 1})
+    if not v:
+        raise HTTPException(status_code=404, detail="Valuation not found")
+    snap = await db.valuation_snapshots.find_one({"id": sid, "valuation_id": vid}, {"_id": 0})
+    if not snap:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return snap
+
+
+@api_router.get("/valuations/{vid}/snapshots/{sid}/pdf")
+async def download_snapshot_pdf(vid: str, sid: str, user=Depends(get_current_user)):
+    """Branded Valuation Memorandum PDF for a snapshot."""
+    v = await db.valuations.find_one({"id": vid, "user_id": user["id"]}, {"_id": 0})
+    if not v:
+        raise HTTPException(status_code=404, detail="Valuation not found")
+    snap = await db.valuation_snapshots.find_one({"id": sid, "valuation_id": vid}, {"_id": 0})
+    if not snap:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    pdf_bytes = _build_memo_pdf(
+        valuation=v,
+        snapshot=snap,
+        prepared_by=user.get("name") or user.get("email") or "NextCapOS Analyst",
+    )
+    safe_company = re.sub(r"[^A-Za-z0-9]+", "_", v.get("company_name") or "target").strip("_") or "target"
+    fname = f"ValuationMemo_{safe_company}_{snap['created_at'][:10]}.pdf"
+    await log_audit(user["id"], "valuation.snapshot.pdf", sid, {"valuation_id": vid, "filename": fname})
+    from fastapi.responses import Response as _R
+    return _R(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@api_router.delete("/valuations/{vid}")
+async def delete_valuation(vid: str, user=Depends(get_current_user)):
+    """Soft-delete — snapshots retained for audit."""
+    r = await db.valuations.update_one(
+        {"id": vid, "user_id": user["id"]},
+        {"$set": {"deleted_at": now_utc().isoformat()}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Valuation not found")
+    await log_audit(user["id"], "valuation.delete", vid)
+    return {"ok": True}
+
+
 # -----------------------------------------------------------------------------
 # DETAILED ANALYSIS (Buyer-side "Standard" Kenshin-style 14-section report)
 # -----------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import {
   House, MagnifyingGlass, NotePencil, PaperPlaneTilt, Kanban,
   EnvelopeSimple, Plugs, Terminal, ChartLineUp, ListChecks, SignOut,
   Storefront, Tag, Question, ChartBar, Files, ShieldCheck, Crosshair, Bell, Lock, UsersThree, Buildings,
+  Coins,
 } from "@phosphor-icons/react";
 import Logo from "./Logo";
 import ThemeToggle from "./ThemeToggle";
@@ -21,6 +22,7 @@ const BUYER_NAV = [
   { to: "/app/marketplace", label: "Marketplace", icon: Storefront, group: "Discovery" },
   { to: "/app/inquiries", label: "My Inquiries", icon: Question, group: "Discovery" },
   { to: "/app/rooms", label: "The Vault", icon: Files, group: "Diligence" },
+  { to: "/app/valuations", label: "Valuations", icon: Coins, group: "Diligence" },
   { to: "/app/private-locker", label: "Private Locker", icon: Lock, group: "Diligence" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Engagement" },
   { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
@@ -58,6 +60,7 @@ const ADMIN_NAV = [
   { to: "/app/buyer-alerts", label: "Buyer Alerts", icon: Bell, group: "Pipeline", badgeKey: "buyer_alerts" },
   { to: "/app/rooms", label: "The Vault", icon: Files, group: "Pipeline" },
   { to: "/app/private-locker", label: "Private Locker", icon: Lock, group: "Pipeline" },
+  { to: "/app/valuations", label: "Valuations", icon: Coins, group: "Pipeline" },
   { to: "/app/leads", label: "Leads", icon: Kanban, group: "Pipeline" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Pipeline" },
   { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },

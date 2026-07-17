@@ -15,6 +15,8 @@ import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
 import DashboardRouter from "./pages/DashboardRouter";
 import ResearchHub from "./pages/ResearchHub";
+import ValuationsList from "./pages/ValuationsList";
+import ValuationWorkbench from "./pages/ValuationWorkbench";
 import Collateral from "./pages/Collateral";
 import Outreach from "./pages/Outreach";
 import Leads from "./pages/Leads";
@@ -90,6 +92,8 @@ function AppRoutes() {
       <Route path="/app" element={<Navigate to="/app/dashboard" replace />} />
       <Route path="/app/dashboard" element={<Protected><DashboardRouter /></Protected>} />
       <Route path="/app/research" element={<Protected><ResearchHub /></Protected>} />
+      <Route path="/app/valuations" element={<Protected><ValuationsList /></Protected>} />
+      <Route path="/app/valuations/:id" element={<Protected><ValuationWorkbench /></Protected>} />
       <Route path="/app/marketplace" element={<Protected><Marketplace /></Protected>} />
       <Route path="/app/listings" element={<Protected><MyListings /></Protected>} />
       <Route path="/app/inquiries" element={<Protected><Inquiries /></Protected>} />

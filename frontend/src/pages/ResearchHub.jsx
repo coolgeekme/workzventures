@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
-import { MagnifyingGlass, Trash, FileMagnifyingGlass } from "@phosphor-icons/react";
+import { MagnifyingGlass, Trash, FileMagnifyingGlass, Coins } from "@phosphor-icons/react";
 import SocialStrip from "../components/SocialStrip";
 import ResearchCompanion from "../components/ResearchCompanion";
 import ValuationBand from "../components/ValuationBand";
@@ -156,6 +156,31 @@ export default function ResearchHub() {
               >
                 <FileMagnifyingGlass size={13} />
                 {queueingDetailed ? "Queuing…" : "Run Detailed Analysis"}
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    const r = await api.post("/valuations", {
+                      company_name: D.company_name || current.company_name,
+                      sector: D.sector || current.sector,
+                      one_liner: D.one_liner,
+                      estimated_revenue: D.estimated_revenue,
+                      headquarters: D.headquarters,
+                      research_id: current.id,
+                      autofill: true,
+                    });
+                    toast.success("Valuation started · autofilling from web…");
+                    window.location.href = `/app/valuations/${r.data.id}`;
+                  } catch (e) {
+                    toast.error(e?.response?.data?.detail || "Failed to start valuation");
+                  }
+                }}
+                data-testid="research-value-btn"
+                title="Open the full Valuation Workbench (5 methods, memo PDF)"
+                className="wz-btn wz-btn-secondary text-xs flex items-center gap-2"
+              >
+                <Coins size={13} />
+                Full Valuation
               </button>
             </div>
           </div>

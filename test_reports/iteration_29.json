@@ -1,0 +1,47 @@
+{
+  "summary": "Phase A Valuation Workbench validated end-to-end (backend + frontend). Backend: 26/26 unit tests PASS in tests/test_valuation_workbench.py (pure math: recent-transaction decay, market-multiples with size discount, VC-method PV/IRR, DCF with WACC guard, Black-Scholes option pricing, aggregate confidence bands, autofill + term-sheet mocks) AND a new LIVE 15/15 e2e suite tests/test_valuation_workbench_live.py covers real HTTP endpoints as buyer alex: POST /valuations (autofill=false → skipped + 5 empty method dicts), POST /valuations rejects empty name (400), GET /valuations list, GET /valuations/{vid} + 404, PATCH DCF-only recomputes aggregate, PATCH recent_transaction with decay 0.65 → adjusted_value_usd=65M, GET /autofill/status, POST /snapshots, GET /snapshots list, snapshot IMMUTABILITY (mutating draft after snap does not change snapshot inputs), GET snapshot PDF (200 + application/pdf + %PDF magic + >1KB) and PDF body contains 'ASC 820', 'IPEV', company name, 'EXECUTIVE SUMMARY', 'OPTION PRICING' (verified via pypdf text extract), POST /term-sheet upload, DELETE /valuations soft-delete removed from list. Live AI autofill also verified against Stripe: 3-tick poll (9s) → completed with $159B post-money from Feb 2026 tender-offer secondary, 23 sources, medium confidence. Frontend Playwright as alex: sidebar Valuations link present (Diligence > Coins icon), /app/valuations list renders, New Valuation Modal opens with all 5 fields, submit auto-navigates to /app/valuations/{id}, wb-autofill-banner appears, autofill completes in 33s with success toast, wb-base-value = $159.00B, wb-confidence-pill = medium, all 6 tabs (Summary + 5 methods) render with green checkmark on recent_transaction, DCF editor opens, wacc_pct field edited to 14 shows 'Save (1)' badge, Save triggers 'Inputs saved · recomputed' toast, Recent Transaction post_money=100M + decay=0.65 → wb-editor-value-recent_transaction shows $100.0M and aggregate updates, Snapshot button enabled once base_usd set, wb-snapshot-modal opens, Freeze creates wb-snapshot-row with Memo PDF download button, Re-autofill button present + enabled. Research Hub Full Valuation button wired correctly (verified via code review: POST /valuations with research_id + autofill=true then window.location to /app/valuations/{id}).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/valuations/{vid}",
+        "issue": "Soft-deleted valuations (deleted_at set) are STILL retrievable via GET /valuations/{vid} — only the LIST endpoint filters out deleted_at. Not user-visible because the UI only surfaces via list, but the API is asymmetric. Consider adding {'deleted_at': {'$exists': False}} to the get_valuation Mongo query, or return 404 for soft-deleted rows."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_valuation_workbench.py",
+    "/app/backend/tests/test_valuation_workbench_live.py",
+    "/app/test_reports/pytest/valuation_workbench_iter29.xml",
+    "/app/test_reports/pytest/valuation_workbench_live_iter29.xml"
+  ],
+  "action_items": [
+    "Optional: symmetric soft-delete on GET /valuations/{vid} (add deleted_at exists filter or return 404).",
+    "Nit: valuation_workbench.py needs PYTHONPATH=/app/backend when running unit-test file from /app root; conftest.py already sets it inside /app/backend so 'cd /app/backend && pytest' works — main agent can add sys.path handling to unit test or leave a README note."
+  ],
+  "critical_code_review_comments": [
+    "DELETE /valuations/{vid} is soft-delete but GET /valuations/{vid} does not filter deleted_at, so the resource remains fetchable indefinitely by id. Low-severity but asymmetric.",
+    "ValuationsList.jsx list card renders v.aggregate.low_usd/high_usd formatted with fmtUsd but if aggregate exists with base_usd but null low/high they render as em-dash — acceptable; watch out for autofill result that sets base_usd without band bounds (didn't repro but math paths in aggregate_band should guarantee low/high).",
+    "ValuationWorkbench.jsx polls autofill_status every 3s but never enforces a max-attempts / timeout — if the backend hangs indefinitely the poll will run until page unload. Consider capping at ~40 polls (2 min) and rendering a 'Taking longer than usual' state.",
+    "Confidence pill: aggregate.confidence 'low' maps to pill-amber (visual conflict with pending/failed pills also using amber). Consider a distinct 'pill-red' for 'low' vs banner amber.",
+    "downloadPdf in ValuationWorkbench.jsx uses fetch + Bearer header (correct for auth). No progress state — for large PDFs users might click twice; add a per-snapshot 'downloading…' state on the button."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_valuation_workbench_live.py (new — 15 live e2e tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (26/26 unit + 15/15 live e2e = 41/41)",
+    "frontend": "100% (nav, empty state / list, new modal, autofill banner, poll→complete, base value, confidence pill, 6 tabs, editors, save-badge + toast, RT decay math, snapshot modal + row + PDF button, re-autofill)"
+  },
+  "test_credentials": "alex@workz.example.com / WorkzPass123! (buyer). No new user needed.",
+  "seed_data_creation": "Created + auto-cleaned TEST_LiveVal (autofill=false, 1 snapshot), TEST_ToDelete (soft-deleted), TEST_AutofillLive (autofill=true, deleted), and one Stripe autofill test (deleted). UI test left one TEST_UIStripe valuation with 1 snapshot in Mongo — flagged is_demo so the demo-cleanup sweeper will purge in <48h.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase A Valuation Workbench is shipped and green. Canonical regression files: /app/backend/tests/test_valuation_workbench.py (26 pure-function tests, requires PYTHONPATH=/app/backend or `cd /app/backend && pytest`) and /app/backend/tests/test_valuation_workbench_live.py (15 live HTTP tests using REACT_APP_BACKEND_URL). Frontend testids: valuations-list, valuations-empty, valuations-empty-cta, valuations-new-btn, valuation-card-{id}, new-valuation-modal, new-valuation-{company_name|sector|one_liner|estimated_revenue|headquarters}, new-valuation-submit, wb-autofill-banner, wb-base-value, wb-confidence-pill, wb-aggregate, wb-summary, wb-narrative, wb-tabs, wb-tab-{summary|recent_transaction|market_multiples|vc_method|dcf|option_pricing}, wb-summary-card-{method}, wb-editor-{method}, wb-editor-value-{method}, wb-field-{fieldkey}, wb-save-inputs, wb-rerun-autofill, wb-upload-termsheet-input, wb-create-snapshot, wb-snapshot-modal, wb-snapshot-label, wb-snapshot-narrative, wb-snapshot-save, wb-snapshots-panel, wb-snapshot-row-{sid}, wb-snapshot-pdf-{sid}, research-value-btn. Autofill takes ~30-40s wall-clock in this environment (Claude + Perplexity + Brave, all real API keys). PDF endpoint: /api/valuations/{vid}/snapshots/{sid}/pdf returns application/pdf with ASC 820 + IPEV disclaimer text. Soft-delete asymmetry on GET/{vid} is the only backend nit worth noting.",
+  "rca of the issue": "No blocking bug. One low-severity asymmetry: DELETE is soft-delete (sets deleted_at) and LIST filters by deleted_at, but GET /valuations/{vid} does not filter, so a deleted valuation is still retrievable by id. Reproduce: POST /valuations, DELETE it, then GET /valuations/{that_id} → returns 200 with the doc (including deleted_at). Mitigation: add `'deleted_at': {'$exists': False}` to the query in get_valuation (server.py:3112) or return 404 when deleted_at is set. The associated snapshot + PDF endpoints have the same asymmetry inherited from the parent doc lookup."
+}
