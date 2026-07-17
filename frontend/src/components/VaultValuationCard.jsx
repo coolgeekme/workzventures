@@ -44,12 +44,20 @@ export default function VaultValuationCard({ roomId, roomStatus }) {
     }
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [roomId]);
+  useEffect(() => { load(); }, [roomId]);
 
-  // Poll autofill if pending
+  // Poll autofill if pending — cap at 40 attempts (~2 min) to prevent runaway
+  // polling if the backend gets stuck. Matches the safety net in ValuationWorkbench.
   useEffect(() => {
     if (state.val?.autofill_status !== "pending") return undefined;
+    let attempts = 0;
     const t = setInterval(async () => {
+      attempts += 1;
+      if (attempts > 40) {
+        clearInterval(t);
+        toast.error("Vault autofill is taking longer than expected — open the workbench to retry.");
+        return;
+      }
       try {
         const r = await api.get(`/valuations/${state.val.id}/autofill/status`);
         if (r.data.autofill_status !== "pending") {
@@ -61,7 +69,6 @@ export default function VaultValuationCard({ roomId, roomStatus }) {
       } catch { /* keep polling */ }
     }, 3000);
     return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.val?.id, state.val?.autofill_status]);
 
   const startValuation = async () => {
@@ -95,7 +102,7 @@ export default function VaultValuationCard({ roomId, roomStatus }) {
               </span>
             </div>
             <div className="text-[11px] text-[var(--wz-text-tertiary)]">
-              Fuses this vault's disclosed documents with public web signals. ~30-45s.
+              Fuses this vault&apos;s disclosed documents with public web signals. ~30-45s.
             </div>
           </div>
         </div>

@@ -695,3 +695,31 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Fixed post-testing**: (a) `GET /api/valuations/{vid}` now filters `deleted_at` for parity with the LIST endpoint (soft-delete asymmetry); (b) frontend autofill poll capped at 40 attempts with slow-state UX.
 - **Next** in the Valuation Suite: Phase C (Committee approval workflow + OpenTimestamps anchoring) → Phase B (Portfolio & NAV Console for quarterly cadence) → Phase D (ASC 820 disclosure output + policy-clause evidence linking).
 
+
+## Iter-38 (Feb 2026) — Vault-grounded valuations (Phase A.5)
+- **Ask**: "Should the Fair-Value Band also be available to calculate in the Vault of a Listing? The Vault has access to the Data Room…". User confirmed 3 design defaults: (1a) valuations are buyer-private (sellers never see them), (2a) reuse Findings' already-parsed page text (zero re-parse cost), (3c) both an inline card on the Vault page + a link into the full Workbench with `deal_room_id` set.
+- **Backend enhancements**:
+  - `valuation_workbench.autofill_workbench()` — now accepts `private_evidence: str | None` + `private_evidence_files: list[dict] | None`. When provided, the Claude prompt gets a new AUTHORITATIVE block: `=== PRIVATE DATA ROOM EVIDENCE (AUTHORITATIVE) === … === END PRIVATE EVIDENCE ===` with strong wording to prioritize disclosed figures over public claims. Cap: 12k chars (~3k tokens) so we don't blow the prompt budget on generic docs. Response now carries `private_grounded: bool` + `vault_files_used: [{id, filename, priority}]`.
+  - `server.py::_gather_vault_private_evidence(rid)` — new helper. Reads `deal_room_files` for the room and iterates over the `pages` field (already-parsed text from Findings/ingestion). Filename-regex prioritization: **TERM_SHEET** (`term.?sheet|safe|convertible|409a`) → **CAP_TABLE** (`cap.?table|ownership|equity.?stack|share.?ledger`) → **FINANCIALS** (`revenue|financial|forecast|model|budget|p&l|pnl|cash.?flow`) → **OTHER**. High-priority files first so the character budget goes to the docs that matter.
+  - `_run_autofill_job` — enhanced to call `_gather_vault_private_evidence` when `deal_room_id` is set. Result stored on the valuation doc + audit log tags `private_grounded` + `vault_files_used` count.
+  - `POST /api/valuations` — now runs `participant_check` when `deal_room_id` is passed. Doc initialized with `private_grounded: False` (flipped True by the autofill job).
+  - `GET /api/deal-rooms/{rid}/valuation` — new. Buyer-scoped lookup: returns the CURRENT user's valuation linked to this vault or 404. Enforces `participant_check` for access.
+  - `POST /api/deal-rooms/{rid}/valuation` — new. One-click convenience: creates a Valuation seeded from the linked listing's `company_name` / `sector` / `one_liner` / `hq`, sets `deal_room_id`, autofill runs immediately. **Idempotent** — returns the existing valuation if one already exists (no dupes on double-click).
+  - Snapshot creation now carries `private_grounded` + `vault_files_used` forward for the PDF.
+- **PDF memo**: `valuation_pdf.py` cover kv-table now includes a new row **"Data Sources"** — either `"Private Data Room (X files) + Public Web"` or `"Public Web Only"` depending on `snapshot.private_grounded`. Legible to any LP/auditor reviewing the memo.
+- **Frontend**:
+  - **New component** `/app/frontend/src/components/VaultValuationCard.jsx` — compact card rendered above the tabs on the Vault (Deal Room Detail) page. 3 states: (a) 404 → "Value this target" CTA (`vault-valuation-cta` + `vault-valuation-start`), (b) pending → dot-blink "Autofill running…" with capped 40-attempt poll, (c) ready → base value + range + confidence pill + `🔒 private + web` badge (`vv-private-badge`). Clicking navigates to the full workbench.
+  - **DealRoomDetail.jsx** — imports `VaultValuationCard`, renders it only when `isBuyer && room.status === "active"` (buyer-private access model enforced client-side too).
+  - **ValuationWorkbench.jsx header** — new pill `🔒 private + web` (`wb-private-badge`) shown when `v.private_grounded` is true, plus a `← Vault` backlink (`wb-linked-vault`) that navigates to `/app/rooms/{deal_room_id}`.
+- **Tests**:
+  - `tests/test_valuation_vault_grounded.py` — **3/3 unit PASS** (private-grounded flag, no-evidence path stays public-only, 12k-char truncation).
+  - Testing agent (`iteration_30.json`) — **9/9 backend HTTP + 100% frontend Playwright**:
+    - Buyer sees the card, seller does NOT (access-model enforced).
+    - Unrelated 3rd-party (agent account) → 403 on `GET /api/deal-rooms/{rid}/valuation`.
+    - Idempotency: POST twice → same id both times.
+    - Memo PDF cover carries "Private Data Room (21 files) + Public Web" line — verified via pypdf text extract.
+    - Public-only Phase A regression: `private_grounded=false`, no `vault_files_used`, unchanged behavior.
+- **Live smoke on Helios MedTech** vault (buyer alex): 21 vault files pulled (FINANCIALS first), autofill completed in 9s, base $169.8M, low confidence (methods diverge because DCF is conservative on medtech). Memo PDF valid at 6 pages with the new Data Sources line.
+- **Post-testing polish**: VaultValuationCard's autofill poll now capped at 40 attempts (~2 min) — matches ValuationWorkbench's safety net (only remaining actionable code-review comment from testing agent).
+- **Next** in the Valuation Suite: Phase C (Committee approval workflow + OpenTimestamps anchoring) → Phase B (Portfolio & NAV Console for quarterly cadence + LP quarterly letter) → Phase D (ASC 820 Level-3 disclosure output + policy-clause evidence linking).
+
