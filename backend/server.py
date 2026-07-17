@@ -3403,34 +3403,35 @@ async def delete_valuation(vid: str, user=Depends(get_current_user)):
 # --- Iter-38: Vault-scoped valuation lookup + one-click "value this target" ---
 @api_router.get("/deal-rooms/{rid}/valuation")
 async def get_vault_valuation(rid: str, user=Depends(get_current_user)):
-    """Return the vault's linked valuation, or 404.
+    """Return the vault's linked valuation for the current viewer, or 404.
 
-    Access:
-      * Buyer sees their own valuation (`user_id = user.id`).
-      * Admin sees the buyer's valuation read-only (support / audit mode).
-      * Sellers and other parties → 403 via participant_check.
+    Lookup order for admins: their own first (if they created one), then the
+    buyer's (read-only fallback). Buyers see only their own.
     """
     room = await db.deal_rooms.find_one({"id": rid})
     if not room:
         raise HTTPException(status_code=404, detail="Vault not found")
     await participant_check(room, user)
-    # Admins looking at a buyer's vault get the BUYER's valuation, not their own.
-    scope_uid = room["buyer_id"] if user.get("role") == "admin" else user["id"]
-    doc = await db.valuations.find_one(
-        {
-            "user_id": scope_uid,
-            "deal_room_id": rid,
-            "deleted_at": {"$exists": False},
-        },
-        {"_id": 0},
-        sort=[("updated_at", -1)],
+
+    # First: does the current viewer own a valuation on this vault?
+    own = await db.valuations.find_one(
+        {"user_id": user["id"], "deal_room_id": rid, "deleted_at": {"$exists": False}},
+        {"_id": 0}, sort=[("updated_at", -1)],
     )
-    if not doc:
-        raise HTTPException(status_code=404, detail="No valuation on this vault yet")
-    # Flag read-only visibility for the admin so the UI can hide edit affordances.
-    if user.get("role") == "admin" and doc.get("user_id") != user["id"]:
-        doc["read_only_for_viewer"] = True
-    return doc
+    if own:
+        return own
+
+    # Fallback: admins can peek at the buyer's valuation read-only.
+    if user.get("role") == "admin" and room["buyer_id"] != user["id"]:
+        peer = await db.valuations.find_one(
+            {"user_id": room["buyer_id"], "deal_room_id": rid, "deleted_at": {"$exists": False}},
+            {"_id": 0}, sort=[("updated_at", -1)],
+        )
+        if peer:
+            peer["read_only_for_viewer"] = True
+            return peer
+
+    raise HTTPException(status_code=404, detail="No valuation on this vault yet")
 
 
 @api_router.post("/deal-rooms/{rid}/valuation")
@@ -3438,20 +3439,14 @@ async def create_vault_valuation(rid: str, user=Depends(get_current_user)):
     """One-click: create a Valuation linked to this Vault, seeded with the
     listing's company_name / sector / HQ. Autofill kicks off immediately.
 
-    Only the room's actual BUYER can create — admins viewing-as-buyer cannot
-    spawn a valuation under their own user_id (preserves buyer-private
-    ownership of the analytical artifact).
+    Buyers and admins (impersonating for support/audit) can both create — the
+    valuation is owned by whoever created it. Idempotent per viewer.
     """
     room = await db.deal_rooms.find_one({"id": rid})
     if not room:
         raise HTTPException(status_code=404, detail="Vault not found")
     await participant_check(room, user)
-    if user["id"] != room["buyer_id"]:
-        raise HTTPException(
-            status_code=403,
-            detail="Only the buyer of this vault can create a valuation.",
-        )
-    # Return the existing valuation if one already exists (idempotent one-click)
+    # Return the caller's existing valuation if one already exists (idempotent one-click)
     existing = await db.valuations.find_one(
         {"user_id": user["id"], "deal_room_id": rid, "deleted_at": {"$exists": False}},
         {"_id": 0},
