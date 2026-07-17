@@ -29,7 +29,7 @@ function confPill(conf) {
  *
  * Only rendered for buyers who have NDA-signed the vault.
  */
-export default function VaultValuationCard({ roomId, roomStatus }) {
+export default function VaultValuationCard({ roomId, roomStatus, canCreate = true }) {
   const [state, setState] = useState({ loading: true, val: null });
   const [creating, setCreating] = useState(false);
   const disabled = roomStatus !== "active";
@@ -86,8 +86,26 @@ export default function VaultValuationCard({ roomId, roomStatus }) {
 
   if (state.loading) return null;
 
-  // No valuation yet → CTA
+  // No valuation yet → CTA (buyers) or "not started" message (admin viewers)
   if (!state.val) {
+    if (!canCreate) {
+      return (
+        <div className="wz-card p-4 mb-6 flex items-center justify-between gap-3 flex-wrap opacity-70" data-testid="vault-valuation-empty-admin">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-[var(--wz-gold)]/10 rounded">
+              <Coins size={18} className="text-[var(--wz-gold)]" />
+            </div>
+            <div>
+              <div className="text-sm font-medium">No valuation on this vault yet</div>
+              <div className="text-[11px] text-[var(--wz-text-tertiary)]">
+                The buyer hasn&apos;t started a fair-value opinion on this data room.
+              </div>
+            </div>
+          </div>
+          <span className="pill pill-amber text-[10px]">read-only</span>
+        </div>
+      );
+    }
     return (
       <div className="wz-card p-4 mb-6 flex items-center justify-between gap-3 flex-wrap" data-testid="vault-valuation-cta">
         <div className="flex items-center gap-3">
@@ -141,6 +159,9 @@ export default function VaultValuationCard({ roomId, roomStatus }) {
               <span className="pill pill-gold text-[10px] flex items-center gap-1" data-testid="vv-private-badge">
                 <ShieldCheck size={9} /> private + web
               </span>
+            )}
+            {v.read_only_for_viewer && (
+              <span className="pill pill-amber text-[10px]" data-testid="vv-readonly-badge">read-only</span>
             )}
           </div>
           {isPending && (

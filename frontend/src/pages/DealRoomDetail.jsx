@@ -549,9 +549,10 @@ export default function DealRoomDetail() {
         </div>
       )}
 
-      {/* Iter-38: Buyer-only Fair-Value card, grounded on the data room + web */}
-      {isBuyer && room.status === "active" && (
-        <VaultValuationCard roomId={id} roomStatus={room.status} />
+      {/* Iter-38 + 39: Fair-Value card. Buyers can create/view; admins can VIEW read-only
+           (they might be impersonating the buyer for support / audit). Sellers never see it. */}
+      {(isBuyer || user?.role === "admin") && room.status === "active" && (
+        <VaultValuationCard roomId={id} roomStatus={room.status} canCreate={isBuyer} />
       )}
 
       {/* Tabs */}

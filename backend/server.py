@@ -3192,14 +3192,20 @@ async def list_valuations(user=Depends(get_current_user)):
     return [_valuation_summary(v) for v in items]
 
 
+def _val_read_query(vid: str, user: dict) -> dict:
+    """Mongo filter for admin-or-owner read access to a valuation."""
+    if user.get("role") == "admin":
+        return {"id": vid, "deleted_at": {"$exists": False}}
+    return {"id": vid, "user_id": user["id"], "deleted_at": {"$exists": False}}
+
+
 @api_router.get("/valuations/{vid}")
 async def get_valuation(vid: str, user=Depends(get_current_user)):
-    doc = await db.valuations.find_one(
-        {"id": vid, "user_id": user["id"], "deleted_at": {"$exists": False}},
-        {"_id": 0},
-    )
+    doc = await db.valuations.find_one(_val_read_query(vid, user), {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Valuation not found")
+    if user.get("role") == "admin" and doc.get("user_id") != user["id"]:
+        doc["read_only_for_viewer"] = True
     return doc
 
 
@@ -3238,7 +3244,7 @@ async def rerun_autofill(vid: str, user=Depends(get_current_user)):
 @api_router.get("/valuations/{vid}/autofill/status")
 async def poll_autofill(vid: str, user=Depends(get_current_user)):
     doc = await db.valuations.find_one(
-        {"id": vid, "user_id": user["id"]},
+        _val_read_query(vid, user),
         {"_id": 0, "autofill_status": 1, "autofill_error": 1, "aggregate": 1, "inputs": 1, "outputs": 1, "narrative": 1, "sources": 1, "weights": 1, "autofilled_at": 1},
     )
     if not doc:
@@ -3338,7 +3344,7 @@ async def create_snapshot(vid: str, body: SnapshotCreate, user=Depends(get_curre
 
 @api_router.get("/valuations/{vid}/snapshots")
 async def list_snapshots(vid: str, user=Depends(get_current_user)):
-    v = await db.valuations.find_one({"id": vid, "user_id": user["id"]}, {"_id": 0, "id": 1})
+    v = await db.valuations.find_one(_val_read_query(vid, user), {"_id": 0, "id": 1})
     if not v:
         raise HTTPException(status_code=404, detail="Valuation not found")
     cur = db.valuation_snapshots.find({"valuation_id": vid}, {"_id": 0}).sort("created_at", -1)
@@ -3347,7 +3353,7 @@ async def list_snapshots(vid: str, user=Depends(get_current_user)):
 
 @api_router.get("/valuations/{vid}/snapshots/{sid}")
 async def get_snapshot(vid: str, sid: str, user=Depends(get_current_user)):
-    v = await db.valuations.find_one({"id": vid, "user_id": user["id"]}, {"_id": 0, "id": 1})
+    v = await db.valuations.find_one(_val_read_query(vid, user), {"_id": 0, "id": 1})
     if not v:
         raise HTTPException(status_code=404, detail="Valuation not found")
     snap = await db.valuation_snapshots.find_one({"id": sid, "valuation_id": vid}, {"_id": 0})
@@ -3359,7 +3365,7 @@ async def get_snapshot(vid: str, sid: str, user=Depends(get_current_user)):
 @api_router.get("/valuations/{vid}/snapshots/{sid}/pdf")
 async def download_snapshot_pdf(vid: str, sid: str, user=Depends(get_current_user)):
     """Branded Valuation Memorandum PDF for a snapshot."""
-    v = await db.valuations.find_one({"id": vid, "user_id": user["id"]}, {"_id": 0})
+    v = await db.valuations.find_one(_val_read_query(vid, user), {"_id": 0})
     if not v:
         raise HTTPException(status_code=404, detail="Valuation not found")
     snap = await db.valuation_snapshots.find_one({"id": sid, "valuation_id": vid}, {"_id": 0})
@@ -3397,18 +3403,22 @@ async def delete_valuation(vid: str, user=Depends(get_current_user)):
 # --- Iter-38: Vault-scoped valuation lookup + one-click "value this target" ---
 @api_router.get("/deal-rooms/{rid}/valuation")
 async def get_vault_valuation(rid: str, user=Depends(get_current_user)):
-    """Return the CURRENT user's valuation linked to this vault, or 404.
+    """Return the vault's linked valuation, or 404.
 
-    Access: buyer-private. Only the user who owns the valuation sees it — the
-    seller / other buyers never learn a peer buyer has valued the target.
+    Access:
+      * Buyer sees their own valuation (`user_id = user.id`).
+      * Admin sees the buyer's valuation read-only (support / audit mode).
+      * Sellers and other parties → 403 via participant_check.
     """
     room = await db.deal_rooms.find_one({"id": rid})
     if not room:
         raise HTTPException(status_code=404, detail="Vault not found")
     await participant_check(room, user)
+    # Admins looking at a buyer's vault get the BUYER's valuation, not their own.
+    scope_uid = room["buyer_id"] if user.get("role") == "admin" else user["id"]
     doc = await db.valuations.find_one(
         {
-            "user_id": user["id"],
+            "user_id": scope_uid,
             "deal_room_id": rid,
             "deleted_at": {"$exists": False},
         },
@@ -3417,17 +3427,30 @@ async def get_vault_valuation(rid: str, user=Depends(get_current_user)):
     )
     if not doc:
         raise HTTPException(status_code=404, detail="No valuation on this vault yet")
+    # Flag read-only visibility for the admin so the UI can hide edit affordances.
+    if user.get("role") == "admin" and doc.get("user_id") != user["id"]:
+        doc["read_only_for_viewer"] = True
     return doc
 
 
 @api_router.post("/deal-rooms/{rid}/valuation")
 async def create_vault_valuation(rid: str, user=Depends(get_current_user)):
     """One-click: create a Valuation linked to this Vault, seeded with the
-    listing's company_name / sector / HQ. Autofill kicks off immediately."""
+    listing's company_name / sector / HQ. Autofill kicks off immediately.
+
+    Only the room's actual BUYER can create — admins viewing-as-buyer cannot
+    spawn a valuation under their own user_id (preserves buyer-private
+    ownership of the analytical artifact).
+    """
     room = await db.deal_rooms.find_one({"id": rid})
     if not room:
         raise HTTPException(status_code=404, detail="Vault not found")
     await participant_check(room, user)
+    if user["id"] != room["buyer_id"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the buyer of this vault can create a valuation.",
+        )
     # Return the existing valuation if one already exists (idempotent one-click)
     existing = await db.valuations.find_one(
         {"user_id": user["id"], "deal_room_id": rid, "deleted_at": {"$exists": False}},
