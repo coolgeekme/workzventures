@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import { MagnifyingGlass, Trash, FileMagnifyingGlass } from "@phosphor-icons/react";
 import SocialStrip from "../components/SocialStrip";
 import ResearchCompanion from "../components/ResearchCompanion";
+import ValuationBand from "../components/ValuationBand";
 
 export default function ResearchHub() {
   const navigate = useNavigate();
@@ -158,6 +159,15 @@ export default function ResearchHub() {
               </button>
             </div>
           </div>
+
+          <ValuationBand
+            companyName={D.company_name || current.company_name}
+            sector={D.sector || current.sector}
+            oneLiner={D.one_liner}
+            estimatedRevenue={D.estimated_revenue}
+            headquarters={D.headquarters}
+            researchId={current.id}
+          />
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-[var(--wz-border)]">
             {[

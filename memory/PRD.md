@@ -622,3 +622,37 @@ See `/app/memory/test_credentials.md` — `alex@workz.example.com / WorkzPass123
 - **Tests**: `tests/test_findings_snapshots.py` — 10/10 PASS (list/order, fresh-file count, diff helper, PDF magic bytes + filename pattern, email Resend mocking, 400 on empty recipients). Frontend testing agent confirmed 100% pass on Playwright e2e for picker / Export PDF / Email modal / snapshot switching / diff badge (`iteration_28.json`).
 - **Notes**:
   - Pre-iter-34 legacy findings docs lack `job_id` — they remain accessible via `room.findings` fallback but historical entries in the dropdown may show 0/0/0 severity until a fresh run is performed. Backfill migration noted for future cleanup.
+
+
+## Iter-35 (Feb 2026) — Co-pilot polish: copy responses + searchable thread
+- **Ask**: "Can we make the Co-Pilot responses able to be copied? Can we make the Co-Pilot chat thread searchable?"
+- **What changed** (`DealRoomDetail.jsx`):
+  - **Copy responses**: every assistant message renders a `<Copy />` icon in the top-right of the bubble that fades in on hover. `copyMessage(m)` writes the message content + an appended `Sources: file.pdf p.3 · ...` line to the clipboard (with `navigator.clipboard` primary, `execCommand` fallback for insecure contexts). Icon flips to a green `CheckCircle` for 1.2s + a sonner toast fires. testid: `copilot-copy-{msgId}`.
+  - **Searchable thread**: new search input in the Co-pilot header (`copilot-search-input`) filters messages in-place by content OR any cited filename (case-insensitive). Empty-state `copilot-search-empty` when no match. Inline `X` button clears (`copilot-search-clear`).
+- **Verified live** on Backfill Test Co room: search "vault" → 1+1 messages, nonsense query → empty state, clear → all 4 assistant restored, copy → 716-char clipboard content with sources appended.
+
+
+## Iter-36 (Feb 2026) — Valuation Band (Phase E of Valuation Suite)
+- **Ask**: Reference IPEV/ASC 820 valuation policy pasted by user; agreed on a 5-phase roadmap (E→A→C→B→D). Phase E ships first: a Fair-Value Band widget on every Research Hub brief.
+- **Backend**:
+  - New module **`/app/backend/valuation.py`** — keeps server.py from growing further. Runs two methods in a single grounded Claude pass:
+    - **Recent Transaction Method** with an IPEV-inspired time-decay curve (0-6mo→1.0x · 6-12→0.85x · 12-24→0.65x · 24-36→0.40x · >36→0.20x). `_months_since_iso` recomputes age from the announced date so the number is provably consistent with the reference table (never trusts the model's arithmetic).
+    - **Market Multiples Method** — Claude proposes 3-5 public comparable tickers, applies a median EV/Revenue (or EV/EBITDA) to an estimated annual revenue.
+  - Feeds: **Perplexity Sonar Pro** briefing + **2× parallel Brave Search** queries (recent-transaction signals + comparable-companies signals). All three fail-soft via `asyncio.gather(..., return_exceptions=True)`.
+  - New endpoints in `server.py`:
+    - `POST /api/valuation/estimate` — 24h cache keyed by slug; `force_refresh=true` to bypass. Persisted to a new `valuation_estimates` Mongo collection with a full audit log entry.
+    - `GET /api/valuation/estimate/{slug}` — cache lookup, 404 if none. Used by the frontend to auto-populate the band on brief mount without re-triggering the LLM.
+  - Response shape: `{aggregate:{low_usd, base_usd, high_usd, confidence, insufficient_data, summary}, recent_transaction:{…}, market_multiples:{…}, sources:[{url,title,provider,snippet}], as_of, currency:"USD"}`.
+  - Fallback path (`_fallback_result`) if Claude 502s or returns junk — still emits a valid band ($1M–$25M placeholder) with `insufficient_data: true` and `confidence: "low"`, so the UI never breaks.
+- **Frontend**:
+  - New component **`/app/frontend/src/components/ValuationBand.jsx`** — inserted between the brief header and the HQ/Founded grid (Option A: dedicated always-visible section).
+  - Three states: cache-check loading → empty CTA ("Estimate fair value · ~25s") → populated band with rail + method chips + expandable workings drawer.
+  - Rail: LOW – BASE – HIGH with a gold anchor marker at `base`. Compact USD formatter ($43.2B / $850K).
+  - Confidence pill (green/gold/amber) + "limited public data" amber pill when `insufficient_data: true`.
+  - Refresh button hits `POST /valuation/estimate` with `force_refresh=true`.
+  - Workings drawer: side-by-side cards for each method + expandable sources list with provider badges (PPLX / BRV) and clickable URLs.
+  - All testids: `valuation-band`, `valuation-band-empty`, `valuation-band-loading`, `valuation-base`, `valuation-confidence-pill`, `valuation-refresh`, `valuation-expand`, `valuation-method-tx`, `valuation-method-mm`, `valuation-drawer`, `valuation-source-{i}`, `valuation-insufficient-pill`, `valuation-generate-btn`.
+- **Tests** (`tests/test_valuation.py`): **10/10 PASS** — time-decay curve reference, iso-date parser (year-only + YYYY-MM), source merge dedupe, fallback shape, happy path with decay recompute, junk-model fallback, Claude-exception survival, both-feeds-down survival.
+- **Live e2e** (Ramp, buyer alex): `POST /valuation/estimate` returned in 21.8s with `base=$43.2B`, `low=$33.6B`, `high=$52.8B`, `confidence=high`, 18 sources merged, correctly identified June 2026 $44B Series F. Cache hit on second call: **175ms**. Frontend rendered band + drawer + all 18 clickable sources.
+- **Free-source-only** per user directive: uses only Perplexity, Brave, and the Emergent LLM key. Paid sources (Alpha Vantage / Finnhub / PitchBook / CB Insights) are queued for later phases.
+- **Next**: Phase A (full 5-method Valuation Workbench + memo PDF + snapshots) → Phase C (Committee approval workflow) → Phase B (Portfolio & NAV Console) → Phase D (ASC 820 compliance output).

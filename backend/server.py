@@ -2866,6 +2866,98 @@ async def research_history(user=Depends(get_current_user)):
 
 
 # -----------------------------------------------------------------------------
+# VALUATION BAND (Phase E) — free-source fair-value estimate for a brief
+# -----------------------------------------------------------------------------
+from valuation import estimate_valuation as _estimate_valuation  # noqa: E402
+
+
+class ValuationRequest(BaseModel):
+    company_name: str
+    sector: Optional[str] = None
+    one_liner: Optional[str] = None
+    estimated_revenue: Optional[str] = None
+    headquarters: Optional[str] = None
+    research_id: Optional[str] = None  # optional — used for 24h cache keying
+    force_refresh: bool = False
+
+
+def _valuation_cache_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")[:80]
+
+
+@api_router.post("/valuation/estimate")
+async def estimate_company_valuation(body: ValuationRequest, user=Depends(get_current_user)):
+    """Fair-value band using Recent Transaction + Market Multiples methods.
+
+    24h cache keyed by lower-cased company slug. Force refresh with `force_refresh=true`.
+    """
+    if not body.company_name or not body.company_name.strip():
+        raise HTTPException(status_code=400, detail="company_name is required")
+
+    slug = _valuation_cache_key(body.company_name)
+    if not body.force_refresh:
+        cached = await db.valuation_estimates.find_one(
+            {"slug": slug}, {"_id": 0}, sort=[("created_at", -1)],
+        )
+        if cached:
+            age_hours = (now_utc() - datetime.fromisoformat(cached["created_at"])).total_seconds() / 3600
+            if age_hours < 24:
+                cached["from_cache"] = True
+                cached["cache_age_hours"] = round(age_hours, 1)
+                return cached
+
+    result = await _estimate_valuation(
+        company_name=body.company_name,
+        sector=body.sector,
+        one_liner=body.one_liner,
+        estimated_revenue=body.estimated_revenue,
+        headquarters=body.headquarters,
+        brave_fn=search_brave,
+        perplexity_fn=lambda p: query_perplexity(p),
+        claude_fn=call_claude,
+        safe_json=safe_json_loads,
+    )
+
+    doc = {
+        "id": str(uuid.uuid4()),
+        "slug": slug,
+        "company_name": body.company_name,
+        "sector": body.sector,
+        "research_id": body.research_id,
+        "user_id": user["id"],
+        "created_at": now_utc().isoformat(),
+        "currency": result.get("currency", "USD"),
+        "as_of": result.get("as_of"),
+        "aggregate": result.get("aggregate"),
+        "recent_transaction": result.get("recent_transaction"),
+        "market_multiples": result.get("market_multiples"),
+        "sources": result.get("sources", []),
+    }
+    await db.valuation_estimates.insert_one(doc)
+    doc.pop("_id", None)
+    doc["from_cache"] = False
+    await log_audit(user["id"], "valuation.estimate", slug, {
+        "company_name": body.company_name,
+        "insufficient_data": bool((result.get("aggregate") or {}).get("insufficient_data")),
+        "base_usd": (result.get("aggregate") or {}).get("base_usd"),
+    })
+    return doc
+
+
+@api_router.get("/valuation/estimate/{slug}")
+async def get_cached_valuation(slug: str, user=Depends(get_current_user)):
+    """Return the most recent cached valuation for a company slug, or 404."""
+    doc = await db.valuation_estimates.find_one(
+        {"slug": slug}, {"_id": 0}, sort=[("created_at", -1)],
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="No valuation on file")
+    age_hours = (now_utc() - datetime.fromisoformat(doc["created_at"])).total_seconds() / 3600
+    doc["cache_age_hours"] = round(age_hours, 1)
+    return doc
+
+
+# -----------------------------------------------------------------------------
 # DETAILED ANALYSIS (Buyer-side "Standard" Kenshin-style 14-section report)
 # -----------------------------------------------------------------------------
 from detailed_analysis import run_detailed_analysis  # noqa: E402
