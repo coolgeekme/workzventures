@@ -5236,6 +5236,64 @@ GOOGLE_DRIVE_EXPORT_MAP = {
 }
 
 
+# Iter-46: Composio download error explainer. Composio proxy/action failures
+# come back as opaque JSON envelopes (e.g. `{"type":"error","status":403,
+# "code":"access_denied_insufficient_permissions"}`). Sellers see this in the
+# sync errors panel and can't tell what to do. Detect the well-known Box /
+# Google / OneDrive permission signatures and surface a friendly, actionable
+# next-step so support tickets don't pile up.
+def _explain_composio_download_error(*, source_kind: str, action_error: str | None) -> str:
+    err = (action_error or "").lower()
+    label = COMPOSIO_FILE_SOURCES.get(source_kind, {}).get("label") or source_kind.title()
+    # BOX — most common cause: user has Previewer role instead of Viewer+.
+    if source_kind == "box" and (
+        "access_denied_insufficient_permissions" in err
+        or ("403" in err and "box" in err)
+        or ("previewer" in err)
+    ):
+        return (
+            f"{label} denied download (403 access_denied_insufficient_permissions). "
+            "Fix: (1) In Box, the folder owner needs to upgrade your role from "
+            "\"Previewer\" to \"Viewer\" or higher — Previewer permits listing "
+            "but blocks binary download by design. (2) If you recently changed "
+            "app scopes, your Box Enterprise Admin must re-authorize Composio "
+            "in Admin Console → Apps. (3) Last resort: disconnect + reconnect "
+            "Box in NextCapOS Integrations to force a fresh OAuth grant."
+        )
+    # GOOGLE DRIVE — commonly "The user has not granted the app" or "not
+    # found" when a Shared Drive isn't shared with the connected identity.
+    if source_kind == "googledrive" and ("403" in err or "not granted" in err or "permission" in err):
+        return (
+            f"{label} denied download (403). Fix: ensure the file/folder is "
+            "shared with the Google account you connected to Composio. For "
+            "Shared Drives, add the connected account as a Member (not just "
+            "individual file share)."
+        )
+    # ONEDRIVE / SHAREPOINT — usually a Graph scope issue on a sensitivity-
+    # labeled or classified file.
+    if source_kind in {"onedrive", "sharepoint"} and ("403" in err or "accessdenied" in err.replace(" ", "")):
+        return (
+            f"{label} denied download (403). Fix: this file may have a "
+            "Sensitivity Label or IRM policy blocking API access. Ask your "
+            "M365 admin to grant the Composio app Files.Read.All / "
+            "Sites.Read.All at the tenant scope, or copy the file out of "
+            "the protected library first."
+        )
+    # DROPBOX — typically 401 for expired token; 403 for team-restricted content.
+    if source_kind == "dropbox" and ("403" in err or "insufficient" in err):
+        return (
+            f"{label} denied download (403). Fix: the Dropbox account may be "
+            "on a Team plan that restricts external app downloads. Ask your "
+            "Dropbox admin to allow Composio in Admin Console → Apps."
+        )
+    # Payload-too-large — surfaced verbatim already.
+    if "payload is too large" in err or "payload_too_large" in err:
+        return f"{label} rejected the file for being too large. Compress or split before syncing."
+    # Fallback — keep the raw action detail so we still have a debug string.
+    tail = f" (action: {action_error})" if action_error else ""
+    return f"download failed via proxy + action{tail}"
+
+
 async def _composio_proxy_download(
     source_kind: str, connected_account_id: str, file_id: str,
     mime_type: str | None = None, user_id: str | None = None,
@@ -6285,10 +6343,17 @@ async def _run_external_source_sync(lid: str, sid: str, user_id: str) -> None:
                     action_error = str(e.detail)[:160]
 
             if blob is None:
-                errors.append(
-                    f"{name}: download failed via proxy + action"
-                    + (f" (action: {action_error})" if action_error else "")
+                # Iter-46: parse the upstream error into a user-actionable
+                # message. The raw Composio proxy JSON envelope is opaque
+                # ("action: {"type":"error","status":403,...}") and the seller
+                # can't tell if it's a Box permission, an OAuth scope, or a
+                # network issue. Detect the Box "insufficient permissions"
+                # signature and surface the exact fix steps inline.
+                friendly = _explain_composio_download_error(
+                    source_kind=src["source_kind"],
+                    action_error=action_error,
                 )
+                errors.append(f"{name}: {friendly}")
                 continue
             # Sanity cap so a runaway connection can't blow the pod. GridFS
             # handles arbitrary size on the storage side; the cap exists to

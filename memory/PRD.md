@@ -1,6 +1,26 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-46 · Composio Box Sync — Friendly Error Explainer (2026-02-17)
+**User report (production)**: Box sync mirroring a folder with "Cap Table Top 10 Shareholders", "CRS Indication Assessment", "MXB-22,510 Protocol Design" returned an opaque:
+`download failed via proxy + action (action: {"type":"error","status":403,"code":"access_denied_insufficient_permissions",...})`
+
+**Root cause** (verified via Composio integration playbook): the user has **Previewer** role on those files in Box, not **Viewer** or higher. Box's permission model explicitly denies API binary download to Previewers, though listing is permitted. This is a Box-side configuration issue, not a NextCapOS bug.
+
+**User-side fix (surfaced to them directly)**:
+1. Box folder owner upgrades their role from "Previewer" → "Viewer" (or higher)
+2. Box Enterprise Admin re-authorizes Composio app in Admin Console → Apps
+3. Disconnect + reconnect Box in NextCapOS → Integrations to force fresh OAuth grant
+
+**Code improvement** (`server.py`):
+- New `_explain_composio_download_error(source_kind, action_error)` helper. Detects well-known 403 signatures per toolkit (Box `access_denied_insufficient_permissions`, Google Drive scope issues, OneDrive/SharePoint Sensitivity Labels, Dropbox Team-plan blocks, payload-too-large) and surfaces friendly, actionable inline remediation instead of raw JSON.
+- Wired into the sync loop's error path (previously dumped raw envelope into `errors[]` shown on the seller's Integrations page).
+- 7 unit tests in `backend/tests/test_composio_error_explainer.py` — all 49 valuation+composio tests pass.
+
+Deploy required for production.
+
+
+
 ## Iter-45 · Collaborator "Open Workbench" Redirect Bug (2026-02-17)
 **Bug**: Viewer/Editor/Owner collaborators clicking "Open Workbench" on the Vault Valuation Card were redirected back to `/app/listings` instead of landing on the Workbench.
 
