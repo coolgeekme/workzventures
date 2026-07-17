@@ -81,8 +81,8 @@ async def test_autofill_without_evidence_is_not_private_grounded():
 
 @pytest.mark.asyncio
 async def test_autofill_truncates_very_long_private_evidence():
-    """Prompt cap is 12k chars — feed 20k, ensure only ~12k lands in the prompt."""
-    huge = "X" * 20_000
+    """Prompt cap is 24k chars — feed 30k, ensure ~24k lands in the prompt."""
+    huge = "X" * 30_000
     seen = {}
     async def fake_claude(sys, u):
         seen["user"] = u
@@ -103,5 +103,6 @@ async def test_autofill_truncates_very_long_private_evidence():
     )
     # The X-run in the prompt should be dramatically fewer than input (truncated)
     xrun = seen["user"].count("X")
-    assert xrun < 15_000, f"Prompt was NOT truncated — got {xrun} X's"
-    assert xrun >= 10_000, f"Truncation cut too aggressively — got only {xrun} X's"
+    # Cap in autofill is 24_000 chars; input is 30_000 so we should see ~24k.
+    assert xrun < 28_000, f"Prompt was NOT truncated — got {xrun} X's"
+    assert xrun >= 20_000, f"Truncation cut too aggressively — got only {xrun} X's"

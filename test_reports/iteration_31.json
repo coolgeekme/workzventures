@@ -1,0 +1,44 @@
+{
+  "summary": "Iter-43 AZpme $0-band bug fix VERIFIED. All 4 new unit tests (test_vault_evidence_gather.py) + all 3 updated tests (test_valuation_vault_grounded.py with 24k cap) + all 6 iter-38 regression tests + 2 new live iter-43 tests all PASS. Live Helios MedTech vault (rid=a3f76340...) buyer-scoped valuation returns base_usd=$146,306,542 (was $0), confidence=medium (was low), private_grounded=true, top vault_files_used entry is FINANCIALS priority (Q4_2024_financial_snapshot.md) with 21 files enumerated — proving the widened FINANCIALS regex + expanded per-file/total char budgets are correctly wiring vault financial evidence into Claude. Phase-E public-only regression path unaffected.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter43_vault_zero_band_fix.py",
+    "/app/backend/tests/test_vault_evidence_gather.py",
+    "/app/backend/tests/test_valuation_vault_grounded.py",
+    "/app/backend/tests/test_iter38_vault_valuation.py",
+    "/app/test_reports/pytest/iter43_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Empty-vault POST regression could not be exercised via automated seller-owned rooms — soft-skipped. Given the code path exists and behaves defensively (per _gather_vault_private_evidence returning empty on empty), risk is minimal but worth a manual smoke.",
+    "Atlas Logistics 'Preview-as-buyer → Start valuation' flow from MyListings is a UI-driven regression — this run was scoped backend-only per the request; recommend E1 or a frontend testing pass to click through that CTA if desired.",
+    "server.py ~11k lines; _gather_vault_private_evidence (2987-3095) is now well-tested but the growing helper module argues for extraction into a valuation_evidence.py sibling of valuation_workbench.py.",
+    "Autofill/status endpoint occasionally exceeds 15s — bumped to 45s in the new test; consider server-side latency budget or non-blocking status endpoint."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter43_vault_zero_band_fix.py (new)"
+  ],
+  "success_rate": {"backend": "100% (15/15 passed, 1 soft-skipped empty-vault case)", "frontend": "n/a (backend-only per request)"},
+  "test_credentials": "alex@workz.example.com / WorkzPass123! (buyer); mira@workz.example.com / WorkzPass123! (seller). Sourced from review request.",
+  "seed_data_creation": "None. New iter-43 test only reads existing Helios valuation via idempotent POST; TEST_iter43_public_* valuations are created and deleted inline.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The AZpme $0 fix is validated on Helios (base_usd=$146M, top file=FINANCIALS priority). For the Atlas Logistics preview vault UI flow (Preview-as-buyer → Start valuation card), the backend pipeline is proven correct via unit tests + Helios live test; if a UI regression pass is needed, log in as mira@workz.example.com, open MyListings, Preview-as-buyer for Atlas Logistics, click Start valuation on the vault-valuation-cta / vault-valuation-card. Frontend route is /app/rooms/{id}. Autofill wall-clock is 9-30s; poll autofill/status with 5s interval up to 120s.",
+  "live_verification_snapshot": {
+    "endpoint": "GET /api/deal-rooms/a3f76340-6436-458c-99b7-4c6bdbcc8e73/valuation",
+    "base_usd": 146306542,
+    "confidence": "medium",
+    "private_grounded": true,
+    "vault_files_used_count": 21,
+    "top_priority_file": "FINANCIALS · Q4_2024_financial_snapshot.md",
+    "note": "Confirms fix — pre-fix reported $0 with insufficient_data=true."
+  }
+}

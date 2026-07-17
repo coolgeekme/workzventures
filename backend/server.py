@@ -3032,14 +3032,24 @@ def _valuation_summary(v: dict) -> dict:
 
 
 async def _gather_vault_private_evidence(rid: str) -> tuple[str, list[dict]]:
-    """Iter-38 — reuse the parsed pages Findings already extracted from vault
-    files. Returns `(evidence_text, files_used)`.
+    """Iter-38 (+43 hardening) — reuse the parsed pages Findings already
+    extracted from vault files. Returns `(evidence_text, files_used)`.
 
     Heuristic filename detection prioritizes:
       * term sheets / SAFEs / convertibles → recent_transaction + OPM
       * cap tables / ownership → OPM preferred stack
-      * financial models / forecasts → DCF inputs
+      * financial models / forecasts / statements / actuals → DCF inputs
       * everything else → general context (capped)
+
+    Iter-43 fix (AZpme $0-band bug):
+      * Widen FINANCIALS regex — catches income statements, EBITDA / ARR /
+        actuals / earnings / P&L / balance sheet / 10-K / annual report /
+        Q[1-4] / projections / valuation / cash-flow / capex / opex / margins.
+      * Read ALL pages of high-priority (TERM_SHEET / CAP_TABLE / FINANCIALS)
+        docs, not just first 4. Non-priority docs still capped at 3 pages so
+        we don't blow the prompt on boilerplate.
+      * Per-file char budget lifted 600 → 1600 for priority docs, 400 for OTHER.
+      * Total budget lifted 11k → 24k chars (~6k tokens — comfortable).
     """
     if not rid:
         return "", []
@@ -3051,34 +3061,69 @@ async def _gather_vault_private_evidence(rid: str) -> tuple[str, list[dict]]:
         return "", []
 
     prio_regex = {
-        "TERM_SHEET":   re.compile(r"term.?sheet|safe|convertible|409a", re.I),
-        "CAP_TABLE":    re.compile(r"cap.?table|ownership|equity.?stack|share.?ledger", re.I),
-        "FINANCIALS":   re.compile(r"revenue|financial|forecast|model|budget|p&l|pnl|cash.?flow", re.I),
+        "TERM_SHEET": re.compile(
+            r"term.?sheet|safe|convertible|409a|note.?purchase|purchase.?agreement",
+            re.I,
+        ),
+        "CAP_TABLE": re.compile(
+            r"cap.?table|ownership|equity.?stack|share.?ledger|shareholder|option.?pool",
+            re.I,
+        ),
+        "FINANCIALS": re.compile(
+            r"revenue|financial|forecast|projection|model|budget|p.?and.?l|pnl|"
+            r"p&l|cash.?flow|income.?statement|balance.?sheet|earnings|ebitda|"
+            r"actuals|arr\b|mrr\b|margin|capex|opex|kpi|metric|"
+            r"annual.?report|10.?[kq]|q[1-4]\b|fy\d|valuation|nav\b|payer|"
+            r"cohort|churn|ltv|cac|unit.?economics",
+            re.I,
+        ),
     }
+
     def _priority(fn: str) -> str:
+        fn_l = (fn or "").lower()
         for k, r in prio_regex.items():
-            if r.search(fn or ""):
+            if r.search(fn_l):
                 return k
         return "OTHER"
 
-    # Sort high-priority first so we don't run out of prompt budget on generic docs
     order = {"TERM_SHEET": 0, "CAP_TABLE": 1, "FINANCIALS": 2, "OTHER": 3}
     files.sort(key=lambda f: order[_priority(f.get("filename", ""))])
 
     blocks: list[str] = []
     used: list[dict] = []
     total_chars = 0
-    CHAR_CAP = 11000  # ~2.8k tokens worth of private evidence
+    CHAR_CAP = 24_000  # ~6k tokens — leaves generous room for public web block
+
     for idx, f in enumerate(files, 1):
         if total_chars >= CHAR_CAP:
             break
         prio = _priority(f.get("filename", ""))
+        # Priority docs get ALL pages up to a per-file cap; boilerplate is
+        # sampled shallowly so we don't spend budget on NDA templates.
+        per_page_cap = 1600 if prio != "OTHER" else 400
+        max_pages   = 999  if prio != "OTHER" else 3
         pages = f.get("pages") or []
         if pages:
-            excerpts = "\n".join(f"  <p{p['page']}> {(p.get('text') or '')[:600]}" for p in pages[:4])
+            page_lines: list[str] = []
+            file_chars = 0
+            for p in pages[:max_pages]:
+                text = (p.get("text") or "").strip()
+                if not text:
+                    continue
+                chunk = text[:per_page_cap]
+                page_lines.append(f"  <p{p.get('page', '?')}> {chunk}")
+                file_chars += len(chunk)
+                # per-file cap: priority docs 8000, other 1200
+                if file_chars >= (8000 if prio != "OTHER" else 1200):
+                    break
+            excerpts = "\n".join(page_lines) or f"  (no extractable text on {f['filename']})"
         else:
-            excerpts = f"  {(f.get('content') or '')[:1200]}"
+            # No page-level extraction — fall back to `content` field.
+            raw = (f.get("content") or "").strip()
+            excerpts = f"  {raw[:8000 if prio != 'OTHER' else 1200]}" if raw else \
+                       f"  (no text extracted from {f['filename']})"
         piece = f"[{idx} · {prio}] {f['filename']} ({f.get('folder', '/')})\n{excerpts}"
+        # Final safety trim to keep the running total inside CHAR_CAP.
         if total_chars + len(piece) > CHAR_CAP:
             piece = piece[: CHAR_CAP - total_chars] + "…"
         blocks.append(piece)

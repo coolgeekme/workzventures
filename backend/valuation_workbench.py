@@ -435,7 +435,7 @@ async def autofill_workbench(
             "data doesn't cover a variable."
         )
         lines.append("")
-        lines.append(private_evidence[:12000])  # cap ~3k tokens
+        lines.append(private_evidence[:24000])  # cap ~6k tokens
         lines.append("")
         lines.append("=== END PRIVATE EVIDENCE ===")
         lines.append("")
