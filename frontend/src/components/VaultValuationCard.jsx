@@ -32,7 +32,9 @@ function confPill(conf) {
 export default function VaultValuationCard({ roomId, roomStatus, canCreate = true }) {
   const [state, setState] = useState({ loading: true, val: null });
   const [creating, setCreating] = useState(false);
-  const disabled = roomStatus !== "active";
+  // Iter-42: allow both Active vaults (post-NDA buyers) AND Preview vaults
+  // (sellers/admins pre-listing DD). Any other status is a disabled state.
+  const disabled = roomStatus !== "active" && roomStatus !== "preview";
 
   const load = async () => {
     try {
@@ -127,7 +129,7 @@ export default function VaultValuationCard({ roomId, roomStatus, canCreate = tru
         <button
           onClick={startValuation}
           disabled={creating || disabled}
-          title={disabled ? "Vault must be Active (NDA signed)" : "Kicks off AI autofill grounded on this vault"}
+          title={disabled ? "Vault must be Active or in Preview" : "Kicks off AI autofill grounded on this vault"}
           className="wz-btn wz-btn-gold text-xs flex items-center gap-2"
           data-testid="vault-valuation-start"
         >

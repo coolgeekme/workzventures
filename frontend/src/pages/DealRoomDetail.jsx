@@ -549,15 +549,19 @@ export default function DealRoomDetail() {
         </div>
       )}
 
-      {/* Iter-38+39+40: Fair-Value card. Buyers create/view their own; admins
-           can both create their own AND peek at the buyer's read-only. Sellers hidden. */}
-      {(isBuyer || user?.role === "admin") && room.status === "active" && (
-        <VaultValuationCard
-          roomId={id}
-          roomStatus={room.status}
-          canCreate={isBuyer || user?.role === "admin"}
-        />
-      )}
+      {/* Iter-38+39+40+42: Fair-Value card. Buyers create/view their own; admins
+           can both create their own AND peek at the buyer's read-only. Sellers hidden
+           on real vaults, but the seller/admin opening a *preview* vault IS the buyer
+           (buyer_id = their own id) — this lets sellers self-value the listing
+           BEFORE flipping it to Live. Renders in Active AND Preview status. */}
+      {(isBuyer || user?.role === "admin") &&
+        (room.status === "active" || room.status === "preview") && (
+          <VaultValuationCard
+            roomId={id}
+            roomStatus={room.status}
+            canCreate={isBuyer || user?.role === "admin"}
+          />
+        )}
 
       {/* Tabs */}
       <div className="border-b border-[var(--wz-border)] flex gap-1 overflow-x-auto -mx-4 sm:-mx-6 lg:mx-0 px-4 sm:px-6 lg:px-0 scrollbar-thin" data-testid="tabs">
