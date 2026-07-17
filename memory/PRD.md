@@ -1,6 +1,17 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-45 · Collaborator "Open Workbench" Redirect Bug (2026-02-17)
+**Bug**: Viewer/Editor/Owner collaborators clicking "Open Workbench" on the Vault Valuation Card were redirected back to `/app/listings` instead of landing on the Workbench.
+
+**Root cause**: `App.js`'s `Protected` route guard has a `COLLAB_ALLOWED_PATHS` whitelist for `account_scope === "collaborator"` users; `/app/valuations` was missing from it, so any collab hitting `/app/valuations/{id}` got hard-redirected to `/app/listings`.
+
+**Fix**: Added `/app/valuations` to `COLLAB_ALLOWED_PATHS`. Backend endpoints already gate by `user_id` (`_val_read_query`), so a collab can only read/edit valuations THEY own (typically ones they created on their own Preview Vault where `buyer_id = user.id`). No new endpoints introduced — pure UX unblock.
+
+Deploy required for production (https://app.nextcapos.com).
+
+
+
 ## Iter-44 · Valuation Re-autofill Merge Fix (2026-02-17)
 **Bug**: Clicking "Re-autofill" on a Vault-grounded valuation appeared to LOSE inputs — fields that Claude populated on the first run would sometimes come back null on a re-run (Claude is non-deterministic), and the backend was blindly overwriting `inputs` with the new seed. Frontend polling also capped at 2 min which was too tight for heavy vaults (Claude 60-180s + web queries).
 

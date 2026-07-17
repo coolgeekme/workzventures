@@ -48,9 +48,13 @@ import ResetPassword from "./pages/ResetPassword";
 // /app/listings — their single landing surface. Server-side endpoints are
 // independently gated via _listing_for_*_or_404 so URL-typing won't expose
 // data; this is purely a UX redirect.
+// Iter-45: Added /app/valuations so viewer/editor/owner collaborators can
+// open the Workbench on their own Preview Vault valuation (backend still
+// enforces `user_id` ownership via `_val_read_query`).
 const COLLAB_ALLOWED_PATHS = [
   "/app/listings",
   "/app/rooms",
+  "/app/valuations",
   "/app/security",
   "/app/org",
 ];
