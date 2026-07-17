@@ -40,9 +40,6 @@ export default function HostGuard() {
     const path = location.pathname || "/";
     const search = location.search || "";
 
-    // Public preview links work on either domain — never redirect them.
-    if (path.startsWith("/preview/listing/")) return;
-
     // /app/* belongs on the app subdomain.
     if (path.startsWith("/app") && !onAppHostname()) {
       window.location.replace(appUrl(path + search));

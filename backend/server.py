@@ -1408,6 +1408,10 @@ async def admin_hard_delete_user(uid: str, user=Depends(get_current_user)):
         await db.listing_external_sources.delete_many({"listing_id": {"$in": lids}})
         await db.listing_collaborators.delete_many({"listing_id": {"$in": lids}})
         await db.listing_collab_invites.delete_many({"listing_id": {"$in": lids}})
+        # Iter-41: also drop any legacy listing_preview_links / listing_share_links
+        # rows. The share-link feature was retired in favor of named collaborator
+        # invites. Kept in cascade for backfill sanity.
+        await db.listing_preview_links.delete_many({"listing_id": {"$in": lids}})
         await db.listing_share_links.delete_many({"listing_id": {"$in": lids}})
         await db.buyer_matches.delete_many({"listing_id": {"$in": lids}})
         await db.buyer_alerts.delete_many({"listing_id": {"$in": lids}})
@@ -1793,7 +1797,25 @@ async def my_listings(user=Depends(get_current_user)):
             it["org_name"] = org_names[it["org_id"]]
         else:
             it["workspace_scope"] = "shared"
+        # Iter-41: decorate with the current viewer's collaborator role so the UI
+        # can gate role-specific affordances (e.g. hide "View as principal" for
+        # a viewer collaborator).
+        it["viewer_role"] = _viewer_role_on_listing(it, user)
     return items
+
+
+def _viewer_role_on_listing(listing: dict, user: dict) -> str:
+    """Return a coarse role label for the current user on this listing card:
+    'principal' | 'org' | 'owner' | 'editor' | 'viewer' | 'admin' | 'unknown'."""
+    if user.get("role") == "admin":
+        return "admin"
+    if listing.get("seller_id") == user["id"]:
+        return "principal"
+    for c in (listing.get("collaborators") or []):
+        if c.get("user_id") == user["id"]:
+            return c.get("role") or "viewer"
+    # If we got this far in `my_listings` it's an org member with no explicit collab row
+    return "org"
 
 
 @api_router.post("/listings")
@@ -6510,13 +6532,17 @@ async def participant_check(room: dict, user: dict) -> str:
 @api_router.post("/listings/{lid}/preview-vault")
 async def open_preview_vault(lid: str, user=Depends(get_current_user)):
     """Create or reuse a personal "preview Vault" for the current user on a
-    listing they have edit access to. Lets an agent / seller / org teammate
-    QA the full buyer-side Vault experience (AI copilot, DRL, findings, etc.)
-    on their own listing without waiting for a real buyer to engage.
+    listing they have access to. Lets an agent / seller / org teammate / viewer-
+    collaborator QA the full buyer-side Vault experience (AI copilot, DRL,
+    findings, etc.) on their own listing without waiting for a real buyer to
+    engage.
 
-    Security: caller MUST already be on the sell-side workspace of the
-    listing (principal owner, org member, or collaborator editor/owner).
-    No NDA gate is bypassed because the caller is the listing's own party.
+    Security: caller MUST already be on the sell-side workspace of the listing
+    — principal owner, org member, collaborator (owner/editor/**viewer**), or
+    admin. Viewers are read-only on the listing itself but they were invited
+    precisely to see the buyer experience, so we let them spawn a preview vault
+    scoped to their own user_id. No NDA gate is bypassed because the caller is
+    on the sell side.
 
     The created room:
       - buyer_id = current_user.id (so they pass `participant_check` cleanly)
@@ -6525,7 +6551,7 @@ async def open_preview_vault(lid: str, user=Depends(get_current_user)):
       - auto-clones the listing data room files
     Idempotent — one preview vault per (listing, user) pair.
     """
-    listing = await _listing_for_edit_or_404(lid, user)
+    listing = await _listing_for_view_or_404(lid, user)
 
     existing = await db.deal_rooms.find_one(
         {"listing_id": lid, "buyer_id": user["id"], "status": "preview"}, {"_id": 0}
@@ -10433,11 +10459,6 @@ class AccessPolicyUpdate(BaseModel):
     competitor_blocklist: Optional[List[str]] = None
 
 
-class PreviewLinkCreate(BaseModel):
-    label: Optional[str] = None
-    expires_hours: int = Field(168, ge=1, le=720)  # default 7d, max 30d
-
-
 # ---- Helpers --------------------------------------------------------------
 
 async def _get_user_org_ids(user: dict) -> List[str]:
@@ -10997,113 +11018,10 @@ async def update_access_policy(lid: str, body: AccessPolicyUpdate, user=Depends(
     return {"ok": True, "access_policy": {**(listing.get("access_policy") or {}), **{k.split('.')[-1]: v for k, v in patch.items()}}}
 
 
-# ---- Public listing preview links (share with the principal pre-signup) ----
-
-def _sanitise_listing_for_preview(listing: dict) -> dict:
-    """Return only fields safe to expose on a public preview link."""
-    keep = (
-        "id company_name sector geography asking_price_usd_m revenue_usd_m "
-        "ebitda_usd_m headline summary highlights status created_at "
-        "access_policy"
-    ).split()
-    out = {k: listing.get(k) for k in keep}
-    # Strip user_ids from collaborators — only show name/role
-    out["collaborators"] = [
-        {"name": c.get("name") or c.get("email"), "role": c.get("role")}
-        for c in (listing.get("collaborators") or [])
-    ]
-    return out
-
-
-@api_router.post("/listings/{lid}/preview-links")
-async def create_preview_link(lid: str, body: PreviewLinkCreate, user=Depends(get_current_user)):
-    """Mint a public, no-auth signed link the principal can click to see exactly
-    the listing card + dataroom file list. Only metadata is exposed — no file
-    downloads, no inquiry inbox, no audit log."""
-    await _listing_for_edit_or_404(lid, user)
-    token = secrets.token_urlsafe(32)
-    doc = {
-        "id": str(uuid.uuid4()),
-        "listing_id": lid,
-        "token": token,
-        "label": body.label,
-        "created_by": user["id"],
-        "created_by_name": user.get("name"),
-        "created_at": now_utc().isoformat(),
-        "expires_at": (now_utc() + timedelta(hours=body.expires_hours)).isoformat(),
-        "revoked_at": None,
-        "view_count": 0,
-        "last_viewed_at": None,
-    }
-    await db.listing_preview_links.insert_one(doc)
-    await log_audit(user["id"], "listing.preview_link.create", lid, {"expires_hours": body.expires_hours})
-    doc.pop("_id", None)
-    doc["url"] = mail_link(f"/preview/listing/{token}")
-    return doc
-
-
-@api_router.get("/listings/{lid}/preview-links")
-async def list_preview_links(lid: str, user=Depends(get_current_user)):
-    await _listing_for_edit_or_404(lid, user)
-    rows = await db.listing_preview_links.find(
-        {"listing_id": lid, "revoked_at": None}, {"_id": 0}
-    ).sort("created_at", -1).to_list(50)
-    for r in rows:
-        r["url"] = mail_link(f"/preview/listing/{r['token']}")
-        r["is_expired"] = datetime.fromisoformat(r["expires_at"]) < now_utc()
-        # Don't leak token in list view — only on create
-        r.pop("token", None)
-    return rows
-
-
-@api_router.delete("/listings/{lid}/preview-links/{plid}")
-async def revoke_preview_link(lid: str, plid: str, user=Depends(get_current_user)):
-    await _listing_for_edit_or_404(lid, user)
-    res = await db.listing_preview_links.update_one(
-        {"id": plid, "listing_id": lid, "revoked_at": None},
-        {"$set": {"revoked_at": now_utc().isoformat()}},
-    )
-    if res.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Preview link not found")
-    await log_audit(user["id"], "listing.preview_link.revoke", lid, {"plid": plid})
-    return {"ok": True}
-
-
-@api_router.get("/preview/listings/{token}")
-async def public_listing_preview(token: str):
-    """Public endpoint — no auth. Returns sanitised listing data + dataroom
-    file metadata for clients to preview a listing they've been sent."""
-    link = await db.listing_preview_links.find_one({"token": token}, {"_id": 0})
-    if not link:
-        raise HTTPException(status_code=404, detail="Preview link not found")
-    if link.get("revoked_at"):
-        raise HTTPException(status_code=410, detail="This preview link has been revoked")
-    if datetime.fromisoformat(link["expires_at"]) < now_utc():
-        raise HTTPException(status_code=410, detail="This preview link has expired")
-    listing = await db.listings.find_one({"id": link["listing_id"]}, {"_id": 0})
-    if not listing:
-        raise HTTPException(status_code=404, detail="Listing no longer exists")
-    # Increment view counter (fire-and-forget — non-blocking)
-    async def _bump():
-        await db.listing_preview_links.update_one(
-            {"token": token},
-            {"$inc": {"view_count": 1}, "$set": {"last_viewed_at": now_utc().isoformat()}},
-        )
-    asyncio.create_task(_bump())
-    # Pull dataroom file list (metadata only — no signed download urls)
-    files = await db.listing_staged_files.find(
-        {"listing_id": link["listing_id"]},
-        {"_id": 0, "id": 1, "filename": 1, "size_bytes": 1, "content_type": 1, "note": 1, "uploaded_at": 1, "folder": 1},
-    ).sort("uploaded_at", -1).to_list(200)
-    return {
-        "listing": _sanitise_listing_for_preview(listing),
-        "data_room": files,
-        "preview": {
-            "expires_at": link["expires_at"],
-            "shared_by_name": link.get("created_by_name"),
-            "label": link.get("label"),
-        },
-    }
+# Public listing preview links (share tokens) were removed in Iter-41.
+# The invite-collaborator flow (owner/editor/viewer roles + audit trail) is the
+# supported way to share a listing pre-signup. Any legacy `listing_preview_links`
+# rows are ignored and can be dropped from Mongo at any time.
 
 
 async def _user_workspace_listing_ids(user: dict) -> Tuple[List[str], List[str]]:

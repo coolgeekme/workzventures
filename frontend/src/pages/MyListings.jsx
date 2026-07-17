@@ -3,11 +3,10 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X, UsersThree, Eye, EyeSlash, ShareNetwork, Buildings, Vault, PencilSimpleLine } from "@phosphor-icons/react";
+import { Plus, Tag, Trash, Files, CaretDown, CaretUp, CloudArrowUp, DownloadSimple, X, UsersThree, Eye, EyeSlash, Buildings, Vault, PencilSimpleLine } from "@phosphor-icons/react";
 import ExternalSources from "../components/ExternalSources";
 import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
 import ListingCollaborators from "../components/ListingCollaborators";
-import ShareLinkModal from "../components/ShareLinkModal";
 
 const STATUSES = [
   { v: "draft", l: "Draft" },
@@ -286,9 +285,11 @@ function Metric({ label, value }) {
  * ========================================================================== */
 function ListingCard({ listing: l, onRemove, onSetStatus, onEdit }) {
   const [viewAsPrincipal, setViewAsPrincipal] = useState(false);
-  const [showShareModal, setShowShareModal] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
   const navigate = useNavigate();
+  // Iter-41: hide "View as principal" (agent → client emulation) from pure
+  // viewer collaborators. principal / org / owner / editor / admin all keep it.
+  const isManagerOrHigher = !["viewer"].includes(l.viewer_role);
   const cardBorder = viewAsPrincipal
     ? "wz-card p-6 border-dashed border-2 border-[var(--wz-gold)]"
     : "wz-card p-6";
@@ -364,32 +365,27 @@ function ListingCard({ listing: l, onRemove, onSetStatus, onEdit }) {
               <Vault size={11} /> {previewBusy ? "Opening…" : "Preview as buyer"}
             </button>
           )}
-          {!viewAsPrincipal && (
+          {/* Iter-41: "View as principal" is a management-role emulation for
+              agents/editors. Viewer collaborators have no principal view to
+              emulate — they're already read-only — so hide it for them. */}
+          {isManagerOrHigher && (
             <button
-              onClick={() => setShowShareModal(true)}
-              data-testid={`share-link-${l.id}`}
-              title="Generate a public preview link to share"
-              className="text-[10px] font-mono-wz uppercase tracking-widest border border-[var(--wz-border)] text-[var(--wz-text-secondary)] hover:border-[var(--wz-gold)] hover:text-[var(--wz-gold)] px-2 py-1 transition-colors inline-flex items-center gap-1"
+              onClick={() => setViewAsPrincipal((v) => !v)}
+              data-testid={`view-as-principal-${l.id}`}
+              title={viewAsPrincipal ? "Exit principal preview" : "Preview as the principal owner"}
+              className={`text-[10px] font-mono-wz uppercase tracking-widest border px-2 py-1 transition-colors ${
+                viewAsPrincipal
+                  ? "border-[var(--wz-gold)] text-[var(--wz-gold)] bg-[var(--wz-gold)]/10"
+                  : "border-[var(--wz-border)] text-[var(--wz-text-secondary)] hover:border-[var(--wz-amber)] hover:text-[var(--wz-amber)]"
+              }`}
             >
-              <ShareNetwork size={11} /> Share
+              {viewAsPrincipal ? (
+                <span className="inline-flex items-center gap-1"><EyeSlash size={11} /> Exit preview</span>
+              ) : (
+                <span className="inline-flex items-center gap-1"><Eye size={11} /> View as principal</span>
+              )}
             </button>
           )}
-          <button
-            onClick={() => setViewAsPrincipal((v) => !v)}
-            data-testid={`view-as-principal-${l.id}`}
-            title={viewAsPrincipal ? "Exit principal preview" : "Preview as the principal owner"}
-            className={`text-[10px] font-mono-wz uppercase tracking-widest border px-2 py-1 transition-colors ${
-              viewAsPrincipal
-                ? "border-[var(--wz-gold)] text-[var(--wz-gold)] bg-[var(--wz-gold)]/10"
-                : "border-[var(--wz-border)] text-[var(--wz-text-secondary)] hover:border-[var(--wz-amber)] hover:text-[var(--wz-amber)]"
-            }`}
-          >
-            {viewAsPrincipal ? (
-              <span className="inline-flex items-center gap-1"><EyeSlash size={11} /> Exit preview</span>
-            ) : (
-              <span className="inline-flex items-center gap-1"><Eye size={11} /> View as principal</span>
-            )}
-          </button>
           {!viewAsPrincipal && onEdit && (
             <button
               onClick={() => onEdit(l)}
@@ -432,14 +428,6 @@ function ListingCard({ listing: l, onRemove, onSetStatus, onEdit }) {
 
       <ListingDataRoom listingId={l.id} listingName={l.company_name} viewAsPrincipal={viewAsPrincipal} />
       <ListingCollabPanel listing={l} viewAsPrincipal={viewAsPrincipal} />
-
-      {showShareModal && (
-        <ShareLinkModal
-          listingId={l.id}
-          listingName={l.company_name}
-          onClose={() => setShowShareModal(false)}
-        />
-      )}
 
       <div className="mt-5 pt-4 border-t border-[var(--wz-border)] flex items-center justify-between flex-wrap gap-3">
         <div className="text-xs font-mono-wz text-[var(--wz-text-secondary)]">
