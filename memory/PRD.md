@@ -1,6 +1,22 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-49 · Mirror Weather Visualization Style from GitHub (2026-02-17)
+Merged PR #2 (`gh/main` at `35e5185`) into local `main` — zero conflicts.
+
+**What upstream added on top of Iter-48**:
+- **New "Weather" visualization style** as a peer to Plant. 7 photoreal weather images at `frontend/public/health/weather/` (Storm → Bright & clear).
+- **Refactor**: `plantHealth.js` → `healthVisualization.js` with a `VIZ_STYLES` registry supporting `{plant, weather}` (and easily extensible to more). `VaultHealthPlant.jsx` → `VaultHealthViz.jsx` — the same component now renders whichever style is active.
+- **Plant | Weather toggle** at the top-right of the Health tab. Selection persisted in `localStorage` under `wz_health_viz_style` so returning users get their preferred metaphor.
+- **All Iter-48 refinements preserved**: 12/4/1 penalty scale + "Peak · 100" reference thumbnail on the current-state image.
+- Existing folder `frontend/public/health/*.jpg` → `frontend/public/health/plant/*.jpg` (renamed, git preserves history).
+
+**Verified**: Same Helios findings (2H/4M/4L → 56/100 · "Fair"). Toggling to Weather shows "Partly cloudy" tier. Toggle back to Plant shows Pilea. 10/10 Jest tests pass on new file `frontend/src/__tests__/healthVisualization.test.js`. Lint green.
+
+Deploy required for production.
+
+
+
 ## Iter-48 · Vault Health Refinements (2026-02-17)
 User feedback on the newly-mirrored Health tab:
 1. "Should we have a visual reference for the healthiest version to compare?"
