@@ -2,7 +2,13 @@
 // score, then renders that score as one of several visual metaphors. Each
 // style shares the same score bands so switching styles never changes the
 // underlying verdict, only how it's depicted.
-const PENALTY = { high: 8, medium: 3, low: 0.75 };
+//
+// Iter-48: Scale rebalanced to be more critical. In real diligence, even a
+// single unresolved high-severity finding is meaningful; the previous
+// (8/3/0.75) curve was too forgiving — e.g. 4 highs still landed in "Fair".
+// New (12/4/1) curve: 3 highs → "Good" (64), 5 highs → "Fair" (40),
+// 10 mediums → "Good" (60), clean report (0/0/0) → "Excellent" (100).
+const PENALTY = { high: 12, medium: 4, low: 1 };
 
 export function computeHealthScore(severityBreakdown) {
   const sev = severityBreakdown || {};
