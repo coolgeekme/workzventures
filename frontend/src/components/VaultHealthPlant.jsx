@@ -25,8 +25,8 @@ export default function VaultHealthPlant({ latestSnapshot, findingsCount, accent
         <Leaf size={28} className="mx-auto mb-3 text-[var(--wz-text-tertiary)]" />
         <div className="font-display tracking-tight mb-1">No health reading yet</div>
         <p className="text-sm text-[var(--wz-text-secondary)] max-w-sm mx-auto">
-          Run diligence findings on the Findings tab first — the plant's condition is derived from
-          the severity of what's found there.
+          Run diligence findings on the Findings tab first — the plant&apos;s condition is derived from
+          the severity of what&apos;s found there.
         </p>
       </div>
     );
@@ -58,7 +58,7 @@ export default function VaultHealthPlant({ latestSnapshot, findingsCount, accent
 
       <div className="space-y-4">
         <div className="wz-card p-5">
-          <div className="overline mb-3">What's driving this reading</div>
+          <div className="overline mb-3">What&apos;s driving this reading</div>
           <div className="flex items-center gap-2 flex-wrap text-xs mb-4">
             <span className="pill pill-negative">{high} high</span>
             <span className="pill pill-amber">{medium} medium</span>

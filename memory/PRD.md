@@ -1,6 +1,24 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-47 · Mirror Vault Health Plant Feature from GitHub (2026-02-17)
+Cherry-picked commit `829b640` from `gh/main` (merged via PR #1 from `feature/vault-health-plant` branch) into local `main`.
+
+**What it adds**: A new **"Health" tab** on the Vault detail page that visualizes diligence findings as one of 7 photoreal plant renders (critical → excellent). Score derives purely from `severity_breakdown` on the latest findings snapshot — no new backend needed.
+
+**Files mirrored**:
+- `frontend/public/health/1_critical.jpg` through `7_excellent.jpg` (7 photoreal plant images)
+- `frontend/src/components/VaultHealthPlant.jsx` — visualization component with empty-state UI
+- `frontend/src/lib/plantHealth.js` — `computeHealthScore(severityBreakdown)` + `tierForScore(score)` (penalty: high=8, medium=3, low=0.75)
+- `frontend/src/pages/DealRoomDetail.jsx` — new "Health" tab entry between Findings and Co-pilot
+- `frontend/tailwind.config.js` — `fadein` keyframe for smooth plant image swap
+
+**Post-mirror fixes**: 3 unescaped-apostrophe lint errors in `VaultHealthPlant.jsx` (`plant's`, `what's`) → replaced with `&apos;`. Lint now green. Smoke-tested against Helios MedTech vault — Health tab renders correctly with empty state.
+
+Deploy required for production.
+
+
+
 ## Iter-46 · Composio Box Sync — Friendly Error Explainer (2026-02-17)
 **User report (production)**: Box sync mirroring a folder with "Cap Table Top 10 Shareholders", "CRS Indication Assessment", "MXB-22,510 Protocol Design" returned an opaque:
 `download failed via proxy + action (action: {"type":"error","status":403,"code":"access_denied_insufficient_permissions",...})`
