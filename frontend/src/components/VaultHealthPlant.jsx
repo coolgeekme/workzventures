@@ -45,6 +45,26 @@ export default function VaultHealthPlant({ latestSnapshot, findingsCount, accent
               data-testid="health-plant-image"
             />
           )}
+          {/* Iter-48: "Peak health" reference thumbnail overlay — instant visual
+              anchor so buyers can see the gap between current vs a 100/100 plant. */}
+          {tier.key !== "excellent" && (
+            <div
+              className="absolute bottom-3 right-3 w-20 rounded-md overflow-hidden border border-white/20 shadow-lg backdrop-blur-sm"
+              data-testid="health-peak-reference"
+              title="What a perfect 100/100 vault looks like"
+            >
+              <div className="relative aspect-[2/3]">
+                <img
+                  src="/health/7_excellent.jpg"
+                  alt="Peak health reference — 100/100"
+                  className="absolute inset-0 w-full h-full object-cover"
+                />
+              </div>
+              <div className="text-[9px] px-1.5 py-0.5 bg-black/70 text-white text-center uppercase tracking-widest font-mono-wz">
+                Peak · 100
+              </div>
+            </div>
+          )}
         </div>
         <div className="p-5 border-t border-[var(--wz-border)]">
           <div className="overline mb-1">Company health</div>
@@ -95,8 +115,10 @@ export default function VaultHealthPlant({ latestSnapshot, findingsCount, accent
         <div className="wz-card p-5">
           <div className="overline mb-2">How the score works</div>
           <p className="text-xs text-[var(--wz-text-secondary)] leading-relaxed">
-            Starts at 100 and subtracts per open finding — high severity costs the most, low severity
-            barely moves the needle. It reflects the latest findings snapshot ({findingsCount} finding{findingsCount === 1 ? "" : "s"});
+            Starts at 100 and subtracts per open finding: <span className="text-[var(--wz-negative)] font-mono-wz">−12</span> for each
+            high, <span className="text-[var(--wz-amber)] font-mono-wz">−4</span> for medium, <span className="text-[var(--wz-gold)] font-mono-wz">−1</span> for
+            low. Diligence tuned — one unresolved high issue is meaningful, several are deal-affecting.
+            Reflects the latest findings snapshot ({findingsCount} finding{findingsCount === 1 ? "" : "s"});
             re-run diligence on the Findings tab to refresh it.
           </p>
         </div>

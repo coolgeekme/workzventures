@@ -1,7 +1,13 @@
 // Maps AI diligence findings (severity_breakdown) to a 0-100 "company health"
 // score and a visual plant tier. Each finding subtracts a fixed penalty by
 // severity; the remainder is how healthy the plant looks.
-const PENALTY = { high: 8, medium: 3, low: 0.75 };
+//
+// Iter-48: Scale rebalanced to be more critical. In real diligence, even a
+// single unresolved high-severity finding is meaningful; the previous
+// (8/3/0.75) curve was too forgiving — e.g. 4 highs still landed in "Fair".
+// New (12/4/1) curve: 3 highs → "Good" (64), 5 highs → "Fair" (40),
+// 10 mediums → "Good" (60), clean report (0/0/0) → "Excellent" (100).
+const PENALTY = { high: 12, medium: 4, low: 1 };
 
 export const PLANT_TIERS = [
   { key: "critical", min: 0, max: 14, label: "Critical", blurb: "Multiple severe, unresolved risks are choking this deal.", image: "/health/1_critical.jpg" },
