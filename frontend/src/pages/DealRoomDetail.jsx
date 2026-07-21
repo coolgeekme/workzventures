@@ -6,12 +6,13 @@ import { useAuth } from "../lib/auth";
 import {
   FileText, Files, MagnifyingGlass, ListChecks, ShieldCheck,
   CloudArrowUp, CheckCircle, Warning, ArrowLeft, ChatCircleDots, PaperPlaneTilt,
-  Certificate, Clock, Eye, Lock, LockOpen, Copy, X,
+  Certificate, Clock, Eye, Lock, LockOpen, Copy, X, Leaf,
 } from "@phosphor-icons/react";
 import { UPLOAD_ACCEPT, UPLOAD_HINT, UPLOAD_MAX_MB } from "../lib/uploadConfig";
 import VaultActivity from "../components/VaultActivity";
 import PdfPreview from "../components/PdfPreview";
 import VaultValuationCard from "../components/VaultValuationCard";
+import VaultHealthPlant from "../components/VaultHealthPlant";
 
 const FOLDERS = [
   { v: "financials", l: "Financials" },
@@ -569,6 +570,7 @@ export default function DealRoomDetail() {
           { v: "files", l: "Files", icon: Files, count: room.files.length },
           { v: "drl", l: "DRL", icon: ListChecks, count: room.requests.length },
           { v: "findings", l: "Findings", icon: MagnifyingGlass, count: room.findings.length },
+          { v: "health", l: "Health", icon: Leaf, count: null },
           { v: "copilot", l: "Co-pilot", icon: ChatCircleDots, count: messages.length },
           { v: "activity", l: "Activity", icon: Clock, count: null },
         ].map((t) => {
@@ -1014,6 +1016,15 @@ export default function DealRoomDetail() {
         </div>
         );
       })()}
+
+      {/* TAB: Health */}
+      {tab === "health" && (
+        <VaultHealthPlant
+          latestSnapshot={snapshotDetail?.job || room.latest_findings_snapshot}
+          findingsCount={(snapshotDetail?.findings || room.findings).length}
+          accentClass={accentClass}
+        />
+      )}
 
       {/* TAB: Co-pilot */}
       {tab === "copilot" && (
