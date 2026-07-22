@@ -1,6 +1,21 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-50 · Mirror PR #3 Folder-Scoping Bug Fix from GitHub (2026-02-17)
+Cherry-picked commit `cb6e6f0` from `gh/main` (PR #3 from `fix/box-folder-selection-scoping` branch). Clean pick, no conflicts.
+
+**Bug**: When a seller connected Box/Drive/OneDrive and clicked "Sync now" right after OAuth (which defaults to the provider root), then later narrowed folder selection to a specific folder, the earlier root-sync files stayed in the Vault forever — folder selection was only *additive*, not authoritative.
+
+**Fix**: `update_external_source_folders` now calls `_wipe_external_source_files(lid, sid)` before triggering the fresh scoped sync, and resets `file_count: 0` on the source doc. Folder picks are now the single source of truth.
+
+**Files touched**:
+- `backend/server.py` — 18-line change to the `update_external_source_folders` endpoint (existing `_wipe_external_source_files` helper reused, no new function needed)
+- `backend/tests/test_folder_selection_scoping.py` — new regression test (passes ✅)
+
+Deploy required for production.
+
+
+
 ## Iter-49 · Mirror Weather Visualization Style from GitHub (2026-02-17)
 Merged PR #2 (`gh/main` at `35e5185`) into local `main` — zero conflicts.
 
