@@ -5787,7 +5787,17 @@ async def update_external_source_folders(
     Financials' without re-resolving each ID against the provider.
 
     Saves and triggers an immediate sync so the seller sees mirrored files
-    show up without an extra click."""
+    show up without an extra click.
+
+    Bug fix: previously this only *added* files matching the new selection
+    on top of whatever was already mirrored. If the seller had synced once
+    before narrowing their folder selection (e.g. clicked "Sync now" right
+    after connecting, which defaults to the whole drive root), every file
+    from that earlier, broader sync stayed in the Vault forever — so no
+    matter which specific folder they picked afterward, the listing kept
+    showing everything. Folder selection must be authoritative: wipe every
+    previously mirrored file for this source before re-syncing so the
+    Vault only ever reflects the currently-selected folder(s)."""
     await _listing_for_edit_or_404(lid, user)
     src = await db.listing_external_sources.find_one(
         {"id": sid, "listing_id": lid, "deleted_at": {"$exists": False}}, {"_id": 0},
@@ -5811,9 +5821,13 @@ async def update_external_source_folders(
         "sid": sid, "folder_count": len(body.folder_ids),
         "include_subfolders": update["include_subfolders"],
     })
+    # Folder selection replaces scope entirely — wipe whatever was mirrored
+    # under the previous selection (or the pre-selection root sync) so stale,
+    # out-of-scope files can't linger in the Vault.
+    await _wipe_external_source_files(lid, sid)
     # Trigger a fresh sync immediately so the seller sees results.
     await db.listing_external_sources.update_one(
-        {"id": sid}, {"$set": {"syncing": True, "last_error": None}},
+        {"id": sid}, {"$set": {"syncing": True, "last_error": None, "file_count": 0}},
     )
     asyncio.create_task(_run_external_source_sync(lid, sid, user["id"]))
     return {"ok": True, **update}
