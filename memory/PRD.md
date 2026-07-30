@@ -1,6 +1,32 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-51 · Mirror PR #4 — ZIP Upload Expansion in Data Rooms (2026-02-17)
+Cherry-picked commit `5164a4f` from `gh/main` (PR #4 from `codex/fix-data-room-zip` branch). Clean pick, no conflicts.
+
+**Feature**: Sellers can now upload `.zip` archives to a listing's Data Room and have every file inside expanded and stored individually — no more manually extracting archives before uploading.
+
+**New module**: `backend/zip_uploads.py` — safe in-memory ZIP expansion with defensive limits:
+- 250 files max per archive
+- 50 MB per file
+- 250 MB total extracted size
+- 1000× compression-ratio guard (blocks zip-bomb attacks)
+- Rejects path traversal (`../`, absolute paths, Windows `C:` drive prefix)
+- Rejects password-protected entries, symlinks, macOS `__MACOSX/`, `.DS_Store`
+
+**Files touched**:
+- `backend/server.py` — 191-line addition wiring ZIP expansion into staged-files upload path
+- `backend/zip_uploads.py` — new module (131 lines)
+- `backend/tests/test_zip_uploads.py` — 8 regression tests (all passing ✅ including path-traversal, zip-bomb, corrupt-archive, empty-archive)
+- `frontend/src/lib/uploadConfig.js` — comment update
+- `frontend/src/pages/MyListings.jsx` — toast now shows `"Extracted N files from archive.zip"` when a ZIP is uploaded
+
+Backend health check green post-mirror.
+
+Deploy required for production.
+
+
+
 ## Iter-50 · Mirror PR #3 Folder-Scoping Bug Fix from GitHub (2026-02-17)
 Cherry-picked commit `cb6e6f0` from `gh/main` (PR #3 from `fix/box-folder-selection-scoping` branch). Clean pick, no conflicts.
 
