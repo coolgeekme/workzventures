@@ -519,11 +519,16 @@ function ListingDataRoom({ listingId, listingName, viewAsPrincipal = false }) {
     fd.append("folder", folder);
     if (note) fd.append("note", note);
     try {
-      await api.post(`/listings/${listingId}/staged-files/binary`, fd, {
+      const response = await api.post(`/listings/${listingId}/staged-files/binary`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-      toast.success(`Staged · ${chosen.name}`, {
-        description: "Stored in this listing's Data Room. It will auto-copy into a Vault the moment a buyer's inquiry is Accepted and you open one.",
+      const extractedCount = response.data?.extracted_count;
+      toast.success(extractedCount
+        ? `Extracted ${extractedCount} file${extractedCount === 1 ? "" : "s"} from ${chosen.name}`
+        : `Staged · ${chosen.name}`, {
+        description: extractedCount
+          ? "Each extracted file is stored separately in this listing's Data Room and will auto-copy into its Vaults."
+          : "Stored in this listing's Data Room. It will auto-copy into a Vault the moment a buyer's inquiry is Accepted and you open one.",
         duration: 7000,
       });
       setChosen(null);

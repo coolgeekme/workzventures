@@ -47,6 +47,7 @@ from security_service import (
     encrypt_bytes, decrypt_envelope, encryption_configured,
 )
 from provenance import build_provenance_pdf
+from zip_uploads import ZipUploadError, extract_zip_files
 
 # -----------------------------------------------------------------------------
 # Bootstrap
@@ -1898,6 +1899,134 @@ async def _seller_listing_or_404(lid: str, user: dict) -> Dict[str, Any]:
     return await _listing_for_edit_or_404(lid, user)
 
 
+def _public_staged_file(doc: Dict[str, Any]) -> Dict[str, Any]:
+    public = dict(doc)
+    public.pop("_id", None)
+    public.pop("content", None)
+    public.pop("pages", None)
+    return public
+
+
+async def _store_listing_staged_file(
+    *,
+    lid: str,
+    filename: str,
+    data: bytes,
+    content_type: str,
+    folder: str,
+    note: Optional[str],
+    user: dict,
+    archive_filename: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Persist one listing data-room file without emitting side effects."""
+    file_id = str(uuid.uuid4())
+    plaintext_sha256_hex = sha256_hex(data)
+
+    storage_bytes = data
+    encrypted = False
+    encryption_alg = None
+    if encryption_configured():
+        try:
+            aad = f"listing:{lid}:{file_id}".encode("utf-8")
+            enc = encrypt_bytes(data, associated_data=aad)
+            storage_bytes = enc["envelope"]
+            encrypted = True
+            encryption_alg = enc["alg"]
+        except Exception as e:
+            logger.warning(f"At-rest encryption failed, storing plaintext: {e}")
+
+    gridfs_id = await listing_files_bucket.upload_from_stream(
+        filename,
+        io.BytesIO(storage_bytes),
+        metadata={
+            "listing_id": lid,
+            "file_id": file_id,
+            "uploaded_by": user["id"],
+            "content_type": content_type,
+            "encrypted": encrypted,
+            "encryption_alg": encryption_alg,
+            "archive_filename": archive_filename,
+        },
+    )
+
+    pages = extract_pages_from_bytes(filename, data)
+    flat = pages_to_flat_text(pages)
+    doc = {
+        "id": file_id,
+        "listing_id": lid,
+        "filename": filename,
+        "folder": folder,
+        "content_type": content_type,
+        "size_bytes": len(data),
+        "page_count": len(pages),
+        "pages": pages,
+        "content": flat,
+        "char_count": len(flat),
+        "gridfs_id": str(gridfs_id),
+        "storage": "listing_gridfs",
+        "encrypted": encrypted,
+        "encryption_alg": encryption_alg,
+        "sha256_hex": plaintext_sha256_hex,
+        "note": note,
+        "uploaded_by": user["id"],
+        "uploaded_at": now_utc().isoformat(),
+    }
+    if archive_filename:
+        doc["archive_filename"] = archive_filename
+        doc["archive_path"] = filename
+    try:
+        await db.listing_staged_files.insert_one(doc)
+    except Exception:
+        try:
+            await listing_files_bucket.delete(gridfs_id)
+        except Exception:
+            pass
+        raise
+    return doc
+
+
+async def _rollback_listing_staged_files(docs: List[Dict[str, Any]]) -> None:
+    """Best-effort rollback so a failed archive does not leave a partial batch."""
+    for doc in docs:
+        try:
+            await listing_files_bucket.delete(ObjectId(doc["gridfs_id"]))
+        except Exception:
+            pass
+    ids = [doc["id"] for doc in docs]
+    if ids:
+        await db.listing_staged_files.delete_many({"id": {"$in": ids}})
+
+
+async def _finalize_listing_staged_upload(
+    lid: str,
+    doc: Dict[str, Any],
+    data: bytes,
+    user: dict,
+) -> None:
+    await log_audit(user["id"], "listing.stagedfile.upload", lid, {
+        "file_id": doc["id"],
+        "filename": doc["filename"],
+        "folder": doc["folder"],
+        "bytes": doc["size_bytes"],
+        "sha256": doc["sha256_hex"],
+        "encrypted": doc["encrypted"],
+        "archive_filename": doc.get("archive_filename"),
+    })
+    asyncio.create_task(notarize_bytes(
+        kind="listing.staged_file",
+        target_id=doc["id"],
+        data=data,
+        owner_user_id=user["id"],
+        label=f"Staged listing file: {doc['filename']}",
+        extra={
+            "listing_id": lid,
+            "filename": doc["filename"],
+            "size_bytes": doc["size_bytes"],
+            "archive_filename": doc.get("archive_filename"),
+        },
+    ))
+
+
 @api_router.get("/listings/{lid}/staged-files")
 async def list_listing_staged_files(lid: str, user=Depends(get_current_user)):
     await _seller_listing_or_404(lid, user)
@@ -1928,76 +2057,56 @@ async def upload_listing_staged_file(
     if len(data) > 50 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="File exceeds 50 MB limit")
 
-    file_id = str(uuid.uuid4())
-    filename = file.filename or f"upload-{file_id}"
-    plaintext_sha256_hex = sha256_hex(data)
-
-    storage_bytes = data
-    encrypted = False
-    encryption_alg = None
-    if encryption_configured():
+    filename = file.filename or f"upload-{uuid.uuid4()}"
+    is_zip = filename.lower().endswith(".zip")
+    if is_zip:
         try:
-            aad = f"listing:{lid}:{file_id}".encode("utf-8")
-            enc = encrypt_bytes(data, associated_data=aad)
-            storage_bytes = enc["envelope"]
-            encrypted = True
-            encryption_alg = enc["alg"]
-        except Exception as e:
-            logger.warning(f"At-rest encryption failed, storing plaintext: {e}")
+            archive_files = extract_zip_files(data)
+        except ZipUploadError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    gridfs_id = await listing_files_bucket.upload_from_stream(
-        filename,
-        io.BytesIO(storage_bytes),
-        metadata={
-            "listing_id": lid,
-            "file_id": file_id,
-            "uploaded_by": user["id"],
-            "content_type": file.content_type or "application/octet-stream",
-            "encrypted": encrypted,
-            "encryption_alg": encryption_alg,
-        },
-    )
+        stored = []
+        try:
+            for extracted in archive_files:
+                stored.append(await _store_listing_staged_file(
+                    lid=lid,
+                    filename=extracted.filename,
+                    data=extracted.data,
+                    content_type=extracted.content_type,
+                    folder=folder,
+                    note=note,
+                    user=user,
+                    archive_filename=filename,
+                ))
+        except Exception:
+            await _rollback_listing_staged_files(stored)
+            raise
 
-    pages = extract_pages_from_bytes(filename, data)
-    flat = pages_to_flat_text(pages)
+        for doc, extracted in zip(stored, archive_files):
+            await _finalize_listing_staged_upload(lid, doc, extracted.data, user)
+        await log_audit(user["id"], "listing.stagedfile.archive_extract", lid, {
+            "archive_filename": filename,
+            "extracted_files": len(stored),
+            "extracted_bytes": sum(item["size_bytes"] for item in stored),
+        })
+        return {
+            "archive_filename": filename,
+            "extracted_count": len(stored),
+            "total_size_bytes": sum(item["size_bytes"] for item in stored),
+            "files": [_public_staged_file(item) for item in stored],
+        }
 
-    doc = {
-        "id": file_id,
-        "listing_id": lid,
-        "filename": filename,
-        "folder": folder,
-        "content_type": file.content_type or "application/octet-stream",
-        "size_bytes": len(data),
-        "page_count": len(pages),
-        "pages": pages,
-        "content": flat,
-        "char_count": len(flat),
-        "gridfs_id": str(gridfs_id),
-        "storage": "listing_gridfs",
-        "encrypted": encrypted,
-        "encryption_alg": encryption_alg,
-        "sha256_hex": plaintext_sha256_hex,
-        "note": note,
-        "uploaded_by": user["id"],
-        "uploaded_at": now_utc().isoformat(),
-    }
-    await db.listing_staged_files.insert_one(doc)
-    await log_audit(user["id"], "listing.stagedfile.upload", lid, {
-        "file_id": file_id, "filename": filename, "folder": folder, "bytes": len(data),
-        "sha256": plaintext_sha256_hex, "encrypted": encrypted,
-    })
-    asyncio.create_task(notarize_bytes(
-        kind="listing.staged_file",
-        target_id=file_id,
+    doc = await _store_listing_staged_file(
+        lid=lid,
+        filename=filename,
         data=data,
-        owner_user_id=user["id"],
-        label=f"Staged listing file: {filename}",
-        extra={"listing_id": lid, "filename": filename, "size_bytes": len(data)},
-    ))
-    doc.pop("_id", None)
-    doc.pop("content", None)
-    doc.pop("pages", None)
-    return doc
+        content_type=file.content_type or "application/octet-stream",
+        folder=folder,
+        note=note,
+        user=user,
+    )
+    await _finalize_listing_staged_upload(lid, doc, data, user)
+    return _public_staged_file(doc)
 
 
 @api_router.get("/listings/{lid}/staged-files/{file_id}/download")
