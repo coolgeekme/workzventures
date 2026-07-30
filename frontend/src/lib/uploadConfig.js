@@ -1,6 +1,6 @@
 // Shared file-upload constraints for Listing Data Room, Vault, Private Locker.
-// Backend extracts text from PDF / DOCX / XLSX / PPTX / TXT-family; other types
-// are stored as-is (no auto-extraction).
+// Backend extracts text from PDF / DOCX / XLSX / PPTX / TXT-family. ZIP files
+// uploaded to a Listing Data Room are expanded and stored as individual files.
 
 export const UPLOAD_ACCEPT =
   ".pdf,.docx,.doc,.xlsx,.xlsm,.xls,.pptx,.ppt,.txt,.md,.csv,.tsv,.json," +
