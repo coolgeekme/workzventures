@@ -2054,8 +2054,8 @@ async def upload_listing_staged_file(
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
-    if len(data) > 50 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File exceeds 50 MB limit")
+    if len(data) > 512 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File exceeds 512 MB limit")
 
     filename = file.filename or f"upload-{uuid.uuid4()}"
     is_zip = filename.lower().endswith(".zip")
@@ -2291,8 +2291,8 @@ async def upload_private_locker_file(
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
-    if len(data) > 50 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File exceeds 50 MB limit")
+    if len(data) > 512 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File exceeds 512 MB limit")
 
     file_id = str(uuid.uuid4())
     filename = file.filename or f"locker-{file_id}"
@@ -7468,9 +7468,11 @@ async def upload_file_binary(
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
-    # Cap at 25 MB
-    if len(data) > 50 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File exceeds 50 MB limit")
+    # Iter-52: Raised from 50 MB → 512 MB per user request for large financial
+    # workbooks and data-room CIMs. Matches UPLOAD_MAX_MB in uploadConfig.js
+    # and the Composio-mirror per-file cap of 500 MB (which now clears easily).
+    if len(data) > 512 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File exceeds 512 MB limit")
 
     file_id = str(uuid.uuid4())
     filename = file.filename or f"upload-{file_id}"

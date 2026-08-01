@@ -10,5 +10,5 @@ export const UPLOAD_ACCEPT =
 export const UPLOAD_HINT =
   "PDF · DOCX · XLSX · PPTX · TXT/MD/CSV · images · video/audio · ZIP";
 
-export const UPLOAD_MAX_MB = 50;
+export const UPLOAD_MAX_MB = 512;
 export const UPLOAD_MAX_BYTES = UPLOAD_MAX_MB * 1024 * 1024;

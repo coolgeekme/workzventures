@@ -11,8 +11,12 @@ from pathlib import PurePosixPath
 
 
 MAX_ZIP_FILES = 250
-MAX_ZIP_MEMBER_BYTES = 50 * 1024 * 1024
-MAX_ZIP_EXTRACTED_BYTES = 250 * 1024 * 1024
+# Iter-52: Raised from 50/250 MB → 512/1024 MB to align with the new 512 MB
+# per-file upload cap. A single ZIP can now carry a 512 MB workbook, and the
+# total extracted payload is capped at 1 GB so a full mixed data-room dump
+# still expands in one shot.
+MAX_ZIP_MEMBER_BYTES = 512 * 1024 * 1024
+MAX_ZIP_EXTRACTED_BYTES = 1024 * 1024 * 1024
 MAX_ZIP_COMPRESSION_RATIO = 1000
 
 
