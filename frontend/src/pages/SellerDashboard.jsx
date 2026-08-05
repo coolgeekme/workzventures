@@ -26,7 +26,7 @@ export default function SellerDashboard() {
     { k: stats.my_campaigns, v: "Campaigns", icon: PaperPlaneTilt, testid: "kpi-campaigns" },
     { k: stats.my_leads, v: "Leads", icon: ArrowUpRight, testid: "kpi-leads" },
     { k: stats.my_newsletters, v: "Newsletters", icon: NotePencil, testid: "kpi-newsletters" },
-    { k: (stats.agent_success_rate || 0) + "%", v: "Agent success", icon: Pulse, testid: "kpi-success" },
+    { k: (stats.agent_success_rate || 0) + "%", v: "Automation success", icon: Pulse, testid: "kpi-success" },
   ] : [];
 
   return (

@@ -23,7 +23,7 @@ export default function Dashboard() {
         { k: stats.campaigns, v: "Campaigns", testid: "kpi-campaigns" },
         { k: stats.newsletters_sent, v: "Newsletters", testid: "kpi-newsletters" },
         { k: stats.research_count, v: "Research briefs", testid: "kpi-research" },
-        { k: stats.agent_success_rate + "%", v: "Agent success", testid: "kpi-success" },
+        { k: stats.agent_success_rate + "%", v: "Automation success", testid: "kpi-success" },
         { k: stats.exit_velocity_days + "d", v: "Exit velocity", testid: "kpi-exit" },
       ]
     : [];
