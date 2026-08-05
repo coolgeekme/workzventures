@@ -11,6 +11,7 @@ export const ROLE_LABELS = {
   buyer: "Buyer",
   seller: "Seller",
   agent: "Advisor",
+  fund_manager: "Fund Manager",
 };
 
 /** Longer form, for pickers and invite copy. */
@@ -19,6 +20,7 @@ export const ROLE_LABELS_LONG = {
   buyer: "Buyer · acquire companies",
   seller: "Seller · market portfolio",
   agent: "Advisor · broker / advisor (both sides)",
+  fund_manager: "Fund Manager · run funds and LP relationships",
 };
 
 export function roleLabel(role) {
