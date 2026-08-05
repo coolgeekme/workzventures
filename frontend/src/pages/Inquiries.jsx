@@ -89,7 +89,7 @@ export default function Inquiries() {
       <p className="text-sm text-[var(--wz-text-secondary)] mt-2 max-w-2xl">
         {isSeller
           ? "Buyers reaching out about your listings. Triage and reply directly here."
-          : "Listings you have inquired about. Send a message and the seller will reply right inside this thread."}
+          : "Deals you have inquired about. Send a message and the seller will reply right inside this thread."}
       </p>
 
       <div className="mt-8 space-y-4" data-testid="inquiry-list">
@@ -119,7 +119,7 @@ export default function Inquiries() {
                     <span
                       className="pill"
                       style={{ borderColor: "var(--wz-text-tertiary)", color: "var(--wz-text-tertiary)" }}
-                      title="On a listing shared with you as a collaborator"
+                      title="On a deal shared with you as a collaborator"
                       data-testid={`inquiry-scope-${i.id}`}
                     >
                       shared

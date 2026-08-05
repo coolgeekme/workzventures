@@ -15,7 +15,7 @@ const DEMOS = [
     email: "mira@workz.example.com",
     password: "WorkzPass123!",
     Icon: Storefront,
-    tagline: "Listings · Buyer Discovery · Outreach · Newsletter",
+    tagline: "Deals · Buyer Discovery · Outreach · Newsletter",
   },
 ];
 

@@ -19,7 +19,7 @@ export default function SellerDashboard() {
   }, []);
 
   const kpis = stats ? [
-    { k: stats.my_listings, v: "My listings", icon: Tag, testid: "kpi-listings" },
+    { k: stats.my_listings, v: "My deals", icon: Tag, testid: "kpi-listings" },
     { k: stats.live_listings, v: "Live", icon: Tag, testid: "kpi-live" },
     { k: stats.inbound_inquiries, v: "Inbound inquiries", icon: Question, testid: "kpi-inquiries" },
     { k: "$" + stats.pipeline_value_usd_m + "M", v: "Pipeline value", icon: ArrowUpRight, testid: "kpi-pipeline" },
@@ -43,7 +43,7 @@ export default function SellerDashboard() {
         </div>
         <div className="flex items-center gap-3">
           <Link to="/app/listings" className="wz-btn wz-btn-gold flex items-center gap-2 text-sm" data-testid="cta-new-listing">
-            <Tag size={14} /> New listing
+            <Tag size={14} /> New deal
           </Link>
           <Link to="/app/outreach" className="wz-btn-ghost wz-btn flex items-center gap-2 text-sm" data-testid="cta-new-campaign">
             <PaperPlaneTilt size={14} /> New campaign

@@ -59,7 +59,7 @@ export default function BuyerDiscovery() {
         setParams({ listing: pick }, { replace: true });
       }
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Failed to load listings");
+      toast.error(err?.response?.data?.detail || "Failed to load deals");
     } finally {
       setOverviewLoaded(true);
     }
@@ -183,11 +183,11 @@ export default function BuyerDiscovery() {
       </div>
       <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium flex items-center gap-3">
         <Crosshair size={28} className="text-[var(--wz-amber)]" />
-        Find buyers for your listings
+        Find buyers for your deals
       </h1>
       <p className="text-sm text-[var(--wz-text-secondary)] mt-2 max-w-2xl">
         We mine SEC EDGAR 8-K filings for U.S. companies actively making acquisitions in your
-        sector, then rank each candidate with our AI analyst against your listing. High-fit
+        sector, then rank each candidate with our AI analyst against your deal. High-fit
         buyers appear as alerts and can be pushed to Lead Nurturing or auto-drafted into an
         outreach campaign.
       </p>
@@ -224,11 +224,11 @@ export default function BuyerDiscovery() {
         })}
         {overview.length === 0 && overviewLoaded && (
           <div className="text-sm text-[var(--wz-text-tertiary)] py-3">
-            Create a listing first under <Link to="/app/listings" className="underline">My Listings</Link>.
+            Create a deal first under <Link to="/app/listings" className="underline">My Deals</Link>.
           </div>
         )}
         {!overviewLoaded && (
-          <div className="text-sm text-[var(--wz-text-tertiary)] py-3">Loading your listings…</div>
+          <div className="text-sm text-[var(--wz-text-tertiary)] py-3">Loading your deals…</div>
         )}
       </div>
 
@@ -236,7 +236,7 @@ export default function BuyerDiscovery() {
       {selectedListing && (
         <div className="wz-card p-4 mt-4 flex items-center justify-between flex-wrap gap-3" data-testid="scan-bar">
           <div>
-            <div className="overline">selected listing</div>
+            <div className="overline">selected deal</div>
             <div className="text-base font-medium mt-1 flex items-center gap-2">
               <Buildings size={14} className="text-[var(--wz-text-secondary)]" />
               {selectedListing.company_name}
@@ -280,7 +280,7 @@ export default function BuyerDiscovery() {
           <div className="wz-card p-10 text-center text-sm text-[var(--wz-text-tertiary)]" data-testid="empty-matches">
             {selectedListing
               ? "No matches yet — tap “Scan SEC EDGAR now” above. Periodic rescans run every 24h."
-              : "Select a listing to view its buyer matches."}
+              : "Select a deal to view its buyer matches."}
           </div>
         ) : (
           <div className="space-y-3" data-testid="match-list">
@@ -334,7 +334,7 @@ export default function BuyerDiscovery() {
                         else { findContacts(m.id); }
                       }}
                       disabled={loadingContactsFor === m.id || !m.buyer_cik}
-                      title={!m.buyer_cik ? "Non-US listing — contact resolution requires SEC EDGAR CIK" : "Parse SEC filings + LinkedIn"}
+                      title={!m.buyer_cik ? "Non-US deal — contact resolution requires SEC EDGAR CIK" : "Parse SEC filings + LinkedIn"}
                       data-testid={`find-contacts-${m.id}`}
                       className="wz-btn-ghost wz-btn text-xs flex items-center gap-2 justify-center"
                     >

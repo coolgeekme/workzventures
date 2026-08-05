@@ -17,7 +17,7 @@ const BUYER_TABS = [
 ];
 const SELLER_TABS = [
   { to: "/app/dashboard", label: "Home", icon: House },
-  { to: "/app/listings", label: "Listings", icon: Tag },
+  { to: "/app/listings", label: "Deals", icon: Tag },
   { to: "/app/inquiries", label: "Inbox", icon: Question },
   { to: "/app/rooms", label: "Vault", icon: Files },
 ];
@@ -33,7 +33,7 @@ const MORE_BUYER = [
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple },
   { to: "/app/security", label: "Security", icon: ShieldCheck },
   { to: "/app/composio", label: "Integrations", icon: Plugs },
-  { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp },
+  { to: "/app/agents", label: "Automation Monitor", icon: ChartLineUp },
 ];
 const MORE_SELLER = [
   { to: "/app/buyers", label: "Buyer Discovery", icon: Crosshair },
@@ -44,12 +44,12 @@ const MORE_SELLER = [
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple },
   { to: "/app/security", label: "Security", icon: ShieldCheck },
   { to: "/app/composio", label: "Integrations", icon: Plugs },
-  { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp },
+  { to: "/app/agents", label: "Automation Monitor", icon: ChartLineUp },
 ];
 const MORE_ADMIN = [
   { to: "/app/research", label: "Research Hub", icon: MagnifyingGlass },
   { to: "/app/marketplace", label: "Marketplace", icon: Storefront },
-  { to: "/app/listings", label: "Listings", icon: Tag },
+  { to: "/app/listings", label: "Deals", icon: Tag },
   { to: "/app/buyers", label: "Buyer Discovery", icon: Crosshair },
   { to: "/app/buyer-alerts", label: "Buyer Alerts", icon: Bell },
   { to: "/app/collateral", label: "Collateral", icon: NotePencil },
@@ -59,11 +59,11 @@ const MORE_ADMIN = [
   { to: "/app/security", label: "Security", icon: ShieldCheck },
   { to: "/app/composio", label: "Integrations", icon: Plugs },
   { to: "/app/mcp", label: "MCP Console", icon: Terminal },
-  { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp },
+  { to: "/app/agents", label: "Automation Monitor", icon: ChartLineUp },
 ];
 
 const COLLAB_TABS = [
-  { to: "/app/listings", label: "Listings", icon: Tag },
+  { to: "/app/listings", label: "Deals", icon: Tag },
   { to: "/app/rooms", label: "Vault", icon: Files },
   { to: "/app/org", label: "Org", icon: ChartBar },
   { to: "/app/security", label: "Security", icon: ShieldCheck },

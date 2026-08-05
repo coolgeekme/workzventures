@@ -21,7 +21,7 @@ export default function BuyerDashboard() {
   }, []);
 
   const kpis = stats ? [
-    { k: stats.marketplace_listings, v: "Live listings", testid: "kpi-marketplace", icon: Storefront },
+    { k: stats.marketplace_listings, v: "Live deals", testid: "kpi-marketplace", icon: Storefront },
     { k: stats.my_research_count, v: "My research briefs", testid: "kpi-research", icon: MagnifyingGlass },
     { k: stats.my_inquiries, v: "My inquiries", testid: "kpi-inquiries", icon: Question },
     { k: stats.newsletters_received, v: "Issues received", testid: "kpi-newsletter", icon: EnvelopeSimple },
@@ -91,7 +91,7 @@ export default function BuyerDashboard() {
               </Link>
             ))}
             {marketplace.length === 0 && (
-              <div className="px-6 py-10 text-center text-sm text-[var(--wz-text-tertiary)]">No live listings yet.</div>
+              <div className="px-6 py-10 text-center text-sm text-[var(--wz-text-tertiary)]">No live deals yet.</div>
             )}
           </div>
         </div>

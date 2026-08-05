@@ -56,10 +56,10 @@ export default function MyListings() {
       };
       if (editingId) {
         await api.patch(`/listings/${editingId}`, body);
-        toast.success("Listing updated");
+        toast.success("Deal updated");
       } else {
         await api.post("/listings", body);
-        toast.success("Listing created");
+        toast.success("Deal created");
       }
       setForm(emptyForm);
       setEditingId(null);
@@ -121,7 +121,7 @@ export default function MyListings() {
 
   const remove = async (id) => {
     await api.delete(`/listings/${id}`);
-    toast.success("Listing removed");
+    toast.success("Deal removed");
     load();
   };
 
@@ -133,12 +133,12 @@ export default function MyListings() {
             {isCollabOnly ? "Collaborator workspace" : "Seller workspace"}
           </div>
           <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium">
-            {isCollabOnly ? "My collaborations" : "My listings"}
+            {isCollabOnly ? "My collaborations" : "My deals"}
           </h1>
           <p className="text-sm text-[var(--wz-text-secondary)] mt-2 max-w-xl">
             {isCollabOnly
-              ? "Listings you've been invited to collaborate on. You can use every in-listing tool — Vault, Data Room, Co-pilot, Preview-as-Buyer."
-              : <>Add portfolio companies for sale. Flip a listing to <span className="text-[var(--wz-positive)]">Live</span> to expose it on the buyer marketplace.</>}
+              ? "Deals you've been invited to collaborate on. You can use every in-deal tool — Vault, Data Room, Co-pilot, Preview-as-Buyer."
+              : <>Add portfolio companies for sale. Flip a deal to <span className="text-[var(--wz-positive)]">Live</span> to expose it on the buyer marketplace.</>}
           </p>
         </div>
         {!isCollabOnly && (
@@ -155,7 +155,7 @@ export default function MyListings() {
             }}
             className="wz-btn wz-btn-gold flex items-center gap-2"
           >
-            <Plus size={14} /> {show ? "Close form" : "New listing"}
+            <Plus size={14} /> {show ? "Close form" : "New deal"}
           </button>
         )}
       </div>
@@ -164,7 +164,7 @@ export default function MyListings() {
         <form onSubmit={submit} data-testid="listing-form" className="wz-card p-6 mb-8 grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="md:col-span-2 flex items-center justify-between -mt-2 mb-1">
             <div className="overline" style={{ color: editingId ? "var(--wz-amber)" : "var(--wz-gold)" }}>
-              {editingId ? `Editing · ${form.company_name || "listing"}` : "Create new listing"}
+              {editingId ? `Editing · ${form.company_name || "deal"}` : "Create new deal"}
             </div>
             {editingId && (
               <div className="text-[10px] font-mono-wz text-[var(--wz-text-tertiary)]">
@@ -197,7 +197,7 @@ export default function MyListings() {
           <div className="md:col-span-2 flex justify-end gap-2">
             <button type="button" onClick={cancelEdit} className="wz-btn-ghost wz-btn">Cancel</button>
             <button type="submit" className="wz-btn wz-btn-gold" data-testid="listing-save">
-              {editingId ? "Save changes" : "Create listing"}
+              {editingId ? "Save changes" : "Create deal"}
             </button>
           </div>
         </form>
@@ -233,12 +233,12 @@ export default function MyListings() {
         ))}
         {filteredListings.length === 0 && listings.length > 0 && (
           <div className="text-xs text-[var(--wz-text-tertiary)] col-span-full" data-testid="listing-empty-filter">
-            No listings match this filter.
+            No deals match this filter.
           </div>
         )}
         {listings.length === 0 && (
           <div className="wz-card p-10 text-center text-sm text-[var(--wz-text-tertiary)] md:col-span-2">
-            No listings yet — create your first one above.
+            No deals yet — create your first one above.
           </div>
         )}
       </div>
@@ -274,7 +274,7 @@ function Metric({ label, value }) {
 /* ============================================================================
  * ListingCard — single listing tile with the "View as principal" preview mode.
  *
- * When viewAsPrincipal=true the agent's management chrome is hidden so the
+ * When viewAsPrincipal=true the advisor's management chrome is hidden so the
  * agent can sanity-check what the principal owner experiences when they
  * accept the listing-collaborator invite:
  *   - Delete (trash) button hidden
@@ -319,7 +319,7 @@ function ListingCard({ listing: l, onRemove, onSetStatus, onEdit }) {
           <Eye size={14} className="text-[var(--wz-gold)] shrink-0 mt-0.5" />
           <span className="leading-relaxed">
             <strong>Principal preview.</strong> This is what your client sees when they accept the
-            listing invite. Agent-only management controls are hidden. Exit preview to manage.
+            deal invite. Advisor-only management controls are hidden. Exit preview to manage.
           </span>
         </div>
       )}
@@ -359,7 +359,7 @@ function ListingCard({ listing: l, onRemove, onSetStatus, onEdit }) {
               onClick={openPreviewVault}
               disabled={previewBusy}
               data-testid={`preview-vault-${l.id}`}
-              title="Open a buyer-side preview Vault to QA copilot, DRL, and findings on this listing"
+              title="Open a buyer-side preview Vault to QA copilot, DRL, and findings on this deal"
               className="text-[10px] font-mono-wz uppercase tracking-widest border border-[var(--wz-border)] text-[var(--wz-text-secondary)] hover:border-[var(--wz-gold)] hover:text-[var(--wz-gold)] px-2 py-1 transition-colors inline-flex items-center gap-1 disabled:opacity-50"
             >
               <Vault size={11} /> {previewBusy ? "Opening…" : "Preview as buyer"}
@@ -390,7 +390,7 @@ function ListingCard({ listing: l, onRemove, onSetStatus, onEdit }) {
             <button
               onClick={() => onEdit(l)}
               data-testid={`edit-listing-${l.id}`}
-              title="Edit listing details"
+              title="Edit deal details"
               className="text-[10px] font-mono-wz uppercase tracking-widest border border-[var(--wz-border)] text-[var(--wz-text-secondary)] hover:border-[var(--wz-gold)] hover:text-[var(--wz-gold)] px-2 py-1 transition-colors inline-flex items-center gap-1"
             >
               <PencilSimpleLine size={11} /> Edit
@@ -527,8 +527,8 @@ function ListingDataRoom({ listingId, listingName, viewAsPrincipal = false }) {
         ? `Extracted ${extractedCount} file${extractedCount === 1 ? "" : "s"} from ${chosen.name}`
         : `Staged · ${chosen.name}`, {
         description: extractedCount
-          ? "Each extracted file is stored separately in this listing's Data Room and will auto-copy into its Vaults."
-          : "Stored in this listing's Data Room. It will auto-copy into a Vault the moment a buyer's inquiry is Accepted and you open one.",
+          ? "Each extracted file is stored separately in this deal's Data Room and will auto-copy into its Vaults."
+          : "Stored in this deal's Data Room. It will auto-copy into a Vault the moment a buyer's inquiry is Accepted and you open one.",
         duration: 7000,
       });
       setChosen(null);
@@ -575,7 +575,7 @@ function ListingDataRoom({ listingId, listingName, viewAsPrincipal = false }) {
       >
         <span className="flex items-center gap-2">
           <Files size={16} className="text-[var(--wz-amber)]" />
-          <span className="text-sm font-medium">Listing data room</span>
+          <span className="text-sm font-medium">Deal data room</span>
           <span className="overline">{loaded ? `${files.length} staged` : "stage docs before NDA"}</span>
         </span>
         {open ? <CaretUp size={14} /> : <CaretDown size={14} />}
@@ -587,7 +587,7 @@ function ListingDataRoom({ listingId, listingName, viewAsPrincipal = false }) {
             <Files size={14} className="text-[var(--wz-amber)] mt-0.5 shrink-0" />
             <div className="text-[var(--wz-text-secondary)]">
               <span className="text-[var(--wz-text)] font-medium">This is not a Vault yet.</span>{" "}
-              Files here live in <em>this listing&apos;s</em> Data Room. A Vault is created per-buyer
+              Files here live in <em>this deal&apos;s</em> Data Room. A Vault is created per-buyer
               when you mark their inquiry as <span className="text-[var(--wz-positive)] font-medium">Accepted</span>{" "}
               and click <span className="font-medium">Open Vault</span>. Everything staged here is
               auto-copied into that Vault the moment it opens — so the buyer can read it as soon as they sign the NDA.
@@ -595,7 +595,7 @@ function ListingDataRoom({ listingId, listingName, viewAsPrincipal = false }) {
           </div>
           <p className="text-xs text-[var(--wz-text-secondary)] leading-relaxed">
             Documents you upload here are <strong>encrypted at rest (AES-256-GCM)</strong> and auto-clone
-            into every Vault opened on this listing — so when a buyer signs the NDA, your data room is
+            into every Vault opened on this deal — so when a buyer signs the NDA, your data room is
             already populated. Stage your CIM, financials, customer cohort, contracts here.
           </p>
 

@@ -88,7 +88,7 @@ export default function Collateral() {
         <div className="wz-card p-5 mt-8 flex flex-wrap items-center gap-4" data-testid="from-listing-bar">
           <div className="flex items-center gap-2">
             <Tag size={16} className="text-[var(--wz-amber)]" />
-            <div className="overline">Generate from a listing</div>
+            <div className="overline">Generate from a deal</div>
           </div>
           <select
             data-testid="listing-picker"
@@ -96,7 +96,7 @@ export default function Collateral() {
             value={selectedListingId}
             onChange={(e) => prefillFromListing(e.target.value)}
           >
-            <option value="">— pick a listing to prefill —</option>
+            <option value="">— pick a deal to prefill —</option>
             {listings.map((l) => (
               <option key={l.id} value={l.id}>
                 {l.company_name} · {l.sector} · ${l.asking_price_usd_m}M · {l.status}
@@ -263,11 +263,11 @@ function CollateralPreview({ current, onChange, onDelete, listings }) {
   };
 
   const attachToListing = async () => {
-    if (!attachTarget) return toast.error("Select a listing first");
+    if (!attachTarget) return toast.error("Select a deal first");
     setBusy(true);
     try {
       await api.post(`/collateral/${current.id}/attach-to-listing`, { listing_id: attachTarget });
-      toast.success("Attached to listing — visible on marketplace card");
+      toast.success("Attached to deal — visible on marketplace card");
       setAttachTarget("");
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Attach failed");
@@ -354,7 +354,7 @@ function CollateralPreview({ current, onChange, onDelete, listings }) {
           {!editing && (
             <div className="mt-8 pt-6 border-t border-[var(--wz-border)] grid grid-cols-1 sm:grid-cols-3 gap-3" data-testid="coll-distribution">
               <div>
-                <div className="overline mb-1.5 flex items-center gap-1.5"><Paperclip size={11}/> Attach to listing</div>
+                <div className="overline mb-1.5 flex items-center gap-1.5"><Paperclip size={11}/> Attach to deal</div>
                 <select value={attachTarget} onChange={(e) => setAttachTarget(e.target.value)} className="wz-input text-xs mb-2" data-testid="coll-attach-listing-select">
                   <option value="">— select —</option>
                   {(listings || []).map((l) => <option key={l.id} value={l.id}>{l.company_name || l.name}</option>)}

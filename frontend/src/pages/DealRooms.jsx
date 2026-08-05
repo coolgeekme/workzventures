@@ -113,15 +113,15 @@ export default function DealRooms() {
                 </p>
                 <p className="leading-relaxed max-w-xl mx-auto mt-3">
                   Want to <strong>pre-stage documents</strong> now so they&apos;re ready the moment a
-                  buyer engages? Use the <span className="font-medium">Listing Data Room</span> on
-                  each of your listings — staged docs auto-clone into every Vault you open.
+                  buyer engages? Use the <span className="font-medium">Deal Data Room</span> on
+                  each of your deals — staged docs auto-clone into every Vault you open.
                 </p>
                 <Link
                   to="/app/listings"
                   className="wz-btn wz-btn-gold mt-5 inline-flex items-center gap-2"
                   data-testid="vault-empty-goto-listings"
                 >
-                  <FolderOpen size={14} /> Open Listing Data Room
+                  <FolderOpen size={14} /> Open Deal Data Room
                 </Link>
               </>
             ) : (
@@ -133,7 +133,7 @@ export default function DealRooms() {
                   <Link to="/app/inquiries" className="text-[var(--wz-gold)] hover:underline">Inquiries page</Link>
                   {" "}and opens it for you. If your inquiry shows{" "}
                   <span className="text-[var(--wz-negative)] font-medium">Declined</span>, the seller passed —
-                  no Vault will open for that listing.
+                  no Vault will open for that deal.
                 </p>
                 <Link
                   to="/app/marketplace"

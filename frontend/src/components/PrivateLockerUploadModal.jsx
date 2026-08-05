@@ -14,7 +14,7 @@ const FOLDERS = [
 
 const ATTACH_OPTIONS = [
   { id: "workspace", label: "Workspace — not tied to anything" },
-  { id: "listing", label: "Marketplace listing" },
+  { id: "listing", label: "Marketplace deal" },
   { id: "research", label: "Research Hub company" },
 ];
 
@@ -121,7 +121,7 @@ export default function PrivateLockerUploadModal({
             onChange={(e) => setListingId(e.target.value)}
             className="wz-input w-full text-xs mb-4"
           >
-            <option value="">Pick a marketplace listing…</option>
+            <option value="">Pick a marketplace deal…</option>
             {listings.map((li) => (
               <option key={li.id} value={li.id}>{li.company_name || li.name || li.id}</option>
             ))}

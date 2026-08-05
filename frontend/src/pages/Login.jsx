@@ -151,7 +151,7 @@ export default function Login() {
               <span className="text-[var(--wz-amber)] font-medium">Demo workspace</span> ·
               {" "}content created in this account is auto-deleted after{" "}
               <span className="font-medium text-[var(--wz-text)]">48 hours</span>. Sample
-              listings and seeded data stay so platform features remain demo-ready.
+              deals and seeded data stay so platform features remain demo-ready.
             </div>
           )}
 
