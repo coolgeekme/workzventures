@@ -103,7 +103,7 @@ def extract_zip_files(archive: bytes) -> list[ExtractedZipFile]:
             total_size += info.file_size
             if total_size > MAX_ZIP_EXTRACTED_BYTES:
                 raise ZipUploadError(
-                    "ZIP contents exceed the 250 MB total extracted-size limit"
+                    f"ZIP contents exceed the {MAX_ZIP_EXTRACTED_BYTES // (1024*1024)} MB total extracted-size limit"
                 )
             members.append((info, name))
             if len(members) > MAX_ZIP_FILES:

@@ -16,7 +16,7 @@ import secrets
 from mailer import send_email, send_email_with_attachment, link as mail_link
 from typing import List, Optional, Literal, Dict, Any, Tuple
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Header, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
@@ -43,8 +43,7 @@ from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 from security_service import (
     sha256_bytes, sha256_hex, canonical_event_hash, compute_content_hash, GENESIS_HASH,
-    stamp_digest, parse_ots, verify_ots, upgrade_ots, find_btc_attestation,
-    encrypt_bytes, decrypt_envelope, encryption_configured,
+    stamp_digest, verify_ots, upgrade_ots, encrypt_bytes, decrypt_envelope, encryption_configured,
 )
 from provenance import build_provenance_pdf
 from zip_uploads import ZipUploadError, extract_zip_files
@@ -7664,8 +7663,7 @@ def _docx_to_pdf_bytes(data: bytes, filename: str) -> bytes | None:
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.units import inch
         from reportlab.platypus import (
-            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
-            Image as RLImage,
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage,
         )
         from reportlab.lib import colors
         from PIL import Image as PILImage
@@ -9383,7 +9381,7 @@ async def list_inquiry_messages(iid: str, user=Depends(get_current_user)):
 
 @api_router.post("/inquiries/{iid}/messages")
 async def post_inquiry_message(iid: str, body: InquiryMessageCreate, user=Depends(get_current_user)):
-    inq = await _inquiry_participant(iid, user)
+    await _inquiry_participant(iid, user)  # auth guard; return value unused
     attachment = None
     if body.attachment_id:
         coll = await db.collateral.find_one({"id": body.attachment_id, "user_id": user["id"]}, {"_id": 0})
@@ -9624,7 +9622,6 @@ async def list_collateral_versions(cid: str, user=Depends(get_current_user)):
 def _collateral_to_pdf_bytes(coll: dict, user: dict) -> bytes:
     """Lightweight branded one-pager using ReportLab."""
     from reportlab.lib import colors as _c
-    from reportlab.lib.enums import TA_LEFT
     from reportlab.lib.pagesizes import LETTER
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import inch
@@ -9817,7 +9814,7 @@ async def send_collateral_to_inquiry(cid: str, body: SendToInquiry, user=Depends
     coll = await db.collateral.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
     if not coll:
         raise HTTPException(status_code=404, detail="Collateral not found")
-    inq = await _inquiry_participant(body.inquiry_id, user)
+    await _inquiry_participant(body.inquiry_id, user)  # auth guard; return value unused
     body_text = body.note or f"Sharing this collateral for your review: {coll.get('title') or coll.get('asset_type','one-pager')}."
     msg_in = InquiryMessageCreate(body=body_text, attachment_id=cid)
     return await post_inquiry_message(body.inquiry_id, msg_in, user)
@@ -10596,6 +10593,71 @@ async def _seed_demo_vault():
 @app.on_event("startup")
 async def seed_demo():
     await seed_demo_user()
+    # Iter-56: Ensure indexes on hot query paths. Every authenticated request
+    # hits `users.id`, login hits `users.email`, list endpoints filter by
+    # `user_id`, `room_id`, `listing_id`, etc. Without these, Mongo does a
+    # full collection scan on every call. `create_index` is idempotent so
+    # this is safe to call on every boot.
+    try:
+        await asyncio.gather(
+            # Auth hot path — hit on every authenticated request
+            db.users.create_index("id", unique=True, background=True),
+            db.users.create_index("email", unique=True, background=True),
+            # Listings / deals
+            db.listings.create_index("id", unique=True, background=True),
+            db.listings.create_index("user_id", background=True),
+            db.listings.create_index("status", background=True),
+            # Deal rooms (vaults)
+            db.deal_rooms.create_index("id", unique=True, background=True),
+            db.deal_rooms.create_index("buyer_id", background=True),
+            db.deal_rooms.create_index("seller_id", background=True),
+            db.deal_rooms.create_index("listing_id", background=True),
+            db.deal_room_files.create_index("id", unique=True, background=True),
+            db.deal_room_files.create_index("room_id", background=True),
+            # Valuations
+            db.valuations.create_index("id", unique=True, background=True),
+            db.valuations.create_index("user_id", background=True),
+            db.valuations.create_index("deal_room_id", background=True),
+            db.valuations.create_index("autofill_status", background=True),
+            # Findings, inquiries, audit
+            db.deal_room_findings_snapshots.create_index("room_id", background=True),
+            db.inquiries.create_index("user_id", background=True),
+            db.inquiries.create_index("listing_id", background=True),
+            db.audit_logs.create_index("seq", background=True),
+            db.audit_logs.create_index("user_id", background=True),
+            # Funds (Iter-54)
+            db.funds.create_index("id", unique=True, background=True),
+            db.funds.create_index("manager_user_id", background=True),
+            db.funds.create_index("org_id", background=True),
+        )
+        logger.info("mongo indexes ensured")
+    except Exception as e:
+        # Don't block startup on index creation; log and continue.
+        logger.warning(f"index-ensure failed (non-fatal): {e}")
+
+    # Iter-56: Orphaned-job reaper. Background autofill/findings/copilot tasks
+    # are fire-and-forget `asyncio.create_task(...)`. When the backend
+    # restarts (every deploy), any in-flight task dies but the DB row is
+    # still `pending`. Sweep those and mark them `failed` so the frontend
+    # polling immediately shows "Autofill failed — enter inputs manually"
+    # instead of spinning for 6 minutes.
+    try:
+        cutoff = (now_utc() - timedelta(minutes=1)).isoformat()
+        reaped = await db.valuations.update_many(
+            {"autofill_status": "pending",
+             "$or": [{"autofilled_at": {"$lt": cutoff}}, {"autofilled_at": {"$exists": False}}, {"autofilled_at": None}],
+             "updated_at": {"$lt": cutoff}},
+            {"$set": {
+                "autofill_status": "failed",
+                "autofill_error": "Job interrupted by server restart — click Re-autofill to retry.",
+                "updated_at": now_utc().isoformat(),
+            }},
+        )
+        if reaped.modified_count:
+            logger.info(f"orphan-reaper: reset {reaped.modified_count} stale pending valuations")
+    except Exception as e:
+        logger.warning(f"orphan-reaper failed (non-fatal): {e}")
+
     if await db.deals.count_documents({}) == 0:
         await db.deals.insert_many([
             {"id": str(uuid.uuid4()), "name": "Project Helios", "sector": "Industrial Tech", "stage": "DD", "value_usd_m": 412, "geography": "EMEA", "status": "active", "created_at": now_utc().isoformat(), "is_seed": True},
@@ -11608,11 +11670,16 @@ async def list_funds(user=Depends(get_current_user)):
 @api_router.post("/funds")
 async def create_fund(body: FundCreate, user=Depends(get_current_user)):
     await require_role(user, ["fund_manager", "admin"])
+    # Iter-56: guard against blank/whitespace-only names — the Pydantic
+    # `min_length=1` on the field only rejects "", not "   ".
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Fund name is required")
     now = now_utc().isoformat()
     org_ids = await _get_user_org_ids(user)
     doc = {
         "id": str(uuid.uuid4()),
-        "name": body.name.strip(),
+        "name": name,
         "target": body.target,
         "hard_cap": body.hard_cap,
         "vintage_year": body.vintage_year,
@@ -11673,4 +11740,3 @@ async def shutdown_db_client():
             except (asyncio.CancelledError, Exception):
                 pass
     client.close()
-()

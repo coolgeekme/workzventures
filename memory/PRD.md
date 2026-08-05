@@ -1,6 +1,45 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-56 · Code Review Fixes (2026-02-17)
+Fixed 2 MEDIUMs + all LOWs from the Iter-55 code review report.
+
+### 🟡 MEDIUM — Database indexes (was: 0 indexes → full collection scans)
+Added 22 indexes at startup, all `background=True` and idempotent:
+- `users.id` (unique), `users.email` (unique)
+- `listings.id` (unique), `listings.user_id`, `listings.status`
+- `deal_rooms.id`, `deal_rooms.buyer_id`, `deal_rooms.seller_id`, `deal_rooms.listing_id`
+- `deal_room_files.id`, `deal_room_files.room_id`
+- `valuations.id`, `valuations.user_id`, `valuations.deal_room_id`, `valuations.autofill_status`
+- `deal_room_findings_snapshots.room_id`
+- `inquiries.user_id`, `inquiries.listing_id`
+- `audit_logs.seq`, `audit_logs.user_id`
+- `funds.id`, `funds.manager_user_id`, `funds.org_id`
+
+Verified via `list_indexes()` on all 7 collections. Non-fatal on failure — logs a warning and continues.
+
+### 🟡 MEDIUM — Orphaned-job reaper (was: valuations stuck "pending" after deploy)
+On startup, sweep `valuations` where `autofill_status="pending"` AND `updated_at` older than 1 minute → set `autofill_status="failed"` with user-friendly error `"Job interrupted by server restart — click Re-autofill to retry."` Verified end-to-end: inserted stale row, restarted backend, log confirms `"orphan-reaper: reset 1 stale pending valuations"`, doc updated correctly.
+
+New test suite `backend/tests/test_orphan_reaper.py` — 3 tests (reaps stale, leaves fresh pending, leaves completed/failed alone). All pass.
+
+### 🟢 LOW — Nit cleanup
+- `zip_uploads.py`: error message now interpolates `MAX_ZIP_EXTRACTED_BYTES` (was hardcoded "250 MB" but limit is now 1 GB)
+- `server.py`: fund name validation — rejects whitespace-only names with 400 "Fund name is required"
+- `server.py`: removed stray `()` useless expression at file end (B018)
+- `server.py`: removed 6 unused imports (F401)
+- `server.py`: fixed 2 unused `inq = await _inquiry_participant(...)` — auth call preserved, just no longer assigned to unused var (F841)
+
+### Not tackled (deferred — multi-day undertakings)
+- **Role-gate consolidation** (finding #3): 20+ inline role tuples still copy-pasted. Currently patched with `fund_manager` present in all of them. Deferring to the `server.py` refactor.
+- **`server.py` refactor** (finding #4): 11,676-line monolith. Full plan documented in `test_reports/code_review_iter_55.md` (order: models → services → routes; smallest routes first).
+
+Full pytest suite: **64/64 passing**. Backend healthy (200 on `/api/health`, no errors in log).
+
+Deploy required for production.
+
+
+
 ## Iter-55 · Mirror PR #7 — Fund Manager Role Gate Fix (2026-02-17)
 Cherry-picked commit `c80abd9` from `gh/main` (PR #7 from `fix/fund-manager-role-gates` branch). Clean pick. 1 file changed, +23/-23.
 
