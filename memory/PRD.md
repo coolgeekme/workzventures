@@ -1,6 +1,32 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-54 · Mirror PR #6 — Fund Manager Role & Fund Switcher (2026-02-17)
+Cherry-picked commit `c02a53c` from `gh/main` (PR #6 from `phase-1/fund-manager-role-and-switcher` branch). Clean pick, no conflicts. 7 files changed, +293/-15.
+
+**Phase 1 — the `fund_manager` role**:
+- Added to the role enum in 5 declarations (register, admin console, invite emails, JWT, etc.)
+- Displays as **"Fund Manager"** via `roleLabels.js`; stored id remains `fund_manager`
+- New `FUND_NAV` in `Layout.jsx` groups existing real pages under Fund Management / Diligence / Engagement / M&A / Platform — no placeholder screens, every entry points at a page with real data
+- Mobile tabs, sidebar console label, topbar pill, and role-pill colour all updated
+
+**Phase 1.5 — the fund context switcher**:
+- Backend endpoints: `GET /api/funds`, `POST /api/funds`, `GET /api/funds/{id}` — scope is "funds you manage OR funds belonging to an org you're in", admins see all
+- `lib/fundContext.js` — mirrors the `agentMode` pattern (localStorage persistence, cross-tab sync via `storage` event, reconciliation when stored fund is no longer visible)
+- `FundSwitcher` component wired into the topbar for `fund_manager` and `admin` roles, with explicit "no fund yet" state rather than empty dropdown
+
+**Verified end-to-end**:
+- `GET /api/funds` → `[]` for empty admin ✅
+- `POST /api/funds` with `{name: "NextCap Fund I", vintage_year: 2026, target_size_usd: 100M, currency: "USD"}` → returns full fund doc ✅
+- `GET /api/funds` after create → count=1 ✅
+- Screenshot: Fund Switcher shows "NextCap Fund I" in the topbar; admin dashboard renders correctly
+
+**What Phase 2-6 will add** (per PR description): commitments, capital calls, distributions, holdings, and TVPI/DPI/IRR metrics. Built the fund scope FIRST so every fund-scoped screen can read it — retrofitting later would cost far more.
+
+Deploy required for production.
+
+
+
 ## Iter-53 · Mirror PR #5 — Naming Cleanup: Listing → Deal (2026-02-17)
 Cherry-picked commit `cfb46cd` from `gh/main` (PR #5 from `naming/collisions-and-deal-rename` branch). Clean pick, no conflicts. 25 files changed, +121/−94.
 
