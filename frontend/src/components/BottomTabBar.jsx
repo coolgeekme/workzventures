@@ -5,7 +5,7 @@ import {
   House, MagnifyingGlass, Storefront, Files, Question, Tag,
   DotsThreeOutline, X, SignOut, ChartBar,
   NotePencil, PaperPlaneTilt, Kanban, EnvelopeSimple, Plugs, Terminal, ChartLineUp, ListChecks, ShieldCheck,
-  Crosshair, Bell,
+  Crosshair, Bell, Coins, Buildings, Lock,
 } from "@phosphor-icons/react";
 
 // 4 pinned tabs per role; 5th tab is always "More"
@@ -62,6 +62,25 @@ const MORE_ADMIN = [
   { to: "/app/agents", label: "Automation Monitor", icon: ChartLineUp },
 ];
 
+const FUND_TABS = [
+  { to: "/app/dashboard", label: "Home", icon: House },
+  { to: "/app/rooms", label: "Vault", icon: Files },
+  { to: "/app/listings", label: "Deals", icon: Tag },
+  { to: "/app/valuations", label: "Valuations", icon: Coins },
+];
+const MORE_FUND = [
+  { to: "/app/org", label: "My Team", icon: Buildings },
+  { to: "/app/private-locker", label: "Private Locker", icon: Lock },
+  { to: "/app/collateral", label: "Collateral", icon: NotePencil },
+  { to: "/app/outreach", label: "Outreach", icon: PaperPlaneTilt },
+  { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple },
+  { to: "/app/buyers", label: "Buyer Discovery", icon: Crosshair },
+  { to: "/app/inquiries", label: "Inquiries", icon: Question },
+  { to: "/app/composio", label: "Integrations", icon: Plugs },
+  { to: "/app/security", label: "Security", icon: ShieldCheck },
+  { to: "/app/agents", label: "Automation Monitor", icon: ChartLineUp },
+];
+
 const COLLAB_TABS = [
   { to: "/app/listings", label: "Deals", icon: Tag },
   { to: "/app/rooms", label: "Vault", icon: Files },
@@ -74,6 +93,7 @@ function tabsFor(role, accountScope) {
   if (accountScope === "collaborator") return { primary: COLLAB_TABS, more: MORE_COLLAB };
   if (role === "seller") return { primary: SELLER_TABS, more: MORE_SELLER };
   if (role === "admin") return { primary: ADMIN_TABS, more: MORE_ADMIN };
+  if (role === "fund_manager") return { primary: FUND_TABS, more: MORE_FUND };
   return { primary: BUYER_TABS, more: MORE_BUYER };
 }
 
