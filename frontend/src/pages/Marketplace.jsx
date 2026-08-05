@@ -112,7 +112,7 @@ export default function Marketplace() {
         ))}
         {filtered.length === 0 && (
           <div className="md:col-span-3 wz-card p-10 text-center text-sm text-[var(--wz-text-tertiary)]">
-            No listings match your filter.
+            No deals match your filter.
           </div>
         )}
       </div>

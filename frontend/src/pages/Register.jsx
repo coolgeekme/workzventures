@@ -207,7 +207,7 @@ export default function Register() {
             <select data-testid="reg-role" className="wz-input" value={form.role} onChange={update("role")}>
               <option value="buyer">Buyer · acquire companies</option>
               <option value="seller">Seller · market portfolio</option>
-              <option value="agent">Agent · broker / advisor (both sides)</option>
+              <option value="agent">Advisor · broker / advisor (both sides)</option>
             </select>
           </label>
           <label className="block col-span-2">

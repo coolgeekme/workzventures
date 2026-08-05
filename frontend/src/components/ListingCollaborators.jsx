@@ -137,7 +137,7 @@ export default function ListingCollaborators({ listingId, sellerId, currentAcces
     <div className="space-y-6" data-testid="listing-collaborators" data-read-only={readOnly}>
       {readOnly && (
         <div className="text-[11px] text-[var(--wz-gold)] border border-[var(--wz-gold)]/40 bg-[var(--wz-gold)]/5 px-3 py-2" data-testid="collab-readonly-notice">
-          Read-only · agent management controls are hidden in principal preview.
+          Read-only · advisor management controls are hidden in principal preview.
         </div>
       )}
       <div>
@@ -187,7 +187,7 @@ export default function ListingCollaborators({ listingId, sellerId, currentAcces
                         data-testid={`collab-remove-${c.user_id}`}
                         onClick={() => remove(c.user_id, c.name)}
                         className="text-xs text-[var(--wz-danger)] hover:underline flex items-center gap-1"
-                        title="Remove from listing"
+                        title="Remove from deal"
                       >
                         <Trash size={12} /> Remove
                       </button>
@@ -286,7 +286,7 @@ export default function ListingCollaborators({ listingId, sellerId, currentAcces
           <ShieldCheck size={14} className="text-[var(--wz-gold)]" /> Vault access policy
         </div>
         <p className="text-xs text-[var(--wz-text-secondary)] mb-4 leading-relaxed">
-          By default the agent (editor) approves Vault access requests.
+          By default the advisor (editor) approves Vault access requests.
           Flip <strong>"Require principal approval"</strong> to demand sign-off from the principal
           owner before any buyer is granted Vault access. The competitor blocklist
           auto-escalates buyer requests matching any of these to the principal regardless.

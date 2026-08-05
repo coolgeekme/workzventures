@@ -419,7 +419,7 @@ function AttachPanel({ rid, attaching, setAttaching, onClose }) {
       <div className="overline">Attach this report as a PDF to:</div>
       <div className="flex gap-2">
         <button onClick={() => setTarget("vault")} data-testid="target-vault" className={`text-xs px-3 py-1 border ${target === "vault" ? "border-[var(--wz-amber)] bg-[var(--wz-surface-hover)]" : "border-[var(--wz-border)]"}`}>A Vault (buyer)</button>
-        <button onClick={() => setTarget("listing")} data-testid="target-listing" className={`text-xs px-3 py-1 border ${target === "listing" ? "border-[var(--wz-amber)] bg-[var(--wz-surface-hover)]" : "border-[var(--wz-border)]"}`}>A Listing data room (seller)</button>
+        <button onClick={() => setTarget("listing")} data-testid="target-listing" className={`text-xs px-3 py-1 border ${target === "listing" ? "border-[var(--wz-amber)] bg-[var(--wz-surface-hover)]" : "border-[var(--wz-border)]"}`}>A Deal data room (seller)</button>
       </div>
       <select value={chosen} onChange={(e) => setChosen(e.target.value)} className="wz-input text-sm" data-testid="attach-select">
         <option value="">Choose…</option>

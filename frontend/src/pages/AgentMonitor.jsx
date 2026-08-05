@@ -12,9 +12,9 @@ export default function AgentMonitor() {
 
   return (
     <div data-testid="agents-page" className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
-      <div className="overline mb-3">Agent monitor</div>
+      <div className="overline mb-3">Automation monitor</div>
       <h1 className="font-display text-3xl sm:text-4xl tracking-tighter font-medium">
-        AI Agent task completion · live diagnostics.
+        Automated task completion · live diagnostics.
       </h1>
 
       <div className="wz-grid grid-cols-2 md:grid-cols-4 mt-8">
@@ -63,7 +63,7 @@ export default function AgentMonitor() {
             </div>
           ))}
           {activity.length === 0 && (
-            <div className="px-6 py-12 text-center text-[var(--wz-text-tertiary)]">No agent activity recorded yet.</div>
+            <div className="px-6 py-12 text-center text-[var(--wz-text-tertiary)]">No automated activity recorded yet.</div>
           )}
         </div>
       </div>

@@ -207,7 +207,7 @@ export default function ExternalSources({ listingId, viewAsPrincipal = false }) 
         <Plug size={12} /> Connected file sources
       </div>
       <p className="text-xs text-[var(--wz-text-secondary)] mb-4 leading-relaxed">
-        Link Google Drive, SharePoint, OneDrive, Dropbox, Box or Zoho WorkDrive once — files mirror into the Vault and collaborators / buyers see them without their own login. Disconnecting (or closing the listing) wipes every mirrored byte and revokes the OAuth grant.
+        Link Google Drive, SharePoint, OneDrive, Dropbox, Box or Zoho WorkDrive once — files mirror into the Vault and collaborators / buyers see them without their own login. Disconnecting (or closing the deal) wipes every mirrored byte and revokes the OAuth grant.
       </p>
 
       {data.sources.length > 0 && (

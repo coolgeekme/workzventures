@@ -1555,7 +1555,7 @@ async def admin_create_invite(body: AdminInviteRequest, request: Request, user=D
     # Fire the actual invitation email so the recipient doesn't have to be
     # hand-walked the URL. Best-effort; the API response still succeeds even
     # if Resend rejects (logged in mailer).
-    role_label = {"buyer": "Buyer", "seller": "Seller", "agent": "Agent (broker / advisor)", "admin": "Admin"}.get(body.role, body.role)
+    role_label = {"buyer": "Buyer", "seller": "Seller", "agent": "Advisor (broker / advisor)", "admin": "Admin"}.get(body.role, body.role)
     org_line = f" at <strong>{body.organization}</strong>" if body.organization else ""
     name_line = f" Hi {body.name},<br><br>" if body.name else " Hi,<br><br>"
     html = f"""
@@ -1588,7 +1588,7 @@ async def admin_resend_invite(iid: str, request: Request, user=Depends(get_curre
     origin = request.headers.get("origin") or request.headers.get("referer") or ""
     base = origin.rstrip("/").rsplit("/", 1)[0] if "/app/" in origin else origin.rstrip("/")
     accept_url = f"{base}/accept-invite?token={inv['token']}" if base else f"/accept-invite?token={inv['token']}"
-    role_label = {"buyer": "Buyer", "seller": "Seller", "agent": "Agent (broker / advisor)", "admin": "Admin"}.get(inv.get("role", ""), inv.get("role", ""))
+    role_label = {"buyer": "Buyer", "seller": "Seller", "agent": "Advisor (broker / advisor)", "admin": "Admin"}.get(inv.get("role", ""), inv.get("role", ""))
     org_line = f" at <strong>{inv['organization']}</strong>" if inv.get("organization") else ""
     name_line = f" Hi {inv['name']},<br><br>" if inv.get("name") else " Hi,<br><br>"
     html = f"""

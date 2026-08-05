@@ -151,7 +151,7 @@ export default function PrivateLocker() {
             onChange={(e) => setListingFilter(e.target.value)}
             className="wz-input text-xs py-1.5 ml-1 min-w-[200px]"
           >
-            <option value="">Any listing…</option>
+            <option value="">Any deal…</option>
             {listings.map((li) => (
               <option key={li.id} value={li.id}>{li.company_name || li.name || li.id}</option>
             ))}
