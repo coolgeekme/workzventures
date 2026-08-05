@@ -208,6 +208,7 @@ export default function Register() {
               <option value="buyer">Buyer · acquire companies</option>
               <option value="seller">Seller · market portfolio</option>
               <option value="agent">Advisor · broker / advisor (both sides)</option>
+              <option value="fund_manager">Fund Manager · run funds and LP relationships</option>
             </select>
           </label>
           <label className="block col-span-2">

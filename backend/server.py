@@ -91,7 +91,7 @@ class UserPublic(BaseModel):
     id: str
     email: EmailStr
     name: str
-    role: Literal["admin", "buyer", "seller", "agent"] = "buyer"
+    role: Literal["admin", "buyer", "seller", "agent", "fund_manager"] = "buyer"
     organization: Optional[str] = None
     interests: List[str] = Field(default_factory=list)
     newsletter_opt_in: bool = False
@@ -110,7 +110,7 @@ class RegisterRequest(BaseModel):
     password: str
     name: str
     organization: Optional[str] = None
-    role: Literal["buyer", "seller", "agent"] = "buyer"
+    role: Literal["buyer", "seller", "agent", "fund_manager"] = "buyer"
     # Optional org bootstrap: requester can create a new org during signup
     # ("create" + org_name) or join one via a pending invite ("join" + org_invite_token).
     # Defaults to "none" — they'll work as an individual until invited later.
@@ -1154,13 +1154,13 @@ class AdminCreateUser(BaseModel):
     email: EmailStr
     password: str
     name: str
-    role: Literal["admin", "buyer", "seller", "agent"] = "buyer"
+    role: Literal["admin", "buyer", "seller", "agent", "fund_manager"] = "buyer"
     organization: Optional[str] = None
 
 
 class AdminUpdateUser(BaseModel):
     name: Optional[str] = None
-    role: Optional[Literal["admin", "buyer", "seller", "agent"]] = None
+    role: Optional[Literal["admin", "buyer", "seller", "agent", "fund_manager"]] = None
     organization: Optional[str] = None
     status: Optional[Literal["active", "deactivated"]] = None
 
@@ -1168,7 +1168,7 @@ class AdminUpdateUser(BaseModel):
 class AdminInviteRequest(BaseModel):
     email: EmailStr
     name: Optional[str] = None
-    role: Literal["admin", "buyer", "seller", "agent"] = "buyer"
+    role: Literal["admin", "buyer", "seller", "agent", "fund_manager"] = "buyer"
     organization: Optional[str] = None
     expires_hours: int = 168  # 7 days
 
@@ -1555,7 +1555,7 @@ async def admin_create_invite(body: AdminInviteRequest, request: Request, user=D
     # Fire the actual invitation email so the recipient doesn't have to be
     # hand-walked the URL. Best-effort; the API response still succeeds even
     # if Resend rejects (logged in mailer).
-    role_label = {"buyer": "Buyer", "seller": "Seller", "agent": "Advisor (broker / advisor)", "admin": "Admin"}.get(body.role, body.role)
+    role_label = {"buyer": "Buyer", "seller": "Seller", "agent": "Advisor (broker / advisor)", "fund_manager": "Fund Manager", "admin": "Admin"}.get(body.role, body.role)
     org_line = f" at <strong>{body.organization}</strong>" if body.organization else ""
     name_line = f" Hi {body.name},<br><br>" if body.name else " Hi,<br><br>"
     html = f"""
@@ -1588,7 +1588,7 @@ async def admin_resend_invite(iid: str, request: Request, user=Depends(get_curre
     origin = request.headers.get("origin") or request.headers.get("referer") or ""
     base = origin.rstrip("/").rsplit("/", 1)[0] if "/app/" in origin else origin.rstrip("/")
     accept_url = f"{base}/accept-invite?token={inv['token']}" if base else f"/accept-invite?token={inv['token']}"
-    role_label = {"buyer": "Buyer", "seller": "Seller", "agent": "Advisor (broker / advisor)", "admin": "Admin"}.get(inv.get("role", ""), inv.get("role", ""))
+    role_label = {"buyer": "Buyer", "seller": "Seller", "agent": "Advisor (broker / advisor)", "fund_manager": "Fund Manager", "admin": "Admin"}.get(inv.get("role", ""), inv.get("role", ""))
     org_line = f" at <strong>{inv['organization']}</strong>" if inv.get("organization") else ""
     name_line = f" Hi {inv['name']},<br><br>" if inv.get("name") else " Hi,<br><br>"
     html = f"""
@@ -11552,6 +11552,93 @@ async def remove_room_collaborator(rid: str, member_id: str, user=Depends(get_cu
 
 
 # Register router + middleware
+# ---------------------------------------------------------------------------
+# Funds (Phase 1.5) — the minimum needed for the fund context switcher.
+#
+# Only create/list/get live here. Commitments, capital calls, distributions,
+# holdings and the computed metrics (TVPI/DPI/IRR) arrive in Phases 2-6; this
+# exists now so the switcher has a real data source rather than a stub, and so
+# every fund-scoped page built from here on can filter by fund from day one.
+# ---------------------------------------------------------------------------
+
+class FundCreate(BaseModel):
+    name: str
+    target: Optional[float] = None          # target fund size
+    hard_cap: Optional[float] = None
+    vintage_year: Optional[int] = None
+    status: Literal["raising", "active", "harvesting", "closed"] = "raising"
+    currency: str = "USD"
+
+
+def _serialize_fund(doc: dict) -> dict:
+    return {
+        "id": doc["id"],
+        "name": doc.get("name"),
+        "target": doc.get("target"),
+        "hard_cap": doc.get("hard_cap"),
+        "vintage_year": doc.get("vintage_year"),
+        "status": doc.get("status", "raising"),
+        "currency": doc.get("currency", "USD"),
+        "created_at": doc.get("created_at"),
+    }
+
+
+async def _funds_for_user(user: dict) -> List[Dict[str, Any]]:
+    """Funds the caller can see: ones they manage, plus any owned by an org
+    they belong to. Admins see everything."""
+    if user.get("role") == "admin":
+        q: Dict[str, Any] = {}
+    else:
+        org_ids = await _get_user_org_ids(user)
+        clauses: List[Dict[str, Any]] = [{"manager_id": user["id"]}]
+        if org_ids:
+            clauses.append({"org_id": {"$in": org_ids}})
+        q = {"$or": clauses}
+    docs = await db.funds.find(q, {"_id": 0}).sort("created_at", 1).to_list(200)
+    return [_serialize_fund(d) for d in docs]
+
+
+@api_router.get("/funds")
+async def list_funds(user=Depends(get_current_user)):
+    """Powers the fund context switcher. Returns [] until a fund is created —
+    the UI treats that as 'no fund context yet', not an error."""
+    return await _funds_for_user(user)
+
+
+@api_router.post("/funds")
+async def create_fund(body: FundCreate, user=Depends(get_current_user)):
+    await require_role(user, ["fund_manager", "admin"])
+    now = now_utc().isoformat()
+    org_ids = await _get_user_org_ids(user)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": body.name.strip(),
+        "target": body.target,
+        "hard_cap": body.hard_cap,
+        "vintage_year": body.vintage_year,
+        "status": body.status,
+        "currency": body.currency,
+        "manager_id": user["id"],
+        "org_id": org_ids[0] if org_ids else None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.funds.insert_one(doc)
+    await log_audit(user["id"], "fund.create", doc["id"], {"name": doc["name"]})
+    return _serialize_fund(doc)
+
+
+@api_router.get("/funds/{fund_id}")
+async def get_fund(fund_id: str, user=Depends(get_current_user)):
+    visible = {f["id"] for f in await _funds_for_user(user)}
+    if fund_id not in visible:
+        raise HTTPException(status_code=404, detail="Fund not found")
+    doc = await db.funds.find_one({"id": fund_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Fund not found")
+    return _serialize_fund(doc)
+
+
 app.include_router(api_router)
 
 

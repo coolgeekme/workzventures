@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { useAgentMode } from "../lib/agentMode";
+import { useFundContext } from "../lib/fundContext";
 import { api } from "../lib/api";
 import { splitHostingEnabled, marketingUrl } from "../lib/hostRouting";
 import {
@@ -73,6 +74,27 @@ const ADMIN_NAV = [
   { to: "/app/audit", label: "Audit Logs", icon: ListChecks, group: "Platform (Admin)" },
 ];
 
+// Fund Manager (Phase 1). Every entry below points at a page that already
+// exists and already has real data — no placeholders. The fund-specific
+// pages (Fund Dashboard, Portfolio, Limited Partners, Meetings) arrive in
+// Phases 2-5 and slot into the "Fund Management" group.
+const FUND_NAV = [
+  { to: "/app/dashboard", label: "Dashboard", icon: House, group: "Core" },
+  { to: "/app/org", label: "My Team", icon: Buildings, group: "Fund Management" },
+  { to: "/app/rooms", label: "The Vault", icon: Files, group: "Diligence" },
+  { to: "/app/valuations", label: "Valuations", icon: Coins, group: "Diligence" },
+  { to: "/app/private-locker", label: "Private Locker", icon: Lock, group: "Diligence" },
+  { to: "/app/collateral", label: "Collateral", icon: NotePencil, group: "Engagement" },
+  { to: "/app/outreach", label: "Outreach", icon: PaperPlaneTilt, group: "Engagement" },
+  { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Engagement" },
+  { to: "/app/listings", label: "Deals", icon: Tag, group: "M&A" },
+  { to: "/app/buyers", label: "Buyer Discovery", icon: Crosshair, group: "M&A" },
+  { to: "/app/inquiries", label: "Inquiries", icon: Question, group: "M&A" },
+  { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
+  { to: "/app/security", label: "Security", icon: ShieldCheck, group: "Platform" },
+  { to: "/app/agents", label: "Automation Monitor", icon: ChartLineUp, group: "Platform" },
+];
+
 const COLLAB_NAV = [
   { to: "/app/listings", label: "My Collaborations", icon: Tag, group: "Deals" },
   { to: "/app/security", label: "Security", icon: ShieldCheck, group: "Account" },
@@ -98,6 +120,7 @@ function navFor(role, accountScope) {
   // on and have no access to platform-wide tools.
   if (accountScope === "collaborator") return COLLAB_NAV;
   if (role === "seller") return SELLER_NAV;
+  if (role === "fund_manager") return FUND_NAV;
   if (role === "admin") return ADMIN_NAV;
   // For "agent", caller should pass the agent's current workspace mode
   // ("buyer" | "seller") instead of "agent" — this is handled below in
@@ -138,6 +161,48 @@ function AgentModeSwitcher({ mode, onChange, dense = false }) {
   );
 }
 
+/**
+ * Fund context switcher. Sets the global "which fund" scope that every
+ * fund-scoped page reads. Shown only for fund managers (and admins), and
+ * only once at least one fund exists — with none, it prompts to create one
+ * rather than rendering an empty dropdown.
+ */
+function FundSwitcher({ funds, fundId, onSelect, loading }) {
+  if (loading) {
+    return (
+      <span className="text-[10px] font-mono-wz uppercase tracking-widest text-[var(--wz-text-tertiary)]">
+        loading funds…
+      </span>
+    );
+  }
+  if (!funds.length) {
+    return (
+      <span
+        data-testid="fund-switcher-empty"
+        className="text-[10px] font-mono-wz uppercase tracking-widest text-[var(--wz-text-tertiary)]"
+        title="Create a fund to scope these pages to it"
+      >
+        no fund yet
+      </span>
+    );
+  }
+  return (
+    <select
+      data-testid="fund-switcher"
+      value={fundId || ""}
+      onChange={(e) => onSelect(e.target.value)}
+      title="Which fund these pages are scoped to"
+      className="bg-transparent border border-[var(--wz-border)] text-xs px-2 py-1 text-[var(--wz-text)] focus:outline-none"
+    >
+      {funds.map((f) => (
+        <option key={f.id} value={f.id}>
+          {f.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 export default function Layout({ children }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
@@ -166,6 +231,9 @@ export default function Layout({ children }) {
   }, [user, location.pathname]);
 
   const [agentMode, setAgentMode] = useAgentMode();
+  // Fund scope is only fetched for roles that can actually have funds.
+  const isFundManager = user?.role === "fund_manager" || user?.role === "admin";
+  const { funds, fundId, selectFund, loading: fundsLoading } = useFundContext(isFundManager);
   // For role="agent" the nav, chrome accents and pills follow whichever
   // workspace mode the agent is currently in. Other roles are unaffected.
   const effectiveRole = user?.role === "agent" ? agentMode : user?.role;
@@ -182,7 +250,9 @@ export default function Layout({ children }) {
       ? "pill-amber"
       : effectiveRole === "admin"
         ? "pill-positive"
-        : "pill-gold";
+        : effectiveRole === "fund_manager"
+          ? "pill-positive"
+          : "pill-gold";
 
   return (
     <div className="min-h-screen lg:grid lg:grid-cols-[260px_1fr] grain" data-testid="app-shell">
@@ -203,9 +273,11 @@ export default function Layout({ children }) {
                     ? `Advisor · ${isSeller ? "Sell-side" : "Buy-side"} mode`
                     : isSeller
                       ? "Sell-side console"
-                      : user?.role === "admin"
-                        ? "Admin · platform"
-                        : "Buy-side console"}
+                      : user?.role === "fund_manager"
+                        ? "Fund Manager console"
+                        : user?.role === "admin"
+                          ? "Admin · platform"
+                          : "Buy-side console"}
               </div>
             </div>
           </Link>
@@ -309,6 +381,9 @@ export default function Layout({ children }) {
           </div>
           <div className="flex items-center gap-4 text-xs">
             {isAgent && <AgentModeSwitcher mode={agentMode} onChange={setAgentMode} />}
+            {isFundManager && !isCollabOnly && (
+              <FundSwitcher funds={funds} fundId={fundId} onSelect={selectFund} loading={fundsLoading} />
+            )}
             <span className="font-mono-wz text-[var(--wz-text-secondary)]">
               UTC {time.toISOString().substring(11, 19)}
             </span>
@@ -319,9 +394,11 @@ export default function Layout({ children }) {
                   ? `Advisor · ${isSeller ? "Sell-side" : "Buy-side"}`
                   : isSeller
                     ? "NextCapOS · Sell-side"
-                    : user?.role === "admin"
-                      ? "NextCapOS · Admin"
-                      : "NextCapOS · Buy-side"}
+                    : user?.role === "fund_manager"
+                      ? "NextCapOS · Fund Manager"
+                      : user?.role === "admin"
+                        ? "NextCapOS · Admin"
+                        : "NextCapOS · Buy-side"}
             </span>
             <ThemeToggle testId="theme-toggle-btn-desktop" />
           </div>

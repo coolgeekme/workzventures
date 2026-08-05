@@ -11,6 +11,7 @@ const ROLE_OPTIONS = [
   { id: "buyer", label: "Buyer" },
   { id: "seller", label: "Seller" },
   { id: "agent", label: "Advisor (broker / advisor — both sides)" },
+  { id: "fund_manager", label: "Fund Manager (funds, LPs, portfolio)" },
   { id: "admin", label: "Admin" },
 ];
 
