@@ -1,6 +1,28 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-55 · Mirror PR #7 — Fund Manager Role Gate Fix (2026-02-17)
+Cherry-picked commit `c80abd9` from `gh/main` (PR #7 from `fix/fund-manager-role-gates` branch). Clean pick. 1 file changed, +23/-23.
+
+**Bug**: After Iter-54 added the `fund_manager` role and nav, 7 write endpoints still used inline role tuples written before the role existed. Fund Managers could browse (read-only) but every write action returned 403.
+
+**Fixed 7 endpoints** (`backend/server.py`):
+- `POST /api/listings`
+- `DELETE /api/listings/{lid}/staged-files/{file_id}`
+- `POST /api/newsletter/draft`
+- `POST /api/newsletter/personal`
+- `POST /api/composio/zoho/push-lead/{inquiry_id}`
+- `POST /api/inquiries/{inquiry_id}/open-room`
+- `GET /api/newsletter/recipient-candidates`
+
+Also updated 2 error strings that now name three roles instead of two.
+
+**Verified**: `fund_manager` now appears in the role tuple gates across all affected endpoints (grep confirms 15+ occurrences in server.py). Backend hot-reloaded, health check 200.
+
+Deploy required for production.
+
+
+
 ## Iter-54 · Mirror PR #6 — Fund Manager Role & Fund Switcher (2026-02-17)
 Cherry-picked commit `c02a53c` from `gh/main` (PR #6 from `phase-1/fund-manager-role-and-switcher` branch). Clean pick, no conflicts. 7 files changed, +293/-15.
 
