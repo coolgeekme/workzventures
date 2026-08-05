@@ -1,6 +1,25 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-53 · Mirror PR #5 — Naming Cleanup: Listing → Deal (2026-02-17)
+Cherry-picked commit `cfb46cd` from `gh/main` (PR #5 from `naming/collisions-and-deal-rename` branch). Clean pick, no conflicts. 25 files changed, +121/−94.
+
+**Three decisions from the Fund Manager roadmap**:
+1. **"Agent" collision resolved**: role id `"agent"` unchanged (no migration, no JWT churn); UI now renders it as **"Advisor"** via new `frontend/src/lib/roleLabels.js`. The AI job page is renamed to **"Automation Monitor"** so the word Agent is reserved for platform automations.
+2. **"Organization" collision resolved**: the broker/team page is now **"My Team"** (was "Organization"), freeing the "Organization" label for the upcoming Fund Manager entities page.
+3. **Listing → Deal (UI copy only)**: all visible strings ("Listings" → "Deals", "New Listing" → "New Deal", etc.). Routes (`/app/listings`), DB collection (`db.listings`), field names (`listing_id`), and all 25 `data-testid`s are intact — so **zero migration, zero broken bookmarks, zero test churn**.
+
+**Verified**:
+- `/app/listings` route still resolves (screenshot: "My deals" page renders correctly)
+- `db.listings` collection unchanged (50 references in server.py preserved)
+- All `data-testid="listing-*"` attributes preserved
+- New `roleLabels.js` module exports `ROLE_LABELS`, `ROLE_LABELS_LONG`, and `roleLabel(role)` helper
+- Lint green
+
+Deploy required for production.
+
+
+
 ## Iter-51 · Mirror PR #4 — ZIP Upload Expansion in Data Rooms (2026-02-17)
 Cherry-picked commit `5164a4f` from `gh/main` (PR #4 from `codex/fix-data-room-zip` branch). Clean pick, no conflicts.
 
