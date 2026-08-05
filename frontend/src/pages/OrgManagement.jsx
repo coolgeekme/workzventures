@@ -40,7 +40,7 @@ export default function OrgManagement() {
   const acceptOrgInvite = async (token) => {
     try {
       await api.post(`/org-invites/${token}/accept`);
-      toast.success("Joined the organization");
+      toast.success("Joined the team");
       await loadOrgs();
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Could not accept invite");
@@ -50,7 +50,7 @@ export default function OrgManagement() {
   const acceptListingInvite = async (token) => {
     try {
       await api.post(`/listing-invites/${token}/accept`);
-      toast.success("Joined the listing");
+      toast.success("Joined the deal");
       await loadOrgs();
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Could not accept invite");
@@ -152,11 +152,11 @@ export default function OrgManagement() {
             <div className="overline mb-1">Workspace</div>
             <h1 className="font-display text-3xl tracking-tighter font-medium flex items-center gap-3">
               <Buildings size={28} className="text-[var(--wz-gold)]" />
-              Organizations
+              My Team
             </h1>
             <p className="text-sm text-[var(--wz-text-secondary)] mt-2 max-w-xl">
-              Orgs let agents, brokers and analyst teams collaborate on listings and research.
-              Listings and deal rooms attached to an org survive any individual leaving.
+              Teams let advisors, brokers and analysts collaborate on deals and research.
+              Deals and deal rooms attached to a team survive any individual leaving.
             </p>
           </div>
           <button
@@ -164,7 +164,7 @@ export default function OrgManagement() {
             onClick={() => setShowCreate((s) => !s)}
             className="wz-btn wz-btn-gold flex items-center gap-2"
           >
-            <Plus size={14} /> New organization
+            <Plus size={14} /> New team
           </button>
         </div>
 
@@ -183,7 +183,7 @@ export default function OrgManagement() {
                   <div className="min-w-0">
                     <div className="text-sm font-medium truncate">{iv.org_name}</div>
                     <div className="text-xs text-[var(--wz-text-tertiary)]">
-                      Organization · {iv.role.replace("_", " ")}
+                      Team · {iv.role.replace("_", " ")}
                       {iv.invited_by_name ? ` · invited by ${iv.invited_by_name}` : ""}
                       · expires {new Date(iv.expires_at).toLocaleDateString()}
                     </div>
@@ -222,7 +222,7 @@ export default function OrgManagement() {
 
         {showCreate && (
           <form onSubmit={createOrg} className="wz-card p-5 sm:p-6 space-y-4" data-testid="org-create-form">
-            <h3 className="text-lg font-display tracking-tight">Create an organization</h3>
+            <h3 className="text-lg font-display tracking-tight">Create a team</h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <label className="block">
                 <div className="overline mb-2">Name *</div>
@@ -276,11 +276,11 @@ export default function OrgManagement() {
             <Buildings size={32} className="mx-auto text-[var(--wz-text-tertiary)] mb-3" />
             <h3 className="font-display text-xl mb-2">You don't belong to an org yet</h3>
             <p className="text-sm text-[var(--wz-text-secondary)] max-w-md mx-auto mb-5">
-              Create one to invite your team and centralize listings, research, and deal rooms.
+              Create one to invite your team and centralize deals, research, and deal rooms.
               You can also wait for an invitation from someone else.
             </p>
             <button onClick={() => setShowCreate(true)} className="wz-btn wz-btn-gold inline-flex items-center gap-2">
-              <Plus size={14} /> Create your first organization
+              <Plus size={14} /> Create your first team
             </button>
           </div>
         ) : (

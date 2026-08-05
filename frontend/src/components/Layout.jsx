@@ -10,6 +10,7 @@ import {
   Storefront, Tag, Question, ChartBar, Files, ShieldCheck, Crosshair, Bell, Lock, UsersThree, Buildings,
   Coins,
 } from "@phosphor-icons/react";
+import { roleLabel } from "../lib/roleLabels";
 import Logo from "./Logo";
 import ThemeToggle from "./ThemeToggle";
 import MobileTopbar from "./MobileTopbar";
@@ -26,14 +27,14 @@ const BUYER_NAV = [
   { to: "/app/private-locker", label: "Private Locker", icon: Lock, group: "Diligence" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Engagement" },
   { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
-  { to: "/app/org", label: "Organization", icon: Buildings, group: "Platform" },
+  { to: "/app/org", label: "My Team", icon: Buildings, group: "Platform" },
   { to: "/app/security", label: "Security", icon: ShieldCheck, group: "Platform" },
-  { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp, group: "Platform" },
+  { to: "/app/agents", label: "Automation Monitor", icon: ChartLineUp, group: "Platform" },
 ];
 
 const SELLER_NAV = [
   { to: "/app/dashboard", label: "Dashboard", icon: House, group: "Core" },
-  { to: "/app/listings", label: "My Listings", icon: Tag, group: "Deal Marketing" },
+  { to: "/app/listings", label: "My Deals", icon: Tag, group: "Deal Marketing" },
   { to: "/app/collateral", label: "Collateral", icon: NotePencil, group: "Deal Marketing" },
   { to: "/app/buyers", label: "Buyer Discovery", icon: Crosshair, group: "Deal Marketing" },
   { to: "/app/outreach", label: "Outreach", icon: PaperPlaneTilt, group: "Deal Marketing" },
@@ -43,16 +44,16 @@ const SELLER_NAV = [
   { to: "/app/leads", label: "Lead Nurturing", icon: Kanban, group: "Pipeline" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Pipeline" },
   { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
-  { to: "/app/org", label: "Organization", icon: Buildings, group: "Platform" },
+  { to: "/app/org", label: "My Team", icon: Buildings, group: "Platform" },
   { to: "/app/security", label: "Security", icon: ShieldCheck, group: "Platform" },
-  { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp, group: "Platform" },
+  { to: "/app/agents", label: "Automation Monitor", icon: ChartLineUp, group: "Platform" },
 ];
 
 const ADMIN_NAV = [
   { to: "/app/dashboard", label: "Dashboard", icon: ChartBar, group: "Core" },
   { to: "/app/research", label: "Research Hub", icon: MagnifyingGlass, group: "Buyer Tools" },
   { to: "/app/marketplace", label: "Marketplace", icon: Storefront, group: "Buyer Tools" },
-  { to: "/app/listings", label: "Listings", icon: Tag, group: "Seller Tools" },
+  { to: "/app/listings", label: "Deals", icon: Tag, group: "Seller Tools" },
   { to: "/app/collateral", label: "Collateral", icon: NotePencil, group: "Seller Tools" },
   { to: "/app/buyers", label: "Buyer Discovery", icon: Crosshair, group: "Seller Tools" },
   { to: "/app/outreach", label: "Outreach", icon: PaperPlaneTilt, group: "Seller Tools" },
@@ -64,16 +65,16 @@ const ADMIN_NAV = [
   { to: "/app/leads", label: "Leads", icon: Kanban, group: "Pipeline" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Pipeline" },
   { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
-  { to: "/app/org", label: "Organization", icon: Buildings, group: "Platform (Admin)" },
+  { to: "/app/org", label: "My Team", icon: Buildings, group: "Platform (Admin)" },
   { to: "/app/admin/users", label: "Users", icon: UsersThree, group: "Platform (Admin)" },
   { to: "/app/security", label: "Security", icon: ShieldCheck, group: "Platform (Admin)" },
   { to: "/app/mcp", label: "MCP Console", icon: Terminal, group: "Platform (Admin)" },
-  { to: "/app/agents", label: "Agent Monitor", icon: ChartLineUp, group: "Platform (Admin)" },
+  { to: "/app/agents", label: "Automation Monitor", icon: ChartLineUp, group: "Platform (Admin)" },
   { to: "/app/audit", label: "Audit Logs", icon: ListChecks, group: "Platform (Admin)" },
 ];
 
 const COLLAB_NAV = [
-  { to: "/app/listings", label: "My Collaborations", icon: Tag, group: "Listings" },
+  { to: "/app/listings", label: "My Collaborations", icon: Tag, group: "Deals" },
   { to: "/app/security", label: "Security", icon: ShieldCheck, group: "Account" },
 ];
 
@@ -197,9 +198,9 @@ export default function Layout({ children }) {
               <div className="font-display font-medium tracking-tighter text-lg leading-none">NextCapOS</div>
               <div className="overline mt-1">
                 {isCollabOnly
-                  ? "Collaborator · listing-scoped"
+                  ? "Collaborator · deal-scoped"
                   : isAgent
-                    ? `Agent · ${isSeller ? "Sell-side" : "Buy-side"} mode`
+                    ? `Advisor · ${isSeller ? "Sell-side" : "Buy-side"} mode`
                     : isSeller
                       ? "Sell-side console"
                       : user?.role === "admin"
@@ -218,7 +219,7 @@ export default function Layout({ children }) {
             >
               <div className="overline mb-2 text-[var(--wz-gold)]">Become a full member</div>
               <p className="text-xs text-[var(--wz-text-secondary)] leading-relaxed mb-3">
-                You&apos;re collaborating on listings as a guest. Unlock Buyer Discovery,
+                You&apos;re collaborating on deals as a guest. Unlock Buyer Discovery,
                 Outreach, Newsletter, your own Vault and more.
               </p>
               <a
@@ -271,7 +272,7 @@ export default function Layout({ children }) {
         <div className="border-t border-[var(--wz-border)] p-4">
           <div className="text-xs text-[var(--wz-text-secondary)] truncate" data-testid="user-name">{user?.name}</div>
           <div className="mt-2 flex items-center gap-2">
-            <span className={`pill ${rolePillClass}`} data-testid="role-pill">{user?.role}</span>
+            <span className={`pill ${rolePillClass}`} data-testid="role-pill">{roleLabel(user?.role)}</span>
             <span className="text-[10px] font-mono-wz text-[var(--wz-text-tertiary)] uppercase tracking-widest truncate">
               {user?.organization || "no org"}
             </span>
@@ -315,7 +316,7 @@ export default function Layout({ children }) {
               {isCollabOnly
                 ? "NextCapOS · Collaborator"
                 : isAgent
-                  ? `Agent · ${isSeller ? "Sell-side" : "Buy-side"}`
+                  ? `Advisor · ${isSeller ? "Sell-side" : "Buy-side"}`
                   : isSeller
                     ? "NextCapOS · Sell-side"
                     : user?.role === "admin"

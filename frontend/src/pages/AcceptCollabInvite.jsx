@@ -76,7 +76,7 @@ export default function AcceptCollabInvite({ kind = "org" }) {
           <div className="mt-6 text-sm text-[var(--wz-text-secondary)]">Loading invite…</div>
         ) : (
           <>
-            <div className="overline mt-4">{kind === "org" ? "Organization invitation" : "Listing invitation"}</div>
+            <div className="overline mt-4">{kind === "org" ? "Organization invitation" : "Deal invitation"}</div>
             <h1 className="font-display text-2xl tracking-tighter font-medium mt-3 mb-2">
               {kind === "org" ? invite.org_name : invite.listing_name}
             </h1>

@@ -10,7 +10,7 @@ import { useAuth } from "../lib/auth";
 const ROLE_OPTIONS = [
   { id: "buyer", label: "Buyer" },
   { id: "seller", label: "Seller" },
-  { id: "agent", label: "Agent (broker / advisor — both sides)" },
+  { id: "agent", label: "Advisor (broker / advisor — both sides)" },
   { id: "admin", label: "Admin" },
 ];
 
