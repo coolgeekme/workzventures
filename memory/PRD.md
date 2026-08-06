@@ -1,6 +1,34 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-59 · Mirror PR #10 — Permission Map & Parity Harness (2026-02-17)
+Cherry-picked commit `cade03b` from `gh/main` (PR #10 from `phase-1.75b/permission-enforcement` branch). Clean pick. 3 files, +128 lines.
+
+**Purpose**: Phase 1.75b (1/2). Before flipping the request path from inline role tuples to permission keys, this PR maps every gated endpoint to a permission key AND adds a parity harness that compares the map against the actual role gate in `server.py` — catching silent permission changes BEFORE they ship.
+
+**Four real defects the harness caught during mapping** (already fixed in this PR):
+1. `composio/zoho/push-lead` had been mapped to `integrations.manage` — but every buyer holds that key, which would have widened access. Remapped to `leads.manage`, matching the old gate exactly.
+2. `newsletter/personal` had been mapped to `newsletter.read` — sellers hold read, which would have granted them access. Added a narrow `newsletter.personal` key.
+3. Listings staged-file deletion is buyer-side (buyer's staging), not `deals.update`. Added `deals.stage_files` key granted to the roles the old gate allowed.
+4. `fund_manager` lacked `research.create`, so conversion would have silently revoked detailed research fund_managers can run today.
+
+**Files added**:
+- `backend/permission_map.py` (71 lines) — `ENDPOINT_PERMISSIONS`, `ADMIN_ONLY`, `BRANCH_LEVEL_ONLY` tables
+- `backend/check_parity.py` (50 lines) — runnable diff between the map and server.py's actual role tuples
+- `backend/permissions.py` (+7 lines) — 4 new permission keys (`leads.manage`, `newsletter.personal`, `deals.stage_files`, plus `research.create` grant for fund_manager). Catalog now 45 keys (was 41).
+
+**Verified**:
+- `python3 backend/check_parity.py` → `mapped: 29 · mismatches: 0 · unmapped gates: 0` ✅
+- All 4 new permission keys present in `PERMISSIONS`
+- Lint clean, backend health 200
+- **Still zero enforcement change** — server.py's request path is untouched. Enforcement conversion is Phase 1.75b (2/2).
+
+The remaining 56 checks are ownership-based and org-role combinations that need per-case handling; they're the second half of 1.75b.
+
+Deploy required for production. Safe to ship anytime — no behavior change.
+
+
+
 ## Iter-58 · Mirror PR #9 — Roles & Permissions Foundation (2026-02-17)
 Cherry-picked commit `95fb191` from `gh/main` (PR #9 from `phase-1.75a/permissions-foundation` branch). Clean pick. 2 files, +343 lines.
 
