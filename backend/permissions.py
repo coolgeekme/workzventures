@@ -12,12 +12,14 @@ The agreed visibility rule is ``peers_and_below``: you see your own records,
 your peers' (people reporting to the same manager), and everyone beneath you in
 the reporting line — but not your manager's.
 
-STATUS: foundation only. Nothing in the request path consults these helpers
-yet; the existing inline role checks remain authoritative. This module can be
-deployed with zero behaviour change, and the conversion happens in 1.75b.
+STATUS: enforcing on the endpoints listed in `permission_map.py`. The
+remaining ownership and org-role checks still run through their original
+inline logic and are converted in the next pass.
 """
 
 from typing import Any, Dict, List, Optional, Set
+
+from fastapi import HTTPException
 
 # --------------------------------------------------------------------------
 # Permission catalogue
@@ -296,3 +298,22 @@ async def visible_user_ids(db, user: dict, scope: str) -> Optional[Set[str]]:
     if scope == "peers_and_below":
         ids |= await _peer_ids(db, user)
     return ids
+
+
+# --------------------------------------------------------------------------
+# Enforcement
+# --------------------------------------------------------------------------
+
+async def require_permission(db, user: dict, permission: str) -> str:
+    """Raise 403 unless the user holds `permission`; return its scope.
+
+    The scope is returned so callers that also need row filtering can pass it
+    straight to `visible_user_ids` without a second lookup.
+    """
+    scope = await scope_for(db, user, permission)
+    if scope == "none":
+        raise HTTPException(
+            status_code=403,
+            detail=f"Your role does not allow this action ({permission})",
+        )
+    return scope
