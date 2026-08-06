@@ -334,3 +334,24 @@ async def require_permission(db, user: dict, permission: str) -> str:
             detail=f"Your role does not allow this action ({permission})",
         )
     return scope
+
+
+async def can_access_record(db, user: dict, permission: str, owner_id: Optional[str]) -> bool:
+    """True if the caller may act on a record owned by `owner_id`.
+
+    Combines both axes: they must hold the permission at all, and the owner
+    must fall inside the scope it grants. With scope "own" this reproduces the
+    familiar `role != admin and doc.user_id != user.id` check exactly.
+    """
+    scope = await scope_for(db, user, permission)
+    if scope == "none":
+        return False
+    ids = await visible_user_ids(db, user, scope)
+    return ids is None or owner_id in ids
+
+
+async def require_record_access(db, user: dict, permission: str, owner_id: Optional[str]) -> None:
+    """403 unless the caller may act on this record. Use `can_access_record`
+    directly where the endpoint deliberately answers 404 to hide existence."""
+    if not await can_access_record(db, user, permission, owner_id):
+        raise HTTPException(status_code=403, detail="Not yours to access")
