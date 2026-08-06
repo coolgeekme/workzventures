@@ -10593,6 +10593,15 @@ async def _seed_demo_vault():
 @app.on_event("startup")
 async def seed_demo():
     await seed_demo_user()
+    # Phase 1.75a: keep the built-in roles in sync with the permission
+    # catalogue. Idempotent, and does not affect enforcement yet.
+    try:
+        from permissions import seed_system_roles
+        added = await seed_system_roles(db)
+        if added:
+            logger.info(f"seeded {added} system role(s)")
+    except Exception as e:
+        logger.warning(f"system role seeding skipped: {e}")
     # Iter-56: Ensure indexes on hot query paths. Every authenticated request
     # hits `users.id`, login hits `users.email`, list endpoints filter by
     # `user_id`, `room_id`, `listing_id`, etc. Without these, Mongo does a
@@ -11704,6 +11713,49 @@ async def get_fund(fund_id: str, user=Depends(get_current_user)):
     if not doc:
         raise HTTPException(status_code=404, detail="Fund not found")
     return _serialize_fund(doc)
+
+
+# ---------------------------------------------------------------------------
+# Roles & permissions (Phase 1.75a — read-only)
+#
+# These expose the catalogue and the seeded roles. Enforcement still runs
+# through the existing inline role checks; the conversion is 1.75b.
+# ---------------------------------------------------------------------------
+
+@api_router.get("/permissions/catalog")
+async def permission_catalog(user=Depends(get_current_user)):
+    """Every grantable permission and scope, for the role editor."""
+    from permissions import PERMISSIONS, SCOPES, SCOPE_LABELS
+    return {
+        "permissions": [{"key": k, "label": v} for k, v in sorted(PERMISSIONS.items())],
+        "scopes": [{"key": s, "label": SCOPE_LABELS[s]} for s in SCOPES],
+    }
+
+
+@api_router.get("/roles")
+async def list_roles(user=Depends(get_current_user)):
+    await require_role(user, ["admin"])
+    docs = await db.roles.find({}, {"_id": 0}).sort("name", 1).to_list(200)
+    return docs
+
+
+@api_router.get("/roles/mine")
+async def my_effective_permissions(user=Depends(get_current_user)):
+    """What the caller can do under the new model.
+
+    Advisory only while 1.75b is outstanding — useful for confirming a seeded
+    role matches the behaviour the old checks actually produce.
+    """
+    from permissions import roles_for_user, widest_scope
+    docs = await roles_for_user(db, user)
+    merged: Dict[str, str] = {}
+    for d in docs:
+        for k, sc in (d.get("permissions") or {}).items():
+            merged[k] = widest_scope([merged.get(k, "none"), sc])
+    return {
+        "roles": [{"key": d.get("key"), "name": d.get("name")} for d in docs],
+        "permissions": merged,
+    }
 
 
 app.include_router(api_router)
