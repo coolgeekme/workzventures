@@ -180,7 +180,10 @@ SYSTEM_ROLES: List[Dict[str, Any]] = [
         "key": "fund_manager",
         "name": "Fund Manager",
         "description": "Run funds, LP relationships and the portfolio.",
-        "permissions": _grant(_FUND_MANAGER_KEYS, "org"),
+        # "own" preserves current behaviour exactly — today a fund manager
+        # sees only their own records everywhere scope is applied. Widening
+        # to "org" is an admin decision, not a side effect of conversion.
+        "permissions": _grant(_FUND_MANAGER_KEYS, "own"),
     },
 ]
 
@@ -283,14 +286,28 @@ async def _peer_ids(db, user: dict) -> Set[str]:
 async def visible_user_ids(db, user: dict, scope: str) -> Optional[Set[str]]:
     """User ids whose records are visible under `scope`.
 
-    Returns None to mean "no restriction" (scopes `all` and `org`; the caller
-    applies its own org filter for the latter). Returns an empty set for
-    `none`, which callers must treat as "deny", not "unfiltered".
+    Returns None ONLY for `all` — the single scope that means no restriction.
+    Every other scope resolves to a concrete set, so a mistake narrows access
+    rather than exposing everything. Returns an empty set for `none`, which
+    callers must treat as deny.
     """
-    if scope in ("all", "org"):
+    if scope == "all":
         return None
     if scope == "none":
         return set()
+
+    if scope == "org":
+        # Everyone sharing an org with this user, plus the user.
+        rows = await db.org_memberships.find(
+            {"user_id": user["id"]}, {"_id": 0, "org_id": 1}
+        ).to_list(200)
+        org_ids = [r["org_id"] for r in rows]
+        if not org_ids:
+            return {user["id"]}
+        members = await db.org_memberships.find(
+            {"org_id": {"$in": org_ids}}, {"_id": 0, "user_id": 1}
+        ).to_list(5000)
+        return {m["user_id"] for m in members} | {user["id"]}
 
     ids: Set[str] = {user["id"]}
     if scope in ("descendants", "peers_and_below"):
