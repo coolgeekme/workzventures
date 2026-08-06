@@ -1,6 +1,33 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-58 · Mirror PR #9 — Roles & Permissions Foundation (2026-02-17)
+Cherry-picked commit `95fb191` from `gh/main` (PR #9 from `phase-1.75a/permissions-foundation` branch). Clean pick. 2 files, +343 lines.
+
+**Purpose**: Groundwork for Decision 6 (admins define their own roles instead of the four fixed profiles). This phase adds the module and read endpoints ONLY — the existing inline role checks remain authoritative. Conversion of the request path is Phase 1.75b.
+
+**New module — `backend/permissions.py` (291 lines)**:
+- **Permission catalogue** — 41 permission keys as the single source of truth (e.g. `listings.create`, `funds.manage`, `research.run`, etc.)
+- **6 scopes** ordered by permissiveness: `none < own < descendants < peers_and_below < org < all`. The agreed visibility rule is **`peers_and_below`**: your own records + your peers' + everyone below you — never your manager's
+- **Hierarchy resolution** over `manager_id` reporting line, with depth cap so a cycle can't hang the request
+- **5 legacy roles seeded** as non-deletable system roles (`admin`, `buyer`, `seller`, `agent`, `fund_manager`), each with a permission set that reproduces what they can do today
+- **`widest_scope()`** — when a user holds multiple roles, returns the most permissive scope. Verified: `widest_scope(['own', 'peers_and_below']) → 'peers_and_below'`, `['own','all'] → 'all'`
+
+**3 new read-only endpoints** (in `server.py`):
+- `GET /api/permissions/catalog` — 41 keys + 6 scopes with labels
+- `GET /api/roles` — lists seeded system roles (foundation for the admin UI in Phase 1.75c)
+- `GET /api/roles/mine` — current user's role IDs + effective permissions (so the 1.75c admin UI can compare seeded roles to old check semantics)
+
+**Verified live**:
+- All 3 endpoints return 200 with expected payloads
+- Admin sees all 41 permissions
+- `widest_scope` verified for 4 test cases
+- Module lint-clean, no runtime errors, backend health 200
+
+Deploy required for production. **No behavior change** — safe to ship anytime.
+
+
+
 ## Iter-56 · Code Review Fixes (2026-02-17)
 Fixed 2 MEDIUMs + all LOWs from the Iter-55 code review report.
 
