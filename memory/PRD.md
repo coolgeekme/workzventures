@@ -1,6 +1,37 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-62 · Mirror PR #13 — Single-Owner Record Gates (2026-02-17)
+Cherry-picked commit `08185d4` from `gh/main` (PR #13 — merged). Clean pick. 2 files, +38/-15.
+
+**Converts 9 ownership gates** from `role != admin and record.owner != me` to permission + scope checks:
+- 3 detailed-report gates → `require_record_access(research.read)`
+- 2 buyer-match gates → `require_record_access(buyers.run)`
+- 4 buyer-match gates → `can_access_record(leads.manage)`
+
+**Inline role checks: 57 → 48.**
+
+**Two deliberate preservations**:
+1. **4 buyer-discovery endpoints keep answering 404, not 403**, when the caller doesn't own the match. That hides whether the match exists at all — using non-raising `can_access_record()` and returning 404 as before. Converting to 403 would have leaked existence.
+2. **`GET /research/detail/{rid}` NOT converted** — reads `db.research` (basic briefs) rather than `detailed_reports`; sellers can own briefs while lacking `research.read`, and gating it would have revoked access to their own data. Left inline for the research-surface pass.
+
+**Two new helpers in `permissions.py`**:
+- `can_access_record(db, user, permission, owner_id) → bool` — combined permission + scope check
+- `require_record_access(db, user, permission, owner_id) → None` — raises 403
+
+**Verified live** against real DB:
+- owner buyer sees own record → True ✅
+- admin sees any record → True ✅
+- non-owner seller sees buyer record → False ✅
+- buyer without `leads.manage` → False ✅
+- `check_enforcement.py` → 29 checked, 0 problems ✅
+- Full pytest suite: **68/68 pass** ✅
+- Backend health 200, 205 routes intact
+
+Deploy required for production.
+
+
+
 ## Iter-61 · Mirror PR #12 — Ownership Scope Applied to Buyer-Alerts (2026-02-17)
 Cherry-picked commit `9289107` from `gh/main` (PR #12 — merged). Clean pick. 2 files, +48/-16.
 
