@@ -1,6 +1,32 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-60 · Mirror PR #11 — Phase 1.75b (2/2): Enforce Permissions (2026-02-17)
+Cherry-picked commit `17b8742` from `gh/phase-1.75b2/enforce-mapped-gates` (PR #11, currently OPEN on GitHub — not yet merged, but the user asked to mirror it). Clean pick. 3 files, +91/-48.
+
+**⚠️ This is the first behavior-affecting swap** — 29 mapped endpoints are now enforced via `require_permission()` instead of inline role tuples. Inline role checks dropped from 85 → 62; remainder are ownership/org-role combinations for the next pass.
+
+**Conversion breakdown**:
+- **22 hard gates** now call `require_permission()` → 403 with clean message `"Your role does not allow this action (<perm.key>)"`
+- **6 admin-only** platform operations kept their existing gate (unchanged behavior)
+- **1 soft gate deliberately preserved**: `GET /buyer-alerts/count`. Previous implementation returned `{"unseen": 0}` on unauthorized (never raised). Frontend polls it on every page for every role, so a naive 403 would have flooded consoles for buyers on every nav. New behavior checks `scope_for(...) == "none"` and returns the same `{"unseen": 0}` default — behaviour preserved exactly.
+
+**Files touched**:
+- `backend/server.py` — request-path conversion (+24/-48). Backend parses cleanly, 205 routes intact.
+- `backend/permissions.py` (+27 lines) — `require_permission()`, `scope_for()`, and hierarchy resolver tightened
+- `backend/check_enforcement.py` (new, 40 lines) — post-conversion audit: every mapped endpoint must call the right permission AND must not carry an old role tuple
+
+**Verified end-to-end**:
+- `python3 backend/check_enforcement.py` → **`checked 29 mapped endpoints, 0 problem(s)`** ✅
+- Live 403 test: buyer POST `/newsletter/draft` → `403 "Your role does not allow this action (newsletter.send)"` ✅
+- Live positive: buyer POST `/research/detailed` → 200 (buyer holds `research.create`) ✅
+- Full pytest suite: **64/64 pass** ✅
+- Backend health 200 after restart, no import/runtime errors
+
+Deploy required for production.
+
+
+
 ## Iter-59 · Mirror PR #10 — Permission Map & Parity Harness (2026-02-17)
 Cherry-picked commit `cade03b` from `gh/main` (PR #10 from `phase-1.75b/permission-enforcement` branch). Clean pick. 3 files, +128 lines.
 
