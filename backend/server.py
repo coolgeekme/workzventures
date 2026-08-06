@@ -73,6 +73,10 @@ logger = logging.getLogger("workz")
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
+
+# Phase 1.75b: permission enforcement for the endpoints listed in
+# permission_map.py. Ownership and org-role checks are still inline.
+from permissions import require_permission, scope_for  # noqa: E402
 gridfs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="deal_room_files_fs")
 listing_files_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="listing_staged_files_fs")
 private_locker_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="private_locker_fs")
@@ -1820,8 +1824,7 @@ def _viewer_role_on_listing(listing: dict, user: dict) -> str:
 
 @api_router.post("/listings")
 async def create_listing(body: ListingCreate, user=Depends(get_current_user), org_id: Optional[str] = None):
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Sellers, advisors and fund managers only")
+    await require_permission(db, user, "deals.create")
     # If an org_id is supplied, the creator must be a member of it. If omitted
     # and the user has exactly one org, default to it. Otherwise the listing
     # is individually owned (legacy behavior).
@@ -2200,8 +2203,7 @@ PRIVATE_LOCKER_FOLDERS = ("notes", "modeling", "memos", "external", "other")
 
 
 async def _private_locker_guard(user) -> None:
-    if user.get("role") not in ("buyer", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Private Locker is buyer-only")
+    await require_permission(db, user, "deals.stage_files")
 
 
 @api_router.get("/private-locker/files")
@@ -3740,8 +3742,7 @@ async def create_detailed_report(body: DetailedAnalysisRequest, user=Depends(get
     until status flips to `completed` or `failed`. The pipeline (Perplexity + 4× Brave +
     Claude 4.5 with grounded context) typically takes 60-180s — well beyond the ingress
     60s read timeout, hence the async pattern."""
-    if user.get("role") not in ("buyer", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Detailed analysis is buyer/admin only")
+    await require_permission(db, user, "research.create")
     if not body.company_name or not body.company_name.strip():
         raise HTTPException(status_code=400, detail="company_name is required")
     rid = str(uuid.uuid4())
@@ -4754,8 +4755,7 @@ async def set_prefs(body: NewsletterPreferences, user=Depends(get_current_user))
 @api_router.post("/newsletter/draft")
 async def draft_newsletter(body: NewsletterDraftRequest, user=Depends(get_current_user)):
     """Used by sellers (or admins) to draft a broadcast newsletter to opted-in buyers."""
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Broadcasts are seller/admin only")
+    await require_permission(db, user, "newsletter.send")
     started = now_utc()
     interests = ", ".join(user.get("interests", [])) or "institutional buyers"
     topic = body.topic or "this week's deal flow and market signals"
@@ -4789,8 +4789,7 @@ async def draft_newsletter(body: NewsletterDraftRequest, user=Depends(get_curren
 @api_router.post("/newsletter/personal")
 async def personal_newsletter(body: NewsletterDraftRequest, user=Depends(get_current_user)):
     """Buyer self-service: generate AND deliver a personalized digest in one call (recipient=self)."""
-    if user.get("role") not in ("buyer", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Personal digests are buyer/admin only")
+    await require_permission(db, user, "newsletter.personal")
     started = now_utc()
     interests = ", ".join(user.get("interests", [])) or "general institutional buying themes"
     topic = body.topic or "today's deal flow, market signals, and portfolio updates"
@@ -5160,8 +5159,7 @@ async def composio_connect_zoho_crm(user=Depends(get_current_user)):
 @api_router.post("/composio/zoho/push-lead/{inquiry_id}")
 async def push_inquiry_to_zoho(inquiry_id: str, user=Depends(get_current_user)):
     """Seller-only: push a buyer inquiry into Zoho CRM as a Lead via Composio Proxy Execute."""
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Sellers/admin only")
+    await require_permission(db, user, "leads.manage")
 
     inquiry = await db.inquiries.find_one({"id": inquiry_id, "seller_id": user["id"]}, {"_id": 0})
     if not inquiry:
@@ -6905,8 +6903,7 @@ async def list_drl_templates(user=Depends(get_current_user)):
 async def open_deal_room(inquiry_id: str, user=Depends(get_current_user)):
     """Seller (or any teammate in the listing's workspace) opens a Vault
     against an engaged inquiry."""
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Sellers/admin only")
+    await require_permission(db, user, "vault.manage")
     inquiry = await db.inquiries.find_one({"id": inquiry_id}, {"_id": 0})
     if not inquiry:
         raise HTTPException(status_code=404, detail="Inquiry not found")
@@ -9130,8 +9127,7 @@ async def verify_audit_chain(user=Depends(get_current_user)):
     asserting prev_hash continuity. Returns the first break point (if any) so the
     user / regulator can prove the log has not been tampered with.
     """
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+    await require_permission(db, user, "audit.read")
     expected_prev = GENESIS_HASH
     total = 0
     broken = None
@@ -9470,8 +9466,7 @@ async def edit_newsletter(nid: str, body: NewsletterEdit, user=Depends(get_curre
 @api_router.get("/newsletter/recipient-candidates")
 async def newsletter_recipient_candidates(user=Depends(get_current_user)):
     """Return opted-in buyer accounts a seller can hand-pick into a broadcast."""
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Seller/admin only")
+    await require_permission(db, user, "newsletter.send")
     cands = await db.users.find(
         {"role": "buyer", "newsletter_opt_in": True},
         {"_id": 0, "id": 1, "name": 1, "email": 1, "organization": 1, "interests": 1},
@@ -9966,8 +9961,7 @@ async def _run_buyer_scan(listing: Dict[str, Any], *, triggered_by: str) -> Dict
 @api_router.post("/buyer-discovery/listings/{lid}/scan")
 async def trigger_buyer_scan(lid: str, user=Depends(get_current_user)):
     """Sellers (or admins) — run a buyer discovery scan now for one of their listings."""
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    await require_permission(db, user, "buyers.run")
     listing = await _listing_for_seller(lid, user)
     result = await _run_buyer_scan(listing, triggered_by=f"user:{user['id']}")
     return result
@@ -9975,8 +9969,7 @@ async def trigger_buyer_scan(lid: str, user=Depends(get_current_user)):
 
 @api_router.get("/buyer-discovery/listings/{lid}/matches")
 async def list_buyer_matches(lid: str, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    await require_permission(db, user, "buyers.read")
     listing = await _listing_for_seller(lid, user)
     matches = await db.buyer_matches.find(
         {"listing_id": lid, "deleted_at": {"$exists": False}},
@@ -9992,8 +9985,7 @@ async def list_buyer_matches(lid: str, user=Depends(get_current_user)):
 @api_router.get("/buyer-discovery/overview")
 async def buyer_discovery_overview(user=Depends(get_current_user)):
     """Seller cockpit — per-listing summary (count, top score, last scan)."""
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    await require_permission(db, user, "buyers.read")
     seller_filter = {} if user.get("role") == "admin" else {"seller_id": user["id"]}
     listings = await db.listings.find(seller_filter, {"_id": 0}).to_list(200)
     out = []
@@ -10022,8 +10014,7 @@ async def buyer_discovery_overview(user=Depends(get_current_user)):
 
 @api_router.patch("/buyer-discovery/matches/{mid}")
 async def update_buyer_match(mid: str, body: BuyerMatchAction, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    await require_permission(db, user, "buyers.run")
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
     if not match:
         raise HTTPException(status_code=404, detail="Match not found")
@@ -10042,8 +10033,7 @@ async def update_buyer_match(mid: str, body: BuyerMatchAction, user=Depends(get_
 
 @api_router.delete("/buyer-discovery/matches/{mid}")
 async def delete_buyer_match(mid: str, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    await require_permission(db, user, "buyers.run")
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
     if not match:
         raise HTTPException(status_code=404, detail="Match not found")
@@ -10058,8 +10048,7 @@ async def delete_buyer_match(mid: str, user=Depends(get_current_user)):
 
 @api_router.post("/buyer-discovery/matches/{mid}/add-to-leads")
 async def add_match_to_leads(mid: str, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    await require_permission(db, user, "leads.manage")
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
     if not match or (user.get("role") != "admin" and match.get("seller_id") != user["id"]):
         raise HTTPException(status_code=404, detail="Match not found")
@@ -10092,8 +10081,7 @@ async def add_match_to_leads(mid: str, user=Depends(get_current_user)):
 
 @api_router.post("/buyer-discovery/matches/{mid}/generate-outreach")
 async def generate_outreach_for_match(mid: str, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    await require_permission(db, user, "buyers.run")
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
     if not match or (user.get("role") != "admin" and match.get("seller_id") != user["id"]):
         raise HTTPException(status_code=404, detail="Match not found")
@@ -10125,8 +10113,7 @@ async def find_contacts_for_match(mid: str, refresh: bool = False, user=Depends(
     """Find named M&A/Corp Dev/IR contacts at this buyer firm by parsing their recent SEC filings
     (DEF 14A, 10-K, 8-K) with Claude, then resolve LinkedIn URLs via Brave. Emails/phones are only
     surfaced if they literally appear in the filing text."""
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    await require_permission(db, user, "buyers.run")
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
     if not match or (user.get("role") != "admin" and match.get("seller_id") != user["id"]):
         raise HTTPException(status_code=404, detail="Match not found")
@@ -10172,8 +10159,7 @@ async def find_contacts_for_match(mid: str, refresh: bool = False, user=Depends(
 @api_router.post("/buyer-discovery/matches/{mid}/contacts/{contact_idx}/add-to-leads")
 async def add_contact_to_leads(mid: str, contact_idx: int, user=Depends(get_current_user)):
     """Promote a single resolved executive into the Lead Nurturing kanban."""
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Buyer discovery is seller/admin only")
+    await require_permission(db, user, "leads.manage")
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
     if not match or (user.get("role") != "admin" and match.get("seller_id") != user["id"]):
         raise HTTPException(status_code=404, detail="Match not found")
@@ -10209,8 +10195,7 @@ async def add_contact_to_leads(mid: str, contact_idx: int, user=Depends(get_curr
 
 @api_router.get("/buyer-alerts")
 async def list_buyer_alerts(unseen_only: bool = False, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Buyer alerts are seller/admin only")
+    await require_permission(db, user, "alerts.read")
     q: Dict[str, Any] = {"deleted_at": {"$exists": False}}
     if user.get("role") != "admin":
         q["seller_id"] = user["id"]
@@ -10222,7 +10207,7 @@ async def list_buyer_alerts(unseen_only: bool = False, user=Depends(get_current_
 
 @api_router.get("/buyer-alerts/count")
 async def buyer_alerts_count(user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
+    if await scope_for(db, user, "alerts.read") == "none":
         return {"unseen": 0}
     q: Dict[str, Any] = {"seen": False, "deleted_at": {"$exists": False}}
     if user.get("role") != "admin":
@@ -10233,8 +10218,7 @@ async def buyer_alerts_count(user=Depends(get_current_user)):
 
 @api_router.patch("/buyer-alerts/{aid}/seen")
 async def mark_buyer_alert_seen(aid: str, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Buyer alerts are seller/admin only")
+    await require_permission(db, user, "alerts.manage")
     q = {"id": aid}
     if user.get("role") != "admin":
         q["seller_id"] = user["id"]
@@ -10246,8 +10230,7 @@ async def mark_buyer_alert_seen(aid: str, user=Depends(get_current_user)):
 
 @api_router.post("/buyer-alerts/mark-all-seen")
 async def mark_all_buyer_alerts_seen(user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Buyer alerts are seller/admin only")
+    await require_permission(db, user, "alerts.manage")
     q: Dict[str, Any] = {"seen": False}
     if user.get("role") != "admin":
         q["seller_id"] = user["id"]
@@ -10257,8 +10240,7 @@ async def mark_all_buyer_alerts_seen(user=Depends(get_current_user)):
 
 @api_router.delete("/buyer-alerts/{aid}")
 async def delete_buyer_alert(aid: str, user=Depends(get_current_user)):
-    if user.get("role") not in ("seller", "admin", "agent", "fund_manager"):
-        raise HTTPException(status_code=403, detail="Buyer alerts are seller/admin only")
+    await require_permission(db, user, "alerts.manage")
     q = {"id": aid}
     if user.get("role") != "admin":
         q["seller_id"] = user["id"]
