@@ -33,6 +33,7 @@ PERMISSIONS: Dict[str, str] = {
     "deals.create": "Create deals",
     "deals.update": "Edit deals",
     "deals.delete": "Delete deals",
+    "deals.stage_files": "Manage staged files on a deal",
     # Buy-side
     "marketplace.read": "Browse the marketplace",
     "research.read": "View research briefs",
@@ -46,9 +47,12 @@ PERMISSIONS: Dict[str, str] = {
     "outreach.create": "Create outreach campaigns",
     "newsletter.read": "View newsletters",
     "newsletter.send": "Send newsletters",
+    "newsletter.personal": "Send a personal newsletter",
     # Pipeline
     "inquiries.read": "View inquiries",
     "inquiries.respond": "Respond to inquiries",
+    "alerts.read": "View buyer alerts",
+    "alerts.manage": "Dismiss and manage buyer alerts",
     "leads.read": "View leads",
     "leads.manage": "Manage leads",
     # Diligence
@@ -120,6 +124,7 @@ def _grant(keys: List[str], scope: str) -> Dict[str, str]:
 
 _BUYER_KEYS = [
     "marketplace.read", "research.read", "research.create", "deals.read",
+    "deals.stage_files", "newsletter.personal",
     "inquiries.read", "inquiries.respond", "vault.read", "valuations.read",
     "locker.read", "locker.write", "newsletter.read", "automation.read",
     "team.read", "integrations.manage",
@@ -130,12 +135,14 @@ _SELLER_KEYS = [
     "collateral.read", "collateral.create", "buyers.read", "buyers.run",
     "outreach.read", "outreach.create", "inquiries.read", "inquiries.respond",
     "vault.read", "vault.manage", "leads.read", "leads.manage",
+    "alerts.read", "alerts.manage",
     "newsletter.read", "newsletter.send", "automation.read", "team.read",
     "integrations.manage",
 ]
 
 _FUND_MANAGER_KEYS = sorted(set(_SELLER_KEYS + [
     "valuations.read", "valuations.create", "locker.read", "locker.write",
+    "research.read", "research.create", "deals.stage_files", "newsletter.personal",
     "funds.read", "funds.create", "funds.manage",
     "commitments.read", "commitments.manage",
     "capital.read", "capital.manage",
