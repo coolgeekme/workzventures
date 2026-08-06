@@ -76,7 +76,7 @@ db = client[DB_NAME]
 
 # Phase 1.75b: permission enforcement for the endpoints listed in
 # permission_map.py. Ownership and org-role checks are still inline.
-from permissions import require_permission, scope_for  # noqa: E402
+from permissions import require_permission, scope_for, visible_user_ids  # noqa: E402
 gridfs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="deal_room_files_fs")
 listing_files_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="listing_staged_files_fs")
 private_locker_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="private_locker_fs")
@@ -10197,8 +10197,11 @@ async def add_contact_to_leads(mid: str, contact_idx: int, user=Depends(get_curr
 async def list_buyer_alerts(unseen_only: bool = False, user=Depends(get_current_user)):
     await require_permission(db, user, "alerts.read")
     q: Dict[str, Any] = {"deleted_at": {"$exists": False}}
-    if user.get("role") != "admin":
-        q["seller_id"] = user["id"]
+    # Scope the query to whatever this role may see. "own" reproduces
+    # the previous behaviour; a wider scope is an admin choice.
+    _ids = await visible_user_ids(db, user, await scope_for(db, user, "alerts.read"))
+    if _ids is not None:
+        q["seller_id"] = {"$in": list(_ids)}
     if unseen_only:
         q["seen"] = False
     items = await db.buyer_alerts.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
@@ -10210,8 +10213,11 @@ async def buyer_alerts_count(user=Depends(get_current_user)):
     if await scope_for(db, user, "alerts.read") == "none":
         return {"unseen": 0}
     q: Dict[str, Any] = {"seen": False, "deleted_at": {"$exists": False}}
-    if user.get("role") != "admin":
-        q["seller_id"] = user["id"]
+    # Scope the query to whatever this role may see. "own" reproduces
+    # the previous behaviour; a wider scope is an admin choice.
+    _ids = await visible_user_ids(db, user, await scope_for(db, user, "alerts.read"))
+    if _ids is not None:
+        q["seller_id"] = {"$in": list(_ids)}
     n = await db.buyer_alerts.count_documents(q)
     return {"unseen": n}
 
@@ -10220,8 +10226,11 @@ async def buyer_alerts_count(user=Depends(get_current_user)):
 async def mark_buyer_alert_seen(aid: str, user=Depends(get_current_user)):
     await require_permission(db, user, "alerts.manage")
     q = {"id": aid}
-    if user.get("role") != "admin":
-        q["seller_id"] = user["id"]
+    # Scope the query to whatever this role may see. "own" reproduces
+    # the previous behaviour; a wider scope is an admin choice.
+    _ids = await visible_user_ids(db, user, await scope_for(db, user, "alerts.manage"))
+    if _ids is not None:
+        q["seller_id"] = {"$in": list(_ids)}
     res = await db.buyer_alerts.update_one(q, {"$set": {"seen": True, "seen_at": now_utc().isoformat()}})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Alert not found")
@@ -10232,8 +10241,11 @@ async def mark_buyer_alert_seen(aid: str, user=Depends(get_current_user)):
 async def mark_all_buyer_alerts_seen(user=Depends(get_current_user)):
     await require_permission(db, user, "alerts.manage")
     q: Dict[str, Any] = {"seen": False}
-    if user.get("role") != "admin":
-        q["seller_id"] = user["id"]
+    # Scope the query to whatever this role may see. "own" reproduces
+    # the previous behaviour; a wider scope is an admin choice.
+    _ids = await visible_user_ids(db, user, await scope_for(db, user, "alerts.manage"))
+    if _ids is not None:
+        q["seller_id"] = {"$in": list(_ids)}
     res = await db.buyer_alerts.update_many(q, {"$set": {"seen": True, "seen_at": now_utc().isoformat()}})
     return {"ok": True, "updated": res.modified_count}
 
@@ -10242,8 +10254,11 @@ async def mark_all_buyer_alerts_seen(user=Depends(get_current_user)):
 async def delete_buyer_alert(aid: str, user=Depends(get_current_user)):
     await require_permission(db, user, "alerts.manage")
     q = {"id": aid}
-    if user.get("role") != "admin":
-        q["seller_id"] = user["id"]
+    # Scope the query to whatever this role may see. "own" reproduces
+    # the previous behaviour; a wider scope is an admin choice.
+    _ids = await visible_user_ids(db, user, await scope_for(db, user, "alerts.manage"))
+    if _ids is not None:
+        q["seller_id"] = {"$in": list(_ids)}
     res = await db.buyer_alerts.update_one(q, {"$set": {"deleted_at": now_utc().isoformat()}})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Alert not found")
