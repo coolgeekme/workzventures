@@ -76,7 +76,10 @@ db = client[DB_NAME]
 
 # Phase 1.75b: permission enforcement for the endpoints listed in
 # permission_map.py. Ownership and org-role checks are still inline.
-from permissions import require_permission, scope_for, visible_user_ids  # noqa: E402
+from permissions import (  # noqa: E402
+    require_permission, scope_for, visible_user_ids,
+    can_access_record, require_record_access,
+)
 gridfs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="deal_room_files_fs")
 listing_files_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="listing_staged_files_fs")
 private_locker_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="private_locker_fs")
@@ -3859,8 +3862,7 @@ async def get_detailed_report(rid: str, user=Depends(get_current_user)):
     doc = await db.detailed_reports.find_one({"id": rid, "deleted_at": {"$exists": False}}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Report not found")
-    if user.get("role") != "admin" and doc.get("user_id") != user["id"]:
-        raise HTTPException(status_code=403, detail="Not your report")
+    await require_record_access(db, user, "research.read", doc.get("user_id"))
     return doc
 
 
@@ -3881,8 +3883,7 @@ async def export_detailed_report_pdf(rid: str, user=Depends(get_current_user)):
     doc = await db.detailed_reports.find_one({"id": rid, "deleted_at": {"$exists": False}}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Report not found")
-    if user.get("role") != "admin" and doc.get("user_id") != user["id"]:
-        raise HTTPException(status_code=403, detail="Not your report")
+    await require_record_access(db, user, "research.read", doc.get("user_id"))
     from detailed_report_pdf import generate_detailed_report_pdf  # local import keeps module-load cheap
     pdf_bytes = generate_detailed_report_pdf(doc)
     fname = f"detailed-analysis-{doc.get('company_name','company').replace(' ', '-').lower()}.pdf"
@@ -3906,8 +3907,7 @@ async def attach_detailed_report(rid: str, body: AttachDetailedReportRequest, us
     doc = await db.detailed_reports.find_one({"id": rid, "deleted_at": {"$exists": False}}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Report not found")
-    if user.get("role") != "admin" and doc.get("user_id") != user["id"]:
-        raise HTTPException(status_code=403, detail="Not your report")
+    await require_record_access(db, user, "research.read", doc.get("user_id"))
     if not (body.room_id or body.listing_id):
         raise HTTPException(status_code=400, detail="room_id or listing_id is required")
     if body.room_id and body.listing_id:
@@ -10018,8 +10018,7 @@ async def update_buyer_match(mid: str, body: BuyerMatchAction, user=Depends(get_
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
     if not match:
         raise HTTPException(status_code=404, detail="Match not found")
-    if user.get("role") != "admin" and match.get("seller_id") != user["id"]:
-        raise HTTPException(status_code=403, detail="Not your match")
+    await require_record_access(db, user, "buyers.run", match.get("seller_id"))
     update: Dict[str, Any] = {}
     if body.status is not None:
         update["status"] = body.status
@@ -10037,8 +10036,7 @@ async def delete_buyer_match(mid: str, user=Depends(get_current_user)):
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
     if not match:
         raise HTTPException(status_code=404, detail="Match not found")
-    if user.get("role") != "admin" and match.get("seller_id") != user["id"]:
-        raise HTTPException(status_code=403, detail="Not your match")
+    await require_record_access(db, user, "buyers.run", match.get("seller_id"))
     await db.buyer_matches.update_one({"id": mid},
                                       {"$set": {"deleted_at": now_utc().isoformat(),
                                                 "status": "dismissed"}})
@@ -10050,7 +10048,8 @@ async def delete_buyer_match(mid: str, user=Depends(get_current_user)):
 async def add_match_to_leads(mid: str, user=Depends(get_current_user)):
     await require_permission(db, user, "leads.manage")
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
-    if not match or (user.get("role") != "admin" and match.get("seller_id") != user["id"]):
+    if not match or not await can_access_record(db, user, "leads.manage", match.get("seller_id")):
+        # 404 rather than 403 is deliberate: it does not reveal that the match exists.
         raise HTTPException(status_code=404, detail="Match not found")
     listing = await db.listings.find_one({"id": match.get("listing_id")}, {"_id": 0}) or {}
     lead = {
@@ -10083,7 +10082,8 @@ async def add_match_to_leads(mid: str, user=Depends(get_current_user)):
 async def generate_outreach_for_match(mid: str, user=Depends(get_current_user)):
     await require_permission(db, user, "buyers.run")
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
-    if not match or (user.get("role") != "admin" and match.get("seller_id") != user["id"]):
+    if not match or not await can_access_record(db, user, "leads.manage", match.get("seller_id")):
+        # 404 rather than 403 is deliberate: it does not reveal that the match exists.
         raise HTTPException(status_code=404, detail="Match not found")
     listing = await db.listings.find_one({"id": match.get("listing_id")}, {"_id": 0}) or {}
 
@@ -10115,7 +10115,8 @@ async def find_contacts_for_match(mid: str, refresh: bool = False, user=Depends(
     surfaced if they literally appear in the filing text."""
     await require_permission(db, user, "buyers.run")
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
-    if not match or (user.get("role") != "admin" and match.get("seller_id") != user["id"]):
+    if not match or not await can_access_record(db, user, "leads.manage", match.get("seller_id")):
+        # 404 rather than 403 is deliberate: it does not reveal that the match exists.
         raise HTTPException(status_code=404, detail="Match not found")
 
     cached = match.get("contacts") or None
@@ -10161,7 +10162,8 @@ async def add_contact_to_leads(mid: str, contact_idx: int, user=Depends(get_curr
     """Promote a single resolved executive into the Lead Nurturing kanban."""
     await require_permission(db, user, "leads.manage")
     match = await db.buyer_matches.find_one({"id": mid}, {"_id": 0})
-    if not match or (user.get("role") != "admin" and match.get("seller_id") != user["id"]):
+    if not match or not await can_access_record(db, user, "leads.manage", match.get("seller_id")):
+        # 404 rather than 403 is deliberate: it does not reveal that the match exists.
         raise HTTPException(status_code=404, detail="Match not found")
     execs = ((match.get("contacts") or {}).get("executives")) or []
     if contact_idx < 0 or contact_idx >= len(execs):
