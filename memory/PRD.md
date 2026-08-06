@@ -1,6 +1,28 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-61 · Mirror PR #12 — Ownership Scope Applied to Buyer-Alerts (2026-02-17)
+Cherry-picked commit `9289107` from `gh/main` (PR #12 — merged). Clean pick. 2 files, +48/-16.
+
+**Purpose**: First conversion of the ownership/scope half of Phase 1.75b. Five buyer-alerts endpoints now resolve the caller's scope for the permission they already enforce, and filter by the resulting user_id set — replacing hardcoded `user_id: user.id` filters.
+
+**Two defensive safety fixes that would have widened access the moment scope became live**:
+1. **`fund_manager` scope set to `own`** (was `org` in the system role seed). Scope had been inert until now — activating it would have shown fund_managers every seller's alerts. Setting to `own` reproduces today's behaviour exactly. Widening will be an admin decision in the UI, not a side effect of conversion.
+2. **`visible_user_ids` fail-safe**: Previously `all` AND `org` both returned `None` (unrestricted). An admin setting a role to `org` would have silently granted platform-wide visibility. Now `org` returns actual user IDs from shared orgs; **only `all` returns None**. A mistake in scope handling now narrows access instead of exposing everything.
+
+**Inline role checks: 62 → 57** (5 buyer-alerts endpoints converted).
+
+**Verified**:
+- `check_enforcement.py` → **29 checked, 0 problems** ✅
+- `visible_user_ids` live-DB test: `none`→∅, `own`→1, `org`→1 (no org, narrows correctly), `all`→None (only unrestricted scope) ✅
+- `fund_manager` alert perms all `own` ✅ (was `org` — deferred widening)
+- Full pytest suite: **68/68 pass** ✅
+- Backend health 200, 205 routes intact
+
+Deploy required for production.
+
+
+
 ## Iter-60 · Mirror PR #11 — Phase 1.75b (2/2): Enforce Permissions (2026-02-17)
 Cherry-picked commit `17b8742` from `gh/phase-1.75b2/enforce-mapped-gates` (PR #11, currently OPEN on GitHub — not yet merged, but the user asked to mirror it). Clean pick. 3 files, +91/-48.
 
