@@ -129,7 +129,7 @@ _BUYER_KEYS = [
     "deals.stage_files", "newsletter.personal",
     "inquiries.read", "inquiries.respond", "vault.read", "valuations.read",
     "locker.read", "locker.write", "newsletter.read", "automation.read",
-    "team.read", "integrations.manage",
+    "team.read", "team.manage", "integrations.manage",
 ]
 
 _SELLER_KEYS = [
@@ -139,7 +139,7 @@ _SELLER_KEYS = [
     "vault.read", "vault.manage", "leads.read", "leads.manage",
     "alerts.read", "alerts.manage",
     "newsletter.read", "newsletter.send", "automation.read", "team.read",
-    "integrations.manage",
+    "team.manage", "integrations.manage",
 ]
 
 _FUND_MANAGER_KEYS = sorted(set(_SELLER_KEYS + [
@@ -355,3 +355,34 @@ async def require_record_access(db, user: dict, permission: str, owner_id: Optio
     directly where the endpoint deliberately answers 404 to hide existence."""
     if not await can_access_record(db, user, permission, owner_id):
         raise HTTPException(status_code=403, detail="Not yours to access")
+
+
+# --------------------------------------------------------------------------
+# Organisation membership
+#
+# Org membership is a SECOND axis, not a replacement for permissions. The
+# permission answers "may this kind of user manage teams at all?"; the
+# membership role answers "which orgs may they administer?" — a user can
+# belong to several orgs and be org_admin of only one, which a role-level
+# permission cannot express. Both must pass.
+#
+# A platform admin (scope "all") bypasses the membership requirement, which is
+# how the original inline checks behaved.
+# --------------------------------------------------------------------------
+
+async def require_org_member(db, user: dict, org_role: Optional[str],
+                             permission: str = "team.read") -> None:
+    scope = await require_permission(db, user, permission)
+    if scope == "all":
+        return
+    if not org_role:
+        raise HTTPException(status_code=403, detail="Not a member of this org")
+
+
+async def require_org_admin(db, user: dict, org_role: Optional[str],
+                            permission: str = "team.manage") -> None:
+    scope = await require_permission(db, user, permission)
+    if scope == "all":
+        return
+    if org_role != "org_admin":
+        raise HTTPException(status_code=403, detail="Org admin only")

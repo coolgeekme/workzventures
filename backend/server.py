@@ -79,6 +79,7 @@ db = client[DB_NAME]
 from permissions import (  # noqa: E402
     require_permission, scope_for, visible_user_ids,
     can_access_record, require_record_access,
+    require_org_member, require_org_admin,
 )
 gridfs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="deal_room_files_fs")
 listing_files_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="listing_staged_files_fs")
@@ -1834,8 +1835,7 @@ async def create_listing(body: ListingCreate, user=Depends(get_current_user), or
     resolved_org_id = None
     if org_id:
         role = await _user_org_role(user["id"], org_id)
-        if not role and user.get("role") != "admin":
-            raise HTTPException(status_code=403, detail="Not a member of that org")
+        await require_org_member(db, user, role)
         resolved_org_id = org_id
     else:
         my_orgs = await _get_user_org_ids(user)
@@ -10958,8 +10958,7 @@ async def get_org(org_id: str, user=Depends(get_current_user)):
     if not org:
         raise HTTPException(status_code=404, detail="Org not found")
     role = await _user_org_role(user["id"], org_id)
-    if not role and user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Not a member")
+    await require_org_member(db, user, role)
     org["my_role"] = role or "admin"
     org["member_count"] = await db.org_memberships.count_documents({"org_id": org_id})
     return org
@@ -10968,8 +10967,7 @@ async def get_org(org_id: str, user=Depends(get_current_user)):
 @api_router.patch("/orgs/{org_id}")
 async def update_org(org_id: str, body: OrgUpdateRequest, user=Depends(get_current_user)):
     role = await _user_org_role(user["id"], org_id)
-    if role != "org_admin" and user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Org admin only")
+    await require_org_admin(db, user, role)
     patch = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     if not patch:
         return {"ok": True}
@@ -10983,8 +10981,7 @@ async def update_org(org_id: str, body: OrgUpdateRequest, user=Depends(get_curre
 @api_router.get("/orgs/{org_id}/members")
 async def list_org_members(org_id: str, user=Depends(get_current_user)):
     role = await _user_org_role(user["id"], org_id)
-    if not role and user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Not a member")
+    await require_org_member(db, user, role)
     rows = await db.org_memberships.find({"org_id": org_id}, {"_id": 0}).to_list(500)
     out = []
     for r in rows:
@@ -11005,8 +11002,7 @@ async def list_org_members(org_id: str, user=Depends(get_current_user)):
 @api_router.delete("/orgs/{org_id}/members/{member_id}")
 async def remove_org_member(org_id: str, member_id: str, user=Depends(get_current_user)):
     role = await _user_org_role(user["id"], org_id)
-    if role != "org_admin" and user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Org admin only")
+    await require_org_admin(db, user, role)
     # Don't allow removing the last org_admin
     if member_id == user["id"]:
         admins = await db.org_memberships.count_documents({"org_id": org_id, "role": "org_admin"})
@@ -11024,8 +11020,7 @@ async def remove_org_member(org_id: str, member_id: str, user=Depends(get_curren
 @api_router.post("/orgs/{org_id}/invites")
 async def create_org_invite(org_id: str, body: OrgInviteRequest, user=Depends(get_current_user)):
     role = await _user_org_role(user["id"], org_id)
-    if role != "org_admin" and user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Org admin only")
+    await require_org_admin(db, user, role)
     org = await db.organizations.find_one({"id": org_id}, {"_id": 0, "name": 1})
     if not org:
         raise HTTPException(status_code=404, detail="Org not found")
@@ -11074,8 +11069,7 @@ async def create_org_invite(org_id: str, body: OrgInviteRequest, user=Depends(ge
 @api_router.get("/orgs/{org_id}/invites")
 async def list_org_invites(org_id: str, user=Depends(get_current_user)):
     role = await _user_org_role(user["id"], org_id)
-    if role != "org_admin" and user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Org admin only")
+    await require_org_admin(db, user, role)
     rows = await db.org_invites.find(
         {"org_id": org_id, "accepted_at": None}, {"_id": 0, "token": 0}
     ).sort("created_at", -1).to_list(200)
@@ -11085,8 +11079,7 @@ async def list_org_invites(org_id: str, user=Depends(get_current_user)):
 @api_router.delete("/orgs/{org_id}/invites/{iid}")
 async def revoke_org_invite(org_id: str, iid: str, user=Depends(get_current_user)):
     role = await _user_org_role(user["id"], org_id)
-    if role != "org_admin" and user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Org admin only")
+    await require_org_admin(db, user, role)
     res = await db.org_invites.delete_one({"id": iid, "org_id": org_id})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Invite not found")
@@ -11475,8 +11468,7 @@ async def resend_org_invite(org_id: str, iid: str, user=Depends(get_current_user
     Resend config / sender domain. Does NOT rotate the token — existing
     accept-URL keeps working."""
     role = await _user_org_role(user["id"], org_id)
-    if role != "org_admin" and user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Org admin only")
+    await require_org_admin(db, user, role)
     inv = await db.org_invites.find_one({"id": iid, "org_id": org_id}, {"_id": 0})
     if not inv:
         raise HTTPException(status_code=404, detail="Invite not found")
