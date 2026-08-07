@@ -11749,6 +11749,183 @@ async def my_effective_permissions(user=Depends(get_current_user)):
     }
 
 
+# ---------------------------------------------------------------------------
+# Role administration (Phase 1.75c) - create and edit custom roles.
+#
+# System roles are read-only: seeding refreshes them on every boot, so any edit
+# would be silently reverted. Admins duplicate one instead, which also keeps
+# the built-ins as a known-good baseline.
+# ---------------------------------------------------------------------------
+
+class RoleWrite(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    permissions: Dict[str, str] = {}
+
+
+def _validate_permissions(perms: Dict[str, str]) -> Dict[str, str]:
+    """Reject unknown keys and scopes outright.
+
+    A typo would otherwise be stored and silently grant nothing, which is the
+    kind of bug that only surfaces when someone cannot do their job.
+    """
+    from permissions import PERMISSIONS, SCOPES
+    bad_keys = sorted(k for k in perms if k not in PERMISSIONS)
+    if bad_keys:
+        raise HTTPException(status_code=400, detail="Unknown permission(s): " + ", ".join(bad_keys))
+    bad_scopes = sorted({v for v in perms.values() if v not in SCOPES})
+    if bad_scopes:
+        raise HTTPException(status_code=400, detail="Unknown scope(s): " + ", ".join(bad_scopes))
+    # Drop "none" - absence and none mean the same thing, so storing it is noise.
+    return {k: v for k, v in perms.items() if v != "none"}
+
+
+@api_router.post("/roles")
+async def create_role(body: RoleWrite, user=Depends(get_current_user)):
+    await require_permission(db, user, "roles.manage")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+    if await db.roles.find_one({"name": name}):
+        raise HTTPException(status_code=409, detail="A role with that name already exists")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "key": None,
+        "name": name,
+        "description": (body.description or "").strip(),
+        "permissions": _validate_permissions(body.permissions),
+        "is_system": False,
+        "created_at": now_utc().isoformat(),
+        "created_by": user["id"],
+    }
+    await db.roles.insert_one(doc)
+    await log_audit(user["id"], "role.create", doc["id"], {"name": name})
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.patch("/roles/{role_id}")
+async def update_role(role_id: str, body: RoleWrite, user=Depends(get_current_user)):
+    await require_permission(db, user, "roles.manage")
+    doc = await db.roles.find_one({"id": role_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if doc.get("is_system"):
+        raise HTTPException(
+            status_code=400,
+            detail="Built-in roles cannot be edited - duplicate this role to customise it",
+        )
+    patch = {
+        "name": body.name.strip(),
+        "description": (body.description or "").strip(),
+        "permissions": _validate_permissions(body.permissions),
+        "updated_at": now_utc().isoformat(),
+    }
+    await db.roles.update_one({"id": role_id}, {"$set": patch})
+    await log_audit(user["id"], "role.update", role_id, {"name": patch["name"]})
+    return {**doc, **patch}
+
+
+@api_router.post("/roles/{role_id}/duplicate")
+async def duplicate_role(role_id: str, user=Depends(get_current_user)):
+    """Clone any role, including a built-in, as an editable custom role."""
+    await require_permission(db, user, "roles.manage")
+    src = await db.roles.find_one({"id": role_id}, {"_id": 0})
+    if not src:
+        raise HTTPException(status_code=404, detail="Role not found")
+    base = str(src.get("name")) + " (copy)"
+    name, n = base, 2
+    while await db.roles.find_one({"name": name}):
+        name, n = base + " " + str(n), n + 1
+    doc = {
+        "id": str(uuid.uuid4()),
+        "key": None,
+        "name": name,
+        "description": src.get("description", ""),
+        "permissions": dict(src.get("permissions") or {}),
+        "is_system": False,
+        "created_at": now_utc().isoformat(),
+        "created_by": user["id"],
+    }
+    await db.roles.insert_one(doc)
+    await log_audit(user["id"], "role.duplicate", doc["id"], {"from": role_id, "name": name})
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.delete("/roles/{role_id}")
+async def delete_role(role_id: str, user=Depends(get_current_user)):
+    await require_permission(db, user, "roles.manage")
+    doc = await db.roles.find_one({"id": role_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if doc.get("is_system"):
+        raise HTTPException(status_code=400, detail="Built-in roles cannot be deleted")
+    holders = await db.users.count_documents({"role_ids": role_id})
+    if holders:
+        # Deleting a role in use would silently strip access from real people.
+        raise HTTPException(
+            status_code=409,
+            detail=str(holders) + " user(s) still hold this role - reassign them first",
+        )
+    await db.roles.delete_one({"id": role_id})
+    await log_audit(user["id"], "role.delete", role_id, {"name": doc.get("name")})
+    return {"ok": True}
+
+
+class UserRoleAssignment(BaseModel):
+    role_ids: List[str] = []
+
+
+@api_router.patch("/admin/users/{uid}/roles")
+async def assign_user_roles(uid: str, body: UserRoleAssignment, user=Depends(get_current_user)):
+    await require_permission(db, user, "roles.manage")
+    target = await db.users.find_one({"id": uid}, {"_id": 0, "id": 1, "email": 1})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if body.role_ids:
+        found = await db.roles.find({"id": {"$in": body.role_ids}}, {"_id": 0, "id": 1}).to_list(50)
+        missing = sorted(set(body.role_ids) - {r["id"] for r in found})
+        if missing:
+            raise HTTPException(status_code=400, detail="Unknown role(s): " + ", ".join(missing))
+    await db.users.update_one({"id": uid}, {"$set": {"role_ids": body.role_ids}})
+    await log_audit(user["id"], "admin.user.roles", uid, {"role_ids": body.role_ids})
+    return {"ok": True, "role_ids": body.role_ids}
+
+
+class ManagerAssignment(BaseModel):
+    manager_id: Optional[str] = None
+
+
+@api_router.patch("/admin/users/{uid}/manager")
+async def assign_user_manager(uid: str, body: ManagerAssignment, user=Depends(get_current_user)):
+    """Set the reporting line that peers_and_below resolves against."""
+    await require_permission(db, user, "roles.manage")
+    if body.manager_id == uid:
+        raise HTTPException(status_code=400, detail="A user cannot report to themselves")
+    target = await db.users.find_one({"id": uid}, {"_id": 0, "id": 1})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if body.manager_id:
+        mgr = await db.users.find_one({"id": body.manager_id}, {"_id": 0, "id": 1})
+        if not mgr:
+            raise HTTPException(status_code=404, detail="Manager not found")
+        # Walk up from the proposed manager; meeting this user means a cycle.
+        seen, cur, depth = set(), body.manager_id, 0
+        while cur and depth < 24:
+            if cur == uid:
+                raise HTTPException(status_code=400, detail="That would create a reporting loop")
+            if cur in seen:
+                break
+            seen.add(cur)
+            nxt = await db.users.find_one({"id": cur}, {"_id": 0, "manager_id": 1})
+            cur = (nxt or {}).get("manager_id")
+            depth += 1
+    await db.users.update_one({"id": uid}, {"$set": {"manager_id": body.manager_id}})
+    await log_audit(user["id"], "admin.user.manager", uid, {"manager_id": body.manager_id})
+    return {"ok": True, "manager_id": body.manager_id}
+
+
 app.include_router(api_router)
 
 
