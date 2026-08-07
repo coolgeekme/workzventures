@@ -1,6 +1,31 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-63 · Mirror PR #14 — Org-Role Gates Folded Into Permission System (2026-02-17)
+Cherry-picked commit `1ea61e5` from `gh/main` (PR #14 — merged). Clean pick. 2 files, +43/-20.
+
+**Converts 9 org gates**. Inline role checks: **48 → 39**.
+
+**Key design decision** — org membership kept as a **SECOND axis**, not replaced:
+- **`team.manage`** (per-role permission) — "may this kind of user manage teams at all?"
+- **`org_admin`** (per-org membership) — "which orgs may they administer?"
+
+Both must pass. A user can belong to several orgs and be `org_admin` of only one — a role-level permission alone can't express that. Platform admin (scope `all`) bypasses the membership requirement, matching the original inline check behavior.
+
+**One regression avoided**: any user can create an org and becomes its `org_admin`, but only the `admin` role held `team.manage`. Requiring it as-is would have locked every non-admin `org_admin` out of their own org. So `team.manage` is granted to **all 5 system roles** (admin=`all`, others=`own`). Inert today — only bites when an admin builds a custom role without it in Phase 1.75c.
+
+**New helper**: `require_org_admin(db, user, org_id, permission)` in `permissions.py` — enforces the two-axis check with a single call.
+
+**Verified**:
+- Enforcement harness: 29 checked, 0 problems ✅
+- All 5 system roles have `team.manage` (admin=`all`, others=`own`) ✅
+- Full pytest suite: **68/68 pass** ✅
+- Backend health 200
+
+Deploy required for production.
+
+
+
 ## Iter-62 · Mirror PR #13 — Single-Owner Record Gates (2026-02-17)
 Cherry-picked commit `08185d4` from `gh/main` (PR #13 — merged). Clean pick. 2 files, +38/-15.
 
