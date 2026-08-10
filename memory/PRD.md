@@ -1,6 +1,42 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-66 · Mirror PR #17 — Fund Manager Phase 2 (a): LP Commitments (2026-02-17)
+Cherry-picked commit `b526ed4` from `gh/main` (PR #17 — merged). Clean pick. 1 file, +211 lines.
+
+**Kicks off Fund Manager Phase 2** — LP roster + fund dashboard totals. Fills in fund edit/delete that Phase 1.5 left out.
+
+**7 new endpoints**:
+- `PATCH /funds/{id}` — edit
+- `DELETE /funds/{id}` — delete (only when no commitments)
+- `GET /funds/{id}/commitments` — LP roster
+- `POST /funds/{id}/commitments` — add LP commitment
+- `PATCH /funds/{id}/commitments/{cid}` — edit
+- `DELETE /funds/{id}/commitments/{cid}` — remove
+- `GET /funds/{id}/dashboard` — headline totals
+
+**Design decisions**:
+1. **NAV / TVPI / DPI / net IRR** need capital-call history (Phase 6). Returned in a `not_yet_available: [...]` list rather than faked — the UI can honestly say "not yet available" instead of rendering an empty tile that looks broken.
+2. **Out-of-scope fund → 404, not 403**. Whether a given fund exists is itself information.
+3. **Delete fund with commitments → 409**, not silent orphaning of LP records.
+4. **Paid-in ≤ commitment enforced** on create and update; amounts must be non-negative.
+
+Uses Phase 1.75 catalogue permissions: `funds.read`, `funds.manage`, `commitments.read`, `commitments.manage`.
+
+**Verified end-to-end**:
+- POST commitment (25M committed, 5M paid-in) → 200 with computed `unfunded=20M` ✅
+- POST with `paid_in > committed` → **400 "Paid-in cannot exceed the commitment"** ✅
+- GET dashboard shows correct totals + `not_yet_available: ['nav','tvpi','dpi','net_irr']` ✅
+- DELETE fund with commitments → **409 "1 commitment(s) are attached - remove them first"** ✅
+- Non-fund_manager buyer accessing scoped fund → **404 (existence-hiding)** ✅
+- `check_enforcement.py`: 29 checked, 0 problems ✅
+- Full pytest suite: **68/68 pass** ✅
+- Backend health 200, 180 unique routes intact
+
+Deploy required for production.
+
+
+
 ## Iter-65 · Mirror PR #16 — Roles Admin UI (2026-02-17)
 Cherry-picked commit `d62ccba` from `gh/main` (PR #16 — merged, follows PR #15). Clean pick. 4 files, +349 lines. Companion frontend for the API added in Iter-64.
 
