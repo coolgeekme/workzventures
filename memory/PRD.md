@@ -1,6 +1,30 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-65 · Mirror PR #16 — Roles Admin UI (2026-02-17)
+Cherry-picked commit `d62ccba` from `gh/main` (PR #16 — merged, follows PR #15). Clean pick. 4 files, +349 lines. Companion frontend for the API added in Iter-64.
+
+**New surface**: `AdminRoles.jsx` at `/app/admin/roles`, sidebar entry under **Platform (Admin)**.
+
+**Roles page**:
+- Lists all roles with granted-permission count + built-in vs custom pill
+- Permission matrix grouped by module, per-permission scope dropdown, **"set all" control per group** (45 permissions is a lot to click through)
+- **Duplicate** works on any role including built-ins
+- **Edit/Delete disabled** on built-ins with tooltip explaining why — matches what the API enforces (Iter-64) rather than letting the user discover it via a 400
+- Matrix renders from `/api/permissions/catalog`, so **the editor can't drift from what the backend accepts** — a permission the API doesn't know can't be rendered or granted
+
+**Users page**: Iter-65 extends the edit modal with:
+- **"Additional roles"** checkboxes, with a note that the widest scope wins where roles overlap
+- **"Reports to"** selector — required for `peers_and_below` scope to mean anything
+
+Changes saved via the dedicated `PATCH /admin/users/{id}/roles` and `PATCH /admin/users/{id}/manager` endpoints, so a failure assigning roles doesn't silently roll back the profile fields.
+
+**Verified live**: Admin login → `/app/admin/roles` → all 5 seeded roles render with correct perm counts (Admin 45, Fund Manager 41, Advisor 32, Seller 24, Buyer 17). Edit/Duplicate/Delete controls behave per the API guards. Screenshot captured.
+
+Lint clean. Deploy required for production.
+
+
+
 ## Iter-64 · Mirror PR #15 — Role Administration API (2026-02-17)
 Cherry-picked commit `a4e6d9a` from `gh/phase-1.75c-a/role-admin-api` (PR #15 — **OPEN** on GitHub, not yet merged). Clean pick. 1 file, +177 lines.
 
