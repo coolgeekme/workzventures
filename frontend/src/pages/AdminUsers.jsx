@@ -393,11 +393,12 @@ function ModalShell({ title, onClose, children }) {
   );
 }
 
-function Field({ label, children }) {
+function Field({ label, hint, children }) {
   return (
     <label className="block mb-3">
       <div className="overline mb-1.5">{label}</div>
       {children}
+      {hint && <div className="text-[11px] text-[var(--wz-text-tertiary)] mt-1">{hint}</div>}
     </label>
   );
 }
@@ -512,12 +513,32 @@ function EditUserModal({ user, onClose, onSaved }) {
   const [f, setF] = useState({ name: user.name, role: user.role, organization: user.organization || "" });
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
+  // Phase 1.75c: additional roles, and the reporting line that a
+  // peers-and-below scope resolves against.
+  const [roles, setRoles] = useState([]);
+  const [people, setPeople] = useState([]);
+  const [roleIds, setRoleIds] = useState(user.role_ids || []);
+  const [managerId, setManagerId] = useState(user.manager_id || "");
+
+  useEffect(() => {
+    api.get("/roles").then((r) => setRoles(r.data || [])).catch(() => {});
+    api.get("/admin/users").then((r) => {
+      const list = Array.isArray(r.data) ? r.data : (r.data?.users || []);
+      setPeople(list.filter((u) => u.id !== user.id));
+    }).catch(() => {});
+  }, [user.id]);
+
+  const toggleRole = (id) =>
+    setRoleIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+
   const save = async (e) => {
     e.preventDefault();
     setBusy(true);
     try {
       await api.patch(`/admin/users/${user.id}`, f);
       if (pw) await api.post(`/admin/users/${user.id}/password`, { password: pw });
+      await api.patch(`/admin/users/${user.id}/roles`, { role_ids: roleIds });
+      await api.patch(`/admin/users/${user.id}/manager`, { manager_id: managerId || null });
       toast.success("Saved");
       onSaved();
     } catch (err) {
@@ -533,6 +554,34 @@ function EditUserModal({ user, onClose, onSaved }) {
         <Field label="Role">
           <select data-testid="edit-role" className="wz-input" value={f.role} onChange={(e) => setF({...f, role: e.target.value})}>
             {ROLE_OPTIONS.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+          </select>
+        </Field>
+        <Field
+          label="Additional roles"
+          hint="Granted alongside the role above. Where roles overlap, the most permissive wins."
+        >
+          <div className="max-h-32 overflow-y-auto border border-[var(--wz-border)] rounded-sm p-2">
+            {roles.length === 0 && (
+              <div className="text-[11px] text-[var(--wz-text-tertiary)]">No roles available.</div>
+            )}
+            {roles.map((r) => (
+              <label key={r.id} className="flex items-center gap-2 text-xs py-0.5">
+                <input
+                  type="checkbox"
+                  data-testid={`assign-role-${r.id}`}
+                  checked={roleIds.includes(r.id)}
+                  onChange={() => toggleRole(r.id)}
+                />
+                <span>{r.name}</span>
+                {r.is_system && <span className="pill text-[9px]">built-in</span>}
+              </label>
+            ))}
+          </div>
+        </Field>
+        <Field label="Reports to" hint="Sets who can see this person's records under a peers-and-below scope.">
+          <select data-testid="edit-manager" className="wz-input" value={managerId} onChange={(e) => setManagerId(e.target.value)}>
+            <option value="">— nobody —</option>
+            {people.map((p) => <option key={p.id} value={p.id}>{p.name || p.email}</option>)}
           </select>
         </Field>
         <Field label="Organization">

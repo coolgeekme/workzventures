@@ -68,6 +68,7 @@ const ADMIN_NAV = [
   { to: "/app/composio", label: "Integrations", icon: Plugs, group: "Platform" },
   { to: "/app/org", label: "My Team", icon: Buildings, group: "Platform (Admin)" },
   { to: "/app/admin/users", label: "Users", icon: UsersThree, group: "Platform (Admin)" },
+  { to: "/app/admin/roles", label: "Roles & Permissions", icon: ShieldCheck, group: "Platform (Admin)" },
   { to: "/app/security", label: "Security", icon: ShieldCheck, group: "Platform (Admin)" },
   { to: "/app/mcp", label: "MCP Console", icon: Terminal, group: "Platform (Admin)" },
   { to: "/app/agents", label: "Automation Monitor", icon: ChartLineUp, group: "Platform (Admin)" },
