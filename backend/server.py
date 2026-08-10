@@ -11926,6 +11926,217 @@ async def assign_user_manager(uid: str, body: ManagerAssignment, user=Depends(ge
     return {"ok": True, "manager_id": body.manager_id}
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 - LP commitments and fund dashboard totals.
+#
+# Money is stored as-entered in the fund's currency. Capital calls and
+# distributions arrive in Phase 3; until then paid_in and distributed are
+# recorded directly on the commitment so the dashboard has real numbers to
+# show rather than placeholders.
+# ---------------------------------------------------------------------------
+
+class FundUpdate(BaseModel):
+    name: Optional[str] = None
+    target: Optional[float] = None
+    hard_cap: Optional[float] = None
+    vintage_year: Optional[int] = None
+    status: Optional[Literal["raising", "active", "harvesting", "closed"]] = None
+    currency: Optional[str] = None
+
+
+class CommitmentWrite(BaseModel):
+    lp_name: str
+    lp_email: Optional[str] = None
+    committed: float
+    paid_in: float = 0.0
+    distributed: float = 0.0
+    closed_on: Optional[str] = None          # ISO date of the LP's close
+    notes: Optional[str] = ""
+
+
+def _serialize_commitment(d: dict) -> dict:
+    committed = float(d.get("committed") or 0)
+    paid_in = float(d.get("paid_in") or 0)
+    return {
+        "id": d["id"],
+        "fund_id": d.get("fund_id"),
+        "lp_name": d.get("lp_name"),
+        "lp_email": d.get("lp_email"),
+        "committed": committed,
+        "paid_in": paid_in,
+        "distributed": float(d.get("distributed") or 0),
+        "unfunded": round(committed - paid_in, 2),
+        "closed_on": d.get("closed_on"),
+        "notes": d.get("notes", ""),
+        "created_at": d.get("created_at"),
+    }
+
+
+async def _fund_or_404(fund_id: str, user: dict) -> dict:
+    """Load a fund the caller is allowed to see, or 404.
+
+    404 rather than 403 for a fund outside their scope: whether a given fund
+    exists is itself information.
+    """
+    visible = {f["id"] for f in await _funds_for_user(user)}
+    if fund_id not in visible:
+        raise HTTPException(status_code=404, detail="Fund not found")
+    doc = await db.funds.find_one({"id": fund_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Fund not found")
+    return doc
+
+
+@api_router.patch("/funds/{fund_id}")
+async def update_fund(fund_id: str, body: FundUpdate, user=Depends(get_current_user)):
+    await require_permission(db, user, "funds.manage")
+    await _fund_or_404(fund_id, user)
+    patch = {k: v for k, v in body.model_dump(exclude_none=True).items()}
+    if not patch:
+        raise HTTPException(status_code=400, detail="No changes")
+    patch["updated_at"] = now_utc().isoformat()
+    await db.funds.update_one({"id": fund_id}, {"$set": patch})
+    await log_audit(user["id"], "fund.update", fund_id, patch)
+    doc = await db.funds.find_one({"id": fund_id}, {"_id": 0})
+    return _serialize_fund(doc)
+
+
+@api_router.delete("/funds/{fund_id}")
+async def delete_fund(fund_id: str, user=Depends(get_current_user)):
+    await require_permission(db, user, "funds.manage")
+    await _fund_or_404(fund_id, user)
+    n = await db.fund_commitments.count_documents({"fund_id": fund_id})
+    if n:
+        # Deleting a fund with commitments would orphan LP records silently.
+        raise HTTPException(
+            status_code=409,
+            detail=str(n) + " commitment(s) are attached - remove them first",
+        )
+    await db.funds.delete_one({"id": fund_id})
+    await log_audit(user["id"], "fund.delete", fund_id, {})
+    return {"ok": True}
+
+
+@api_router.get("/funds/{fund_id}/commitments")
+async def list_commitments(fund_id: str, user=Depends(get_current_user)):
+    await require_permission(db, user, "commitments.read")
+    await _fund_or_404(fund_id, user)
+    rows = await db.fund_commitments.find(
+        {"fund_id": fund_id}, {"_id": 0}
+    ).sort("committed", -1).to_list(1000)
+    return [_serialize_commitment(r) for r in rows]
+
+
+@api_router.post("/funds/{fund_id}/commitments")
+async def create_commitment(fund_id: str, body: CommitmentWrite, user=Depends(get_current_user)):
+    await require_permission(db, user, "commitments.manage")
+    await _fund_or_404(fund_id, user)
+    if body.committed <= 0:
+        raise HTTPException(status_code=400, detail="Commitment must be greater than zero")
+    if body.paid_in < 0 or body.distributed < 0:
+        raise HTTPException(status_code=400, detail="Amounts cannot be negative")
+    if body.paid_in > body.committed:
+        raise HTTPException(status_code=400, detail="Paid-in cannot exceed the commitment")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "fund_id": fund_id,
+        "lp_name": body.lp_name.strip(),
+        "lp_email": (body.lp_email or "").strip() or None,
+        "committed": float(body.committed),
+        "paid_in": float(body.paid_in),
+        "distributed": float(body.distributed),
+        "closed_on": body.closed_on,
+        "notes": (body.notes or "").strip(),
+        "created_at": now_utc().isoformat(),
+        "created_by": user["id"],
+    }
+    await db.fund_commitments.insert_one(doc)
+    await log_audit(user["id"], "commitment.create", doc["id"],
+                    {"fund_id": fund_id, "lp": doc["lp_name"]})
+    return _serialize_commitment(doc)
+
+
+@api_router.patch("/funds/{fund_id}/commitments/{cid}")
+async def update_commitment(fund_id: str, cid: str, body: CommitmentWrite,
+                            user=Depends(get_current_user)):
+    await require_permission(db, user, "commitments.manage")
+    await _fund_or_404(fund_id, user)
+    existing = await db.fund_commitments.find_one({"id": cid, "fund_id": fund_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Commitment not found")
+    if body.committed <= 0:
+        raise HTTPException(status_code=400, detail="Commitment must be greater than zero")
+    if body.paid_in > body.committed:
+        raise HTTPException(status_code=400, detail="Paid-in cannot exceed the commitment")
+    patch = {
+        "lp_name": body.lp_name.strip(),
+        "lp_email": (body.lp_email or "").strip() or None,
+        "committed": float(body.committed),
+        "paid_in": float(body.paid_in),
+        "distributed": float(body.distributed),
+        "closed_on": body.closed_on,
+        "notes": (body.notes or "").strip(),
+        "updated_at": now_utc().isoformat(),
+    }
+    await db.fund_commitments.update_one({"id": cid}, {"$set": patch})
+    await log_audit(user["id"], "commitment.update", cid, {"fund_id": fund_id})
+    return _serialize_commitment({**existing, **patch})
+
+
+@api_router.delete("/funds/{fund_id}/commitments/{cid}")
+async def delete_commitment(fund_id: str, cid: str, user=Depends(get_current_user)):
+    await require_permission(db, user, "commitments.manage")
+    await _fund_or_404(fund_id, user)
+    res = await db.fund_commitments.delete_one({"id": cid, "fund_id": fund_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Commitment not found")
+    await log_audit(user["id"], "commitment.delete", cid, {"fund_id": fund_id})
+    return {"ok": True}
+
+
+@api_router.get("/funds/{fund_id}/dashboard")
+async def fund_dashboard(fund_id: str, user=Depends(get_current_user)):
+    """Headline totals for the Fund Dashboard.
+
+    Everything here is computed from commitments actually recorded - no
+    placeholder values. The metrics that need capital-call history (TVPI, DPI,
+    net IRR) are Phase 6 and are deliberately absent rather than faked.
+    """
+    await require_permission(db, user, "funds.read")
+    fund = await _fund_or_404(fund_id, user)
+    rows = await db.fund_commitments.find({"fund_id": fund_id}, {"_id": 0}).to_list(2000)
+
+    committed = sum(float(r.get("committed") or 0) for r in rows)
+    paid_in = sum(float(r.get("paid_in") or 0) for r in rows)
+    distributed = sum(float(r.get("distributed") or 0) for r in rows)
+    target = float(fund.get("target") or 0)
+    hard_cap = float(fund.get("hard_cap") or 0)
+
+    def pct(part, whole):
+        return round(part / whole * 100, 1) if whole else None
+
+    return {
+        "fund": _serialize_fund(fund),
+        "lp_count": len(rows),
+        "totals": {
+            "target": target or None,
+            "hard_cap": hard_cap or None,
+            "committed": round(committed, 2),
+            "paid_in": round(paid_in, 2),
+            "distributed": round(distributed, 2),
+            "unfunded": round(committed - paid_in, 2),
+        },
+        "progress": {
+            "committed_vs_target": pct(committed, target),
+            "committed_vs_hard_cap": pct(committed, hard_cap),
+            "called_pct": pct(paid_in, committed),
+        },
+        # Named so the UI can state plainly what is not yet computed rather
+        # than rendering an empty tile that looks broken.
+        "not_yet_available": ["nav", "tvpi", "dpi", "net_irr"],
+    }
+
+
 app.include_router(api_router)
 
 
