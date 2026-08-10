@@ -1,6 +1,39 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-64 · Mirror PR #15 — Role Administration API (2026-02-17)
+Cherry-picked commit `a4e6d9a` from `gh/phase-1.75c-a/role-admin-api` (PR #15 — **OPEN** on GitHub, not yet merged). Clean pick. 1 file, +177 lines.
+
+**Six new admin endpoints** for custom role management:
+- `POST /api/roles` — create custom role
+- `PATCH /api/roles/{id}` — edit custom role
+- `POST /api/roles/{id}/duplicate` — clone any role, including built-ins
+- `DELETE /api/roles/{id}` — delete unused custom role
+- `PATCH /api/admin/users/{id}/roles` — assign roles to a user
+- `PATCH /api/admin/users/{id}/manager` — set reporting line
+
+All six require `roles.manage` (admin-only).
+
+**Defensive design choices baked in**:
+1. **Built-in roles are read-only** — edit returns `400 "Built-in roles cannot be edited - duplicate this role to customise it"`. Seeding refreshes them every boot so an edit would silently revert.
+2. **Unknown permission keys/scopes rejected at write time** — a typo would otherwise store fine and silently grant nothing until someone can't do their job.
+3. **Delete-in-use returns 409** — with a count, rather than silently stripping access from real users.
+4. **Manager assignment walks the proposed chain to refuse cycles** — hierarchy resolution used by `peers_and_below` cannot loop.
+
+**Verified live end-to-end**:
+- Create custom role "Junior Analyst" → 200 ✅
+- Create with unknown perm key → **400 "Unknown permission(s): nonexistent.key"** ✅
+- Edit built-in admin → **400 "Built-in roles cannot be edited..."** ✅
+- Duplicate built-in admin → new "Admin (copy)" role with all permissions inherited ✅
+- Delete unused custom role → 200 ✅
+- Enforcement harness: 29 checked, 0 problems ✅
+- Full pytest suite: **68/68 pass** ✅
+- Backend health 200, 211 routes intact
+
+Deploy required for production.
+
+
+
 ## Iter-63 · Mirror PR #14 — Org-Role Gates Folded Into Permission System (2026-02-17)
 Cherry-picked commit `1ea61e5` from `gh/main` (PR #14 — merged). Clean pick. 2 files, +43/-20.
 
