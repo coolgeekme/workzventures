@@ -38,6 +38,7 @@ import DetailedReport from "./pages/DetailedReport";
 import PrivateLocker from "./pages/PrivateLocker";
 import AdminUsers from "./pages/AdminUsers";
 import AdminRoles from "./pages/AdminRoles";
+import FundDashboard from "./pages/FundDashboard";
 import AcceptInvite from "./pages/AcceptInvite";
 import AcceptCollabInvite from "./pages/AcceptCollabInvite";
 import OrgManagement from "./pages/OrgManagement";
@@ -118,6 +119,7 @@ function AppRoutes() {
       <Route path="/app/private-locker" element={<Protected><PrivateLocker /></Protected>} />
       <Route path="/app/admin/users" element={<AdminOnly><AdminUsers /></AdminOnly>} />
       <Route path="/app/admin/roles" element={<AdminOnly><AdminRoles /></AdminOnly>} />
+      <Route path="/app/funds" element={<Protected><FundDashboard /></Protected>} />
       <Route path="/app/org" element={<Protected><OrgManagement /></Protected>} />
       <Route path="/accept-invite" element={<AcceptInvite />} />
       <Route path="/accept-org-invite" element={<AcceptCollabInvite kind="org" />} />
