@@ -62,6 +62,7 @@ const ADMIN_NAV = [
   { to: "/app/buyer-alerts", label: "Buyer Alerts", icon: Bell, group: "Pipeline", badgeKey: "buyer_alerts" },
   { to: "/app/rooms", label: "The Vault", icon: Files, group: "Pipeline" },
   { to: "/app/private-locker", label: "Private Locker", icon: Lock, group: "Pipeline" },
+  { to: "/app/funds", label: "Fund Dashboard", icon: ChartLineUp, group: "Pipeline" },
   { to: "/app/valuations", label: "Valuations", icon: Coins, group: "Pipeline" },
   { to: "/app/leads", label: "Leads", icon: Kanban, group: "Pipeline" },
   { to: "/app/newsletter", label: "Newsletter", icon: EnvelopeSimple, group: "Pipeline" },
@@ -81,6 +82,7 @@ const ADMIN_NAV = [
 // Phases 2-5 and slot into the "Fund Management" group.
 const FUND_NAV = [
   { to: "/app/dashboard", label: "Dashboard", icon: House, group: "Core" },
+  { to: "/app/funds", label: "Fund Dashboard", icon: ChartLineUp, group: "Fund Management" },
   { to: "/app/org", label: "My Team", icon: Buildings, group: "Fund Management" },
   { to: "/app/rooms", label: "The Vault", icon: Files, group: "Diligence" },
   { to: "/app/valuations", label: "Valuations", icon: Coins, group: "Diligence" },
