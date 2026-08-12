@@ -1,6 +1,25 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-67 · Mirror PR #18 — Fund Dashboard UI (2026-02-17)
+Cherry-picked commit `0d9c7a3` from `gh/main` (PR #18 — merged). Clean pick. 3 files, +372 lines.
+
+**Note on GH history**: PR #19 was merged in immediately after PR #18 with the identical product code (App.js, Layout.jsx, FundDashboard.jsx). Diffed both; only differences were `.emergent/emergent.yml` timestamps and the auto-generated PRD append. Treating PR #19 as a no-op re-merge.
+
+**Companion frontend for Iter-66's endpoints** — Fund Dashboard at `/app/funds`:
+- **6 KPI tiles**: Fund Target, Hard Cap, Total Commitments, Paid-in Capital, Distributions, Unfunded
+- **"Not yet available" callout** for NAV / TVPI / DPI / NET IRR — matches the backend's `not_yet_available: [...]` list. Blanks the tile instead of showing 0 so users don't misread it as a real number
+- **Limited Partners table** with Add / Edit / Delete commitments + row-level fields (LP, Committed, Paid In, Distributed, Unfunded)
+- **Fund Switcher integration** — dashboard scopes to whichever fund is active in the top-bar
+- **Nav entry** for both `fund_manager` and `admin` roles (admins hold `funds.read`)
+- **Compliance disclaimer** at the bottom: *"All figures are computed from recorded commitments. Values are unaudited and subject to change."*
+
+**Verified live** — admin login → `/app/funds` → dashboard renders with empty-state fund. All 6 KPIs at $0 / — as expected for a fund with no commitments. Screenshot captured.
+
+Lint clean. Deploy required for production.
+
+
+
 ## Iter-66 · Mirror PR #17 — Fund Manager Phase 2 (a): LP Commitments (2026-02-17)
 Cherry-picked commit `b526ed4` from `gh/main` (PR #17 — merged). Clean pick. 1 file, +211 lines.
 
