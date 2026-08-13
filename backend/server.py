@@ -10601,6 +10601,16 @@ async def seed_demo():
             logger.info(f"seeded {added} system role(s)")
     except Exception as e:
         logger.warning(f"system role seeding skipped: {e}")
+    # Phase 3: paid-in and distributed capital become derived from capital
+    # events. Any figures typed in under Phase 2 are converted to an opening
+    # balance so no fund's totals change. Idempotent — once a commitment's
+    # stored fields are cleared it is never picked up again.
+    try:
+        moved = await migrate_opening_balances(db)
+        if moved:
+            logger.info(f"converted {moved} commitment(s) to opening-balance events")
+    except Exception as e:
+        logger.warning(f"opening-balance migration skipped: {e}")
     # Iter-56: Ensure indexes on hot query paths. Every authenticated request
     # hits `users.id`, login hits `users.email`, list endpoints filter by
     # `user_id`, `room_id`, `listing_id`, etc. Without these, Mongo does a
@@ -10637,6 +10647,11 @@ async def seed_demo():
             db.funds.create_index("id", unique=True, background=True),
             db.funds.create_index("manager_user_id", background=True),
             db.funds.create_index("org_id", background=True),
+            # Every commitment and dashboard read re-derives totals from the
+            # fund's capital events, so this one is on the hot path.
+            db.fund_capital_events.create_index("fund_id", background=True),
+            db.fund_capital_events.create_index("id", unique=True, background=True),
+            db.fund_commitments.create_index("fund_id", background=True),
         )
         logger.info("mongo indexes ensured")
     except Exception as e:
@@ -11948,15 +11963,54 @@ class CommitmentWrite(BaseModel):
     lp_name: str
     lp_email: Optional[str] = None
     committed: float
-    paid_in: float = 0.0
-    distributed: float = 0.0
     closed_on: Optional[str] = None          # ISO date of the LP's close
     notes: Optional[str] = ""
+    # paid_in and distributed are deliberately absent from Phase 3 onward:
+    # they are derived from capital events, never typed in. See
+    # _capital_totals() below.
 
 
-def _serialize_commitment(d: dict) -> dict:
+class CapitalAllocation(BaseModel):
+    commitment_id: str
+    amount: float
+
+
+class CapitalEventWrite(BaseModel):
+    kind: Literal["call", "distribution"]
+    event_date: str                          # ISO date, YYYY-MM-DD
+    amount: float
+    label: Optional[str] = ""
+    notes: Optional[str] = ""
+    # Omit to split pro-rata. Supply to handle side letters, excused LPs, or
+    # any split that is not strictly pro-rata.
+    allocations: Optional[List[CapitalAllocation]] = None
+
+
+async def _capital_totals(fund_id: str) -> Dict[str, Dict[str, float]]:
+    """Per-commitment paid-in and distributed, summed from capital events.
+
+    This is the single source of truth for both figures. Commitment documents
+    carry no paid_in/distributed of their own from Phase 3 onward.
+    """
+    totals: Dict[str, Dict[str, float]] = {}
+    events = await db.fund_capital_events.find(
+        {"fund_id": fund_id}, {"_id": 0}
+    ).to_list(5000)
+    for ev in events:
+        bucket = "paid_in" if ev.get("kind") == "call" else "distributed"
+        for alloc in ev.get("allocations") or []:
+            cid = alloc.get("commitment_id")
+            if not cid:
+                continue
+            row = totals.setdefault(cid, {"paid_in": 0.0, "distributed": 0.0})
+            row[bucket] += float(alloc.get("amount") or 0)
+    return totals
+
+
+def _serialize_commitment(d: dict, totals: Optional[Dict[str, Dict[str, float]]] = None) -> dict:
     committed = float(d.get("committed") or 0)
-    paid_in = float(d.get("paid_in") or 0)
+    t = (totals or {}).get(d["id"], {"paid_in": 0.0, "distributed": 0.0})
+    paid_in = round(float(t["paid_in"]), 2)
     return {
         "id": d["id"],
         "fund_id": d.get("fund_id"),
@@ -11964,12 +12018,101 @@ def _serialize_commitment(d: dict) -> dict:
         "lp_email": d.get("lp_email"),
         "committed": committed,
         "paid_in": paid_in,
-        "distributed": float(d.get("distributed") or 0),
+        "distributed": round(float(t["distributed"]), 2),
         "unfunded": round(committed - paid_in, 2),
         "closed_on": d.get("closed_on"),
         "notes": d.get("notes", ""),
         "created_at": d.get("created_at"),
     }
+
+
+def _split_pro_rata(total: float, weights: List[tuple]) -> Dict[str, float]:
+    """Split `total` across (commitment_id, weight) pairs, in whole cents.
+
+    Rounding each share independently would leave the allocations summing to
+    slightly more or less than the event total, which then shows up as a fund
+    whose called capital does not equal the sum of its calls. The remainder is
+    given to the largest weight so the parts always add to the whole.
+    """
+    basis = sum(w for _, w in weights)
+    if basis <= 0:
+        return {}
+    cents = int(round(total * 100))
+    out: Dict[str, int] = {}
+    for cid, w in weights:
+        out[cid] = int(cents * w // basis) if basis else 0
+    remainder = cents - sum(out.values())
+    if remainder and weights:
+        biggest = max(weights, key=lambda p: p[1])[0]
+        out[biggest] += remainder
+    return {cid: round(c / 100.0, 2) for cid, c in out.items() if c}
+
+
+async def _build_allocations(fund_id: str, body, commitments: List[dict],
+                             totals: Dict[str, Dict[str, float]]) -> List[dict]:
+    """Resolve an event into per-LP allocations, or raise a 400 explaining why not."""
+    by_id = {c["id"]: c for c in commitments}
+
+    if body.allocations is not None:
+        allocs = []
+        seen = set()
+        for a in body.allocations:
+            if a.commitment_id not in by_id:
+                raise HTTPException(status_code=400,
+                                    detail="Allocation refers to an LP that is not in this fund")
+            if a.commitment_id in seen:
+                raise HTTPException(status_code=400,
+                                    detail="Each LP may appear only once in the allocations")
+            if a.amount < 0:
+                raise HTTPException(status_code=400, detail="Allocations cannot be negative")
+            seen.add(a.commitment_id)
+            if a.amount:
+                allocs.append({"commitment_id": a.commitment_id,
+                               "lp_name": by_id[a.commitment_id].get("lp_name"),
+                               "amount": round(float(a.amount), 2)})
+        # A penny of drift here would make the fund's totals disagree with the
+        # sum of its own events, so it is rejected rather than silently fixed.
+        if abs(sum(a["amount"] for a in allocs) - body.amount) > 0.01:
+            raise HTTPException(
+                status_code=400,
+                detail="Allocations must add up to the event total")
+    else:
+        if body.kind == "call":
+            weights = [(c["id"], float(c.get("committed") or 0)) for c in commitments]
+        else:
+            # Distributions follow capital actually at risk, not commitments —
+            # an LP who has funded nothing is owed nothing back.
+            weights = [(c["id"], totals.get(c["id"], {}).get("paid_in", 0.0))
+                       for c in commitments]
+            if sum(w for _, w in weights) <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No capital has been called yet, so there is nothing to distribute against")
+        split = _split_pro_rata(body.amount, weights)
+        allocs = [{"commitment_id": cid,
+                   "lp_name": by_id[cid].get("lp_name"),
+                   "amount": amt}
+                  for cid, amt in split.items()]
+
+    if not allocs:
+        raise HTTPException(status_code=400, detail="Nothing to allocate")
+
+    if body.kind == "call":
+        for a in allocs:
+            c = by_id[a["commitment_id"]]
+            unfunded = round(float(c.get("committed") or 0)
+                             - totals.get(a["commitment_id"], {}).get("paid_in", 0.0), 2)
+            if a["amount"] - unfunded > 0.01:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(c.get("lp_name") or "An LP") +
+                           " has only " + _money(unfunded) + " unfunded, but the call asks for " +
+                           _money(a["amount"]))
+    return allocs
+
+
+def _money(v: float) -> str:
+    return "{:,.2f}".format(round(float(v or 0), 2))
 
 
 async def _fund_or_404(fund_id: str, user: dict) -> dict:
@@ -12005,6 +12148,11 @@ async def update_fund(fund_id: str, body: FundUpdate, user=Depends(get_current_u
 async def delete_fund(fund_id: str, user=Depends(get_current_user)):
     await require_permission(db, user, "funds.manage")
     await _fund_or_404(fund_id, user)
+    ev = await db.fund_capital_events.count_documents({"fund_id": fund_id})
+    if ev:
+        raise HTTPException(
+            status_code=409,
+            detail=str(ev) + " capital event(s) are recorded - remove them first")
     n = await db.fund_commitments.count_documents({"fund_id": fund_id})
     if n:
         # Deleting a fund with commitments would orphan LP records silently.
@@ -12024,7 +12172,8 @@ async def list_commitments(fund_id: str, user=Depends(get_current_user)):
     rows = await db.fund_commitments.find(
         {"fund_id": fund_id}, {"_id": 0}
     ).sort("committed", -1).to_list(1000)
-    return [_serialize_commitment(r) for r in rows]
+    totals = await _capital_totals(fund_id)
+    return [_serialize_commitment(r, totals) for r in rows]
 
 
 @api_router.post("/funds/{fund_id}/commitments")
@@ -12033,18 +12182,12 @@ async def create_commitment(fund_id: str, body: CommitmentWrite, user=Depends(ge
     await _fund_or_404(fund_id, user)
     if body.committed <= 0:
         raise HTTPException(status_code=400, detail="Commitment must be greater than zero")
-    if body.paid_in < 0 or body.distributed < 0:
-        raise HTTPException(status_code=400, detail="Amounts cannot be negative")
-    if body.paid_in > body.committed:
-        raise HTTPException(status_code=400, detail="Paid-in cannot exceed the commitment")
     doc = {
         "id": str(uuid.uuid4()),
         "fund_id": fund_id,
         "lp_name": body.lp_name.strip(),
         "lp_email": (body.lp_email or "").strip() or None,
         "committed": float(body.committed),
-        "paid_in": float(body.paid_in),
-        "distributed": float(body.distributed),
         "closed_on": body.closed_on,
         "notes": (body.notes or "").strip(),
         "created_at": now_utc().isoformat(),
@@ -12066,27 +12209,34 @@ async def update_commitment(fund_id: str, cid: str, body: CommitmentWrite,
         raise HTTPException(status_code=404, detail="Commitment not found")
     if body.committed <= 0:
         raise HTTPException(status_code=400, detail="Commitment must be greater than zero")
-    if body.paid_in > body.committed:
-        raise HTTPException(status_code=400, detail="Paid-in cannot exceed the commitment")
+    already = (await _capital_totals(fund_id)).get(cid, {}).get("paid_in", 0.0)
+    if already - body.committed > 0.01:
+        raise HTTPException(
+            status_code=400,
+            detail="This LP has already funded " + _money(already) +
+                   " - the commitment cannot be set below that")
     patch = {
         "lp_name": body.lp_name.strip(),
         "lp_email": (body.lp_email or "").strip() or None,
         "committed": float(body.committed),
-        "paid_in": float(body.paid_in),
-        "distributed": float(body.distributed),
         "closed_on": body.closed_on,
         "notes": (body.notes or "").strip(),
         "updated_at": now_utc().isoformat(),
     }
     await db.fund_commitments.update_one({"id": cid}, {"$set": patch})
     await log_audit(user["id"], "commitment.update", cid, {"fund_id": fund_id})
-    return _serialize_commitment({**existing, **patch})
+    return _serialize_commitment({**existing, **patch}, await _capital_totals(fund_id))
 
 
 @api_router.delete("/funds/{fund_id}/commitments/{cid}")
 async def delete_commitment(fund_id: str, cid: str, user=Depends(get_current_user)):
     await require_permission(db, user, "commitments.manage")
     await _fund_or_404(fund_id, user)
+    t = (await _capital_totals(fund_id)).get(cid)
+    if t and (t.get("paid_in") or t.get("distributed")):
+        raise HTTPException(
+            status_code=409,
+            detail="This LP has capital activity recorded - remove those events first")
     res = await db.fund_commitments.delete_one({"id": cid, "fund_id": fund_id})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Commitment not found")
@@ -12105,10 +12255,11 @@ async def fund_dashboard(fund_id: str, user=Depends(get_current_user)):
     await require_permission(db, user, "funds.read")
     fund = await _fund_or_404(fund_id, user)
     rows = await db.fund_commitments.find({"fund_id": fund_id}, {"_id": 0}).to_list(2000)
+    totals = await _capital_totals(fund_id)
 
     committed = sum(float(r.get("committed") or 0) for r in rows)
-    paid_in = sum(float(r.get("paid_in") or 0) for r in rows)
-    distributed = sum(float(r.get("distributed") or 0) for r in rows)
+    paid_in = sum(totals.get(r["id"], {}).get("paid_in", 0.0) for r in rows)
+    distributed = sum(totals.get(r["id"], {}).get("distributed", 0.0) for r in rows)
     target = float(fund.get("target") or 0)
     hard_cap = float(fund.get("hard_cap") or 0)
 
@@ -12131,10 +12282,215 @@ async def fund_dashboard(fund_id: str, user=Depends(get_current_user)):
             "committed_vs_hard_cap": pct(committed, hard_cap),
             "called_pct": pct(paid_in, committed),
         },
+        # DPI is distributions over paid-in capital. Unlike TVPI and net IRR it
+        # needs no valuation, so once capital activity is recorded it is a real
+        # number rather than an estimate. None while nothing has been called —
+        # a fund that has called nothing has no DPI, which is not the same as
+        # a DPI of zero.
+        "dpi": round(distributed / paid_in, 4) if paid_in else None,
         # Named so the UI can state plainly what is not yet computed rather
-        # than rendering an empty tile that looks broken.
-        "not_yet_available": ["nav", "tvpi", "dpi", "net_irr"],
+        # than rendering an empty tile that looks broken. DPI left this list in
+        # Phase 3 — the remaining three all need a valuation, which is Phase 4
+        # onward. Net IRR additionally needs dated cash flows per LP.
+        "not_yet_available": ["nav", "tvpi", "net_irr"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 - capital activity.
+#
+# A capital call or distribution is recorded once at the fund level and split
+# across LPs. Every per-LP paid-in and distributed figure on the platform is
+# the sum of these allocations, so the fund's totals and its event history can
+# never disagree.
+# ---------------------------------------------------------------------------
+
+def _serialize_capital_event(d: dict) -> dict:
+    return {
+        "id": d["id"],
+        "fund_id": d.get("fund_id"),
+        "kind": d.get("kind"),
+        "event_date": d.get("event_date"),
+        "amount": round(float(d.get("amount") or 0), 2),
+        "label": d.get("label", ""),
+        "notes": d.get("notes", ""),
+        "allocations": d.get("allocations") or [],
+        "is_opening": bool(d.get("is_opening")),
+        "created_at": d.get("created_at"),
+    }
+
+
+def _valid_date(s: str) -> str:
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").strftime("%Y-%m-%d")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Date must be in YYYY-MM-DD form")
+
+
+@api_router.get("/funds/{fund_id}/capital-events")
+async def list_capital_events(fund_id: str, user=Depends(get_current_user)):
+    await require_permission(db, user, "capital.read")
+    await _fund_or_404(fund_id, user)
+    rows = await db.fund_capital_events.find({"fund_id": fund_id}, {"_id": 0}).to_list(5000)
+    rows.sort(key=lambda r: (r.get("event_date") or "", r.get("created_at") or ""))
+    return [_serialize_capital_event(r) for r in rows]
+
+
+@api_router.post("/funds/{fund_id}/capital-events")
+async def create_capital_event(fund_id: str, body: CapitalEventWrite,
+                               user=Depends(get_current_user)):
+    await require_permission(db, user, "capital.manage")
+    await _fund_or_404(fund_id, user)
+    if body.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than zero")
+    event_date = _valid_date(body.event_date)
+
+    commitments = await db.fund_commitments.find({"fund_id": fund_id}, {"_id": 0}).to_list(2000)
+    if not commitments:
+        raise HTTPException(status_code=400,
+                            detail="Record at least one LP commitment before calling capital")
+    totals = await _capital_totals(fund_id)
+
+    if body.kind == "call":
+        unfunded = sum(round(float(c.get("committed") or 0)
+                             - totals.get(c["id"], {}).get("paid_in", 0.0), 2)
+                       for c in commitments)
+        if body.amount - unfunded > 0.01:
+            raise HTTPException(
+                status_code=400,
+                detail="Only " + _money(unfunded) + " remains unfunded across all LPs")
+
+    allocations = await _build_allocations(fund_id, body, commitments, totals)
+
+    doc = {
+        "id": str(uuid.uuid4()),
+        "fund_id": fund_id,
+        "kind": body.kind,
+        "event_date": event_date,
+        "amount": round(float(body.amount), 2),
+        "label": (body.label or "").strip(),
+        "notes": (body.notes or "").strip(),
+        "allocations": allocations,
+        "is_opening": False,
+        "created_at": now_utc().isoformat(),
+        "created_by": user["id"],
+    }
+    await db.fund_capital_events.insert_one(doc)
+    await log_audit(user["id"], "capital." + body.kind, doc["id"],
+                    {"fund_id": fund_id, "amount": doc["amount"], "date": event_date})
+    return _serialize_capital_event(doc)
+
+
+@api_router.delete("/funds/{fund_id}/capital-events/{eid}")
+async def delete_capital_event(fund_id: str, eid: str, user=Depends(get_current_user)):
+    await require_permission(db, user, "capital.manage")
+    await _fund_or_404(fund_id, user)
+    existing = await db.fund_capital_events.find_one({"id": eid, "fund_id": fund_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Capital event not found")
+    # Reversing a later call could leave an earlier distribution allocated
+    # against capital that is no longer recorded as paid in.
+    if existing.get("kind") == "call":
+        later_dists = await db.fund_capital_events.count_documents({
+            "fund_id": fund_id,
+            "kind": "distribution",
+            "event_date": {"$gte": existing.get("event_date") or ""},
+        })
+        if later_dists:
+            raise HTTPException(
+                status_code=409,
+                detail="Remove the distributions dated on or after this call first")
+    await db.fund_capital_events.delete_one({"id": eid})
+    await log_audit(user["id"], "capital.delete", eid, {"fund_id": fund_id})
+    return {"ok": True}
+
+
+@api_router.get("/funds/{fund_id}/capital-timeline")
+async def capital_timeline(fund_id: str, user=Depends(get_current_user)):
+    """Cumulative called and distributed capital by date, for the chart."""
+    await require_permission(db, user, "capital.read")
+    fund = await _fund_or_404(fund_id, user)
+    rows = await db.fund_capital_events.find({"fund_id": fund_id}, {"_id": 0}).to_list(5000)
+    rows.sort(key=lambda r: (r.get("event_date") or "", r.get("created_at") or ""))
+
+    commitments = await db.fund_commitments.find({"fund_id": fund_id}, {"_id": 0}).to_list(2000)
+    committed = sum(float(c.get("committed") or 0) for c in commitments)
+
+    points = []
+    called = 0.0
+    distributed = 0.0
+    for r in rows:
+        amt = float(r.get("amount") or 0)
+        if r.get("kind") == "call":
+            called += amt
+        else:
+            distributed += amt
+        points.append({
+            # The id travels with the point so the UI can act on a specific
+            # event rather than matching one back by date and amount, which
+            # two identical calls on the same day would make ambiguous.
+            "id": r.get("id"),
+            "date": r.get("event_date"),
+            "label": r.get("label") or "",
+            "kind": r.get("kind"),
+            "amount": round(amt, 2),
+            "is_opening": bool(r.get("is_opening")),
+            "cumulative_called": round(called, 2),
+            "cumulative_distributed": round(distributed, 2),
+        })
+    return {
+        "fund_id": fund_id,
+        "currency": fund.get("currency", "USD"),
+        "committed": round(committed, 2),
+        "points": points,
+    }
+
+
+async def migrate_opening_balances(db) -> int:
+    """One-time backfill: turn Phase 2's typed paid-in/distributed into events.
+
+    Without this, flipping those figures to derived would drop every existing
+    fund's called capital to zero. Idempotent - a commitment is only converted
+    once, and the stored fields are cleared as it goes so a partial run can be
+    resumed safely.
+    """
+    converted = 0
+    fund_ids = await db.fund_commitments.distinct("fund_id")
+    for fid in fund_ids:
+        rows = await db.fund_commitments.find(
+            {"fund_id": fid,
+             "$or": [{"paid_in": {"$gt": 0}}, {"distributed": {"$gt": 0}}]},
+            {"_id": 0},
+        ).to_list(2000)
+        if not rows:
+            continue
+        stamp = now_utc().isoformat()
+        for kind, field in (("call", "paid_in"), ("distribution", "distributed")):
+            allocs = [{"commitment_id": r["id"], "lp_name": r.get("lp_name"),
+                       "amount": round(float(r.get(field) or 0), 2)}
+                      for r in rows if float(r.get(field) or 0) > 0]
+            if not allocs:
+                continue
+            await db.fund_capital_events.insert_one({
+                "id": str(uuid.uuid4()),
+                "fund_id": fid,
+                "kind": kind,
+                "event_date": stamp[:10],
+                "amount": round(sum(a["amount"] for a in allocs), 2),
+                "label": "Opening balance",
+                "notes": "Carried over from figures recorded before capital "
+                         "activity tracking was added.",
+                "allocations": allocs,
+                "is_opening": True,
+                "created_at": stamp,
+                "created_by": "system",
+            })
+        await db.fund_commitments.update_many(
+            {"fund_id": fid, "id": {"$in": [r["id"] for r in rows]}},
+            {"$unset": {"paid_in": "", "distributed": ""}},
+        )
+        converted += len(rows)
+    return converted
 
 
 app.include_router(api_router)
