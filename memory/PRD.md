@@ -1,6 +1,39 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-68 · Mirror PR #20 — Fund Manager Phase 3: Capital Events (2026-02-17)
+Cherry-picked commit `431a237` from `gh/main` (PR #20 — merged). Clean pick. 2 files, +636/-49.
+
+**The big architectural upgrade for funds**: paid-in and distributed capital are no longer numbers someone types on a commitment. They are now the SUM of first-class `fund_capital_events` records — because "two sources of truth is how fund numbers quietly stop agreeing with each other".
+
+**Backend**:
+- **New collection `fund_capital_events`** — one call or distribution recorded at the fund level, allocated per commitment
+- **Pro-rata splitting in whole cents**, remainder to largest holder — allocations always sum back to event total (verified over 3,005 cases per commit)
+- **Calls split by commitment; distributions split by capital actually funded** — an LP who has funded nothing is owed nothing back
+- **Optional explicit allocations** for side letters / excused LPs, rejected unless they sum to the event total
+- **4 guardrails**: (a) call can't exceed remaining unfunded (per LP + aggregate); (b) distribution needs capital called first; (c) commitment can't be cut below funded amount; (d) commitments/funds can't be deleted with recorded activity
+- **One-time migration** converts Phase 2's typed figures into an "Opening balance" event. My existing $5M-paid-in fund converted seamlessly — one `Opening balance` call event of $5M appeared, no dashboard drift
+- **DPI moves out of `not_yet_available`** — it needs only distributions / paid-in, not valuations. Only NAV / TVPI / NET IRR remain deferred to Phase 6
+
+**Frontend**:
+- **Capital Activity panel** with Record call / Record distribution actions + inline SVG chart (cumulative called vs distributed on a fixed numeric viewBox — no CSS units in geometry attributes)
+- Paid-in / distributed fields **removed from the commitment modal** with the reason stated inline rather than the fields silently vanishing
+
+**Verified end-to-end** (5 live scenarios all pass):
+- Migration: existing fund got `Opening balance` call for $5M ✅
+- New $10M call created + auto-allocated $10M to the sole LP ✅
+- Over-limit call → **400 "Only 10,000,000.00 remains unfunded across all LPs"** ✅
+- $3M distribution created ✅
+- Dashboard: `committed=$25M · paid_in=$15M · distributed=$3M · called_pct=60% · dpi=0.2` ✅
+- Dashboard `not_yet_available` now `['nav','tvpi','net_irr']` — DPI removed ✅
+- `check_enforcement.py`: 29 checked, 0 problems ✅
+- 68/68 pytest pass ✅
+- Frontend renders new DPI tile, Capital Activity panel with SVG chart ✅
+
+Deploy required for production.
+
+
+
 ## Iter-67 · Mirror PR #18 — Fund Dashboard UI (2026-02-17)
 Cherry-picked commit `0d9c7a3` from `gh/main` (PR #18 — merged). Clean pick. 3 files, +372 lines.
 
