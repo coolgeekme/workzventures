@@ -110,6 +110,10 @@ class UserPublic(BaseModel):
     # restricted nav + the "Become a full member" upgrade CTA. Principals
     # (owners, agents, sellers with their own deals) get "principal".
     account_scope: Literal["collaborator", "principal"] = "principal"
+    # Every permission the user holds across all their roles, mapped to scope.
+    # The nav is built from this, not from `role` alone — otherwise an add-on
+    # role grants API access with no link to reach it.
+    permissions: Dict[str, str] = Field(default_factory=dict)
 
 
 class RegisterRequest(BaseModel):
@@ -318,6 +322,14 @@ async def serialize_user_with_scope(doc: dict) -> dict:
     """Like serialize_user but with the live account_scope computed."""
     base = serialize_user(doc)
     base["account_scope"] = await _compute_account_scope(doc["id"], base["role"])
+    try:
+        from permissions import effective_permissions
+        base["permissions"] = await effective_permissions(db, doc)
+    except Exception as e:
+        # A user with no resolvable permissions still gets a usable session on
+        # their legacy role, rather than a failed login.
+        logger.warning(f"effective permissions unavailable for {doc.get('id')}: {e}")
+        base["permissions"] = {}
     return base
 
 
