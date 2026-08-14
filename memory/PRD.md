@@ -1,6 +1,28 @@
 # Workz Ventures — Enhanced AI-Driven Buyer & Marketing Agency
 
 
+## Iter-69 · Mirror PR #21 — Nav Follows Every Role (2026-02-17)
+Cherry-picked commit `b874e0f` from `gh/fix/nav-follows-additional-roles` (PR #21 — **OPEN** on GitHub, not yet merged). Clean pick. 3 files, +61/-1.
+
+**Bug fixed**: Assigning someone an add-on role (Iter-65's admin UI) granted the API access but the sidebar didn't show the new pages. A Fund Manager with Admin as a second role saw no Users or Roles link. An Advisor with Fund Manager as a second role saw no Fund Dashboard. Users assumed the add-on role wasn't applied at all.
+
+**Fix**:
+- New `effective_permissions()` in `permissions.py` returns the union of permissions across ALL of a user's roles at the widest scope each is granted (uses `widest_scope()` from Iter-58)
+- **`/api/auth/me` payload now carries the full permissions map** — verified: admin returns 45 permission keys with scopes (`deals.read`→`all`, etc.). Frontend stops inferring capability from the legacy `role` string.
+- **`Layout.jsx` appends nav entries** unlocked by add-on roles to the primary role's nav, deduped by path. Driven by permission keys, so custom roles behave exactly like built-in ones.
+- **Collaborator accounts keep their restricted nav** untouched — that restriction is deliberate and must not be widened by a stray permission.
+
+**Verified**:
+- `effective_permissions(admin)` → 45 permission keys ✅
+- `GET /auth/me` → payload includes 45-key `permissions` map ✅
+- `check_enforcement.py`: 29 checked, 0 problems ✅
+- 68/68 pytest pass ✅
+- Layout.jsx lint clean
+
+Deploy required for production.
+
+
+
 ## Iter-68 · Mirror PR #20 — Fund Manager Phase 3: Capital Events (2026-02-17)
 Cherry-picked commit `431a237` from `gh/main` (PR #20 — merged). Clean pick. 2 files, +636/-49.
 
