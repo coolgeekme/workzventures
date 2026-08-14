@@ -117,6 +117,33 @@ const AGENT_NAV = (() => {
   return items;
 })();
 
+/**
+ * Nav entries unlocked by a permission rather than by the primary role.
+ *
+ * A user can hold several roles — Fund Manager as their main one, Admin as an
+ * add-on, or the reverse. The primary role decides the shape of the nav; these
+ * fill in what the add-on roles grant, so a role that was actually assigned is
+ * never invisible in the UI. Each entry is matched against the permissions the
+ * backend reports for the session, so custom roles work the same way built-in
+ * ones do.
+ */
+const PERMISSION_NAV = [
+  { perm: "funds.read", item: { to: "/app/funds", label: "Fund Dashboard", icon: ChartLineUp, group: "Fund Management" } },
+  { perm: "users.manage", item: { to: "/app/admin/users", label: "Users", icon: UsersThree, group: "Platform (Admin)" } },
+  { perm: "roles.manage", item: { to: "/app/admin/roles", label: "Roles & Permissions", icon: ShieldCheck, group: "Platform (Admin)" } },
+  { perm: "audit.read", item: { to: "/app/audit", label: "Audit Logs", icon: ListChecks, group: "Platform (Admin)" } },
+];
+
+/** Primary-role nav, plus anything the user's other roles unlock. */
+function navWithPermissions(baseNav, permissions) {
+  if (!permissions) return baseNav;
+  const present = new Set(baseNav.map((n) => n.to));
+  const extra = PERMISSION_NAV
+    .filter(({ perm, item }) => permissions[perm] && !present.has(item.to))
+    .map(({ item }) => item);
+  return extra.length ? [...baseNav, ...extra] : baseNav;
+}
+
 function navFor(role, accountScope) {
   // Rule 2: collaborator-only accounts get a stripped-down nav regardless of
   // their declared role. They land on the single listing(s) they collaborate
@@ -243,7 +270,11 @@ export default function Layout({ children }) {
   // Rule 2/3: collab-only users (no owned listings, no org-admin) get a
   // restricted nav + upgrade CTA. Computed live on the backend per request.
   const isCollabOnly = user?.account_scope === "collaborator";
-  const NAV = navFor(effectiveRole, user?.account_scope);
+  // Collaborator accounts keep their restricted nav untouched — that
+  // restriction is deliberate and must not be widened by a stray permission.
+  const NAV = isCollabOnly
+    ? navFor(effectiveRole, user?.account_scope)
+    : navWithPermissions(navFor(effectiveRole, user?.account_scope), user?.permissions);
   const groups = [...new Set(NAV.map((n) => n.group))];
   const isSeller = effectiveRole === "seller";
   const isAgent = user?.role === "agent" && !isCollabOnly;

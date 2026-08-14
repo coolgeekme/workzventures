@@ -248,6 +248,23 @@ async def has_permission(db, user: dict, permission: str) -> bool:
     return await scope_for(db, user, permission) != "none"
 
 
+async def effective_permissions(db, user: dict) -> Dict[str, str]:
+    """Every permission this user holds, mapped to its widest scope.
+
+    The nav and other UI affordances are built from this rather than from the
+    single legacy `role` string. Without it, someone granted Fund Manager as an
+    additional role gets the API access but no link to reach it — which reads
+    as the feature being missing rather than as a role that was never applied.
+    """
+    docs = await roles_for_user(db, user)
+    out: Dict[str, str] = {}
+    for d in docs:
+        for key, scope in (d.get("permissions") or {}).items():
+            if scope and scope != "none":
+                out[key] = widest_scope([out.get(key, "none"), scope])
+    return out
+
+
 # --------------------------------------------------------------------------
 # Hierarchy
 #
