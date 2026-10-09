@@ -81,6 +81,13 @@ from permissions import (  # noqa: E402
     can_access_record, require_record_access,
     require_org_member, require_org_admin,
 )
+import mcp_auth  # noqa: E402
+from mcp_auth import (  # noqa: E402
+    COLLECTION as MCP_KEY_COLLECTION,
+    generate_key as mcp_generate_key,
+    make_token_resolver as mcp_make_token_resolver,
+    wrap_key as mcp_wrap_key,
+)
 gridfs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="deal_room_files_fs")
 listing_files_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="listing_staged_files_fs")
 private_locker_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="private_locker_fs")
@@ -5010,6 +5017,106 @@ async def mcp_manifest():
         "gateway": "composio",
         "actions": [{"id": a["id"], "type": a["type"], "description": a["description"]} for a in MCP_ACTIONS],
     }
+
+
+# -----------------------------------------------------------------------------
+# MCP API KEYS
+# -----------------------------------------------------------------------------
+# Long-lived, revocable credentials for the hosted MCP endpoint. The platform JWT
+# expires in JWT_EXPIRY_HOURS, which is fine for a browser session and wrong for an
+# agent whose credential lives in a config file — it would need re-issuing and
+# re-pasting every three days.
+#
+# These endpoints are gated on `team.manage`: minting a credential that carries a
+# user's platform access is a team-management operation, not a self-service one.
+# A key can then be narrowed BELOW that user's permissions via allowed_tools, which
+# the MCP layer enforces before dispatch.
+
+class McpKeyCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    label: str = Field(min_length=1, max_length=80, description="Who or what holds this key.")
+    allowed_tools: Optional[List[str]] = Field(
+        default=None,
+        description="Restrict the key to these MCP tool names. Omit for the full set its owner can reach.",
+    )
+
+
+def _mcp_tool_names() -> List[str]:
+    return sorted({a["id"].replace(".", "_") for a in MCP_ACTIONS})
+
+
+@api_router.post("/mcp/keys")
+async def create_mcp_key(payload: McpKeyCreate, user=Depends(get_current_user)):
+    """Mint an agent key. The plaintext is returned ONCE and never stored."""
+    await require_permission(db, user, "team.manage")
+
+    requested = payload.allowed_tools or None
+    if requested is not None:
+        if not requested:
+            raise HTTPException(status_code=400, detail="allowed_tools cannot be empty; omit it for full access.")
+        known = _mcp_tool_names()
+        unknown = sorted(set(requested) - set(known))
+        if unknown:
+            # Refuse rather than silently dropping: a typo here would quietly lock
+            # a tool out and look like a broken integration later.
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown tool name(s): {', '.join(unknown)}. Valid names: {', '.join(known)}",
+            )
+
+    generated = mcp_generate_key()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "label": payload.label.strip(),
+        "prefix": generated["prefix"],
+        "key_hash": generated["hash"],
+        "user_id": user["id"],
+        "allowed_tools": sorted(requested) if requested else None,
+        "created_at": now_utc().isoformat(),
+        "created_by": user["id"],
+        "last_used_at": None,
+        "use_count": 0,
+        "revoked_at": None,
+    }
+    await db[MCP_KEY_COLLECTION].insert_one(doc)
+    await log_audit(
+        user["id"],
+        "mcp.key.create",
+        doc["id"],
+        {"label": doc["label"], "allowed_tools": doc["allowed_tools"]},
+    )
+    response = mcp_wrap_key(doc)
+    response["key"] = generated["plaintext"]
+    response["_note"] = (
+        "Store this now — it is not recoverable. Present it as "
+        "'Authorization: Bearer <key>' to POST /api/mcp/server."
+    )
+    return response
+
+
+@api_router.get("/mcp/keys")
+async def list_mcp_keys(user=Depends(get_current_user)):
+    await require_permission(db, user, "team.manage")
+    docs = await db[MCP_KEY_COLLECTION].find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return {"keys": [mcp_wrap_key(d) for d in docs], "count": len(docs)}
+
+
+@api_router.delete("/mcp/keys/{kid}")
+async def revoke_mcp_key(kid: str, user=Depends(get_current_user)):
+    """Revoke a key. Marked rather than deleted so the audit trail survives."""
+    await require_permission(db, user, "team.manage")
+    doc = await db[MCP_KEY_COLLECTION].find_one({"id": kid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="No such key")
+    if doc.get("revoked_at"):
+        return {"ok": True, "already_revoked": True, **mcp_wrap_key(doc)}
+    stamp = now_utc().isoformat()
+    await db[MCP_KEY_COLLECTION].update_one(
+        {"id": kid}, {"$set": {"revoked_at": stamp, "revoked_by": user["id"]}}
+    )
+    await log_audit(user["id"], "mcp.key.revoke", kid, {"label": doc.get("label")})
+    doc["revoked_at"] = stamp
+    return {"ok": True, **mcp_wrap_key(doc)}
 
 
 # -----------------------------------------------------------------------------
@@ -12506,6 +12613,64 @@ async def migrate_opening_balances(db) -> int:
 
 
 app.include_router(api_router)
+
+
+# -----------------------------------------------------------------------------
+# MCP SERVER (hosted Streamable HTTP transport)
+# -----------------------------------------------------------------------------
+# The WebMCP surface above (data-mcp-action + /api/mcp/manifest) only reaches an
+# agent driving a browser tab. This adds the network transport so desktop and
+# server-side clients — Claude Desktop, ChatGPT connectors, Hermes — can connect
+# with a bearer token. Tools are generated from MCP_ACTIONS, so the two surfaces
+# cannot drift.
+#
+# Two details here are load-bearing:
+#
+#  1. The mount point is the PARENT of the public endpoint. Starlette's Mount
+#     emits a 307 when the request path equals the mount path, and MCP clients
+#     post bare URLs without following redirects.
+#  2. The session manager must be started in THIS app's lifespan. Starlette does
+#     not run a mounted app's lifespan, and without it every request fails with
+#     "Task group is not initialized".
+#
+# Must stay AFTER app.include_router so /api/mcp/manifest and /api/mcp/actions
+# keep matching their own registered routes.
+from mcp_server import build_mcp_app, compose_lifespan, mcp_mount_prefix  # noqa: E402
+
+MCP_ENDPOINT_PATH = os.environ.get("MCP_ENDPOINT_PATH", "/api/mcp/server")
+
+
+async def _audit_rejected_key(reason: str, key_id: Optional[str]) -> None:
+    """Record a refused credential in the audit chain.
+
+    A rejected key is exactly the event you want a record of — either the agent's
+    config is stale or someone is probing. Never let a logging failure block the
+    rejection itself.
+    """
+    try:
+        await log_audit(
+            key_id or "unknown",
+            f"mcp.key.reject.{reason}",
+            key_id or "",
+            {"path": MCP_ENDPOINT_PATH},
+        )
+    except Exception as exc:  # pragma: no cover - audit must not break auth
+        logger.warning("could not audit rejected MCP key: %s", exc)
+
+
+_mcp_app = build_mcp_app(
+    MCP_ACTIONS,
+    app,
+    name="NextCapOS MCP",
+    version=app.version,
+    endpoint_path=MCP_ENDPOINT_PATH,
+    # Exchanges a long-lived agent key for a normal platform token, so every
+    # downstream route keeps using get_current_user and the existing RBAC.
+    token_resolver=mcp_make_token_resolver(db, create_token, on_reject=_audit_rejected_key),
+)
+app.mount(mcp_mount_prefix(MCP_ENDPOINT_PATH), _mcp_app)
+app.router.lifespan_context = compose_lifespan(app.router.lifespan_context, _mcp_app)
+logger.info("MCP endpoint mounted at %s", MCP_ENDPOINT_PATH)
 
 
 @app.middleware("http")
