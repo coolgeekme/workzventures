@@ -122,7 +122,11 @@ An agent gets something it can act on rather than an opaque failure:
 ## Connecting a client
 
 **Claude Desktop** (`claude_desktop_config.json`) — via `mcp-remote`, which
-bridges a stdio client to a remote HTTP server:
+bridges a stdio client to a remote HTTP server.
+
+`mcp-remote` expands `${VAR}` from the server entry's own `env` object, so the
+key has to be supplied there. Without the `env` block the placeholder is left
+unresolved and every tool call fails authentication:
 
 ```json
 {
@@ -133,11 +137,18 @@ bridges a stdio client to a remote HTTP server:
         "-y", "mcp-remote",
         "https://app.nextcapos.com/api/mcp/server",
         "--header", "Authorization: Bearer ${NEXTCAPOS_KEY}"
-      ]
+      ],
+      "env": {
+        "NEXTCAPOS_KEY": "paste-your-nck-key-here"
+      }
     }
   }
 }
 ```
+
+Because the key is long-lived, pasting it directly into the `--header` argument
+instead of using `env` is also fine and one less moving part. Keep it out of a
+file you might commit — this is a config file, so treat it like one.
 
 **Hermes** — add to `~/.hermes/config.yaml`. Note that Hermes stores HTTP MCP
 credentials as a static header, which is exactly why the long-lived key exists:
@@ -163,8 +174,17 @@ unauthenticated `initialize` with a JSON-RPC error *about the request*, never a
 | Env var | Default | Purpose |
 |---|---|---|
 | `MCP_ENDPOINT_PATH` | `/api/mcp/server` | Public path of the endpoint |
-| `MCP_ALLOWED_HOSTS` | `app.nextcapos.com,nextcapos.com,127.0.0.1:*,localhost:*,[::1]:*` | Host/Origin allowlist for DNS-rebinding protection |
+| `MCP_ALLOWED_HOSTS` | `app.nextcapos.com,nextcapos.com,127.0.0.1:*,localhost:*,[::1]:*` | Host allowlist for DNS-rebinding protection |
+| `MCP_ALLOWED_ORIGINS` | *derived from `MCP_ALLOWED_HOSTS`* | Origin allowlist; only set this to override the derivation |
 | `MCP_MAX_TOOL_CHARS` | `100000` | Cap on tool output handed to a client |
+
+**Host and Origin must be configured together.** They are two halves of the same
+check: if you point `MCP_ALLOWED_HOSTS` at a new hostname but leave the origin list
+fixed, the request passes Host validation and then fails Origin validation with a
+`400` — and only browser-based clients ever hit it, which makes it a confusing
+thing to debug. So origins are *derived* from the hosts by default
+(`origins_for_hosts`) and `MCP_ALLOWED_ORIGINS` exists only as an explicit
+override.
 
 ## Two things that will break it if you "clean them up"
 
@@ -211,9 +231,9 @@ reports no broken requirements against the full pinned stack.
 cd backend && python -m pytest tests/test_mcp_server.py tests/test_mcp_auth.py -v
 ```
 
-**40 tests.**
+**43 tests.**
 
-`test_mcp_server.py` (20) reads `MCP_ACTIONS` out of `server.py` with `ast` — so no
+`test_mcp_server.py` (23) reads `MCP_ACTIONS` out of `server.py` with `ast` — so no
 database or env vars are needed — then drives the real Streamable HTTP transport
 through an in-process ASGI client. It asserts: every manifest action becomes
 exactly one tool · names are spec-safe · optional params stay optional · the
@@ -221,7 +241,7 @@ credential is forwarded **resolved, not raw** · POST bodies carry only supplied
 params · path params are substituted and stripped from the body · a missing
 required param is rejected *before* dispatch · a rejected key never reaches an
 endpoint · a restricted key is refused for tools outside its list · a resolver that
-raises fails closed · 401/403 surface as structured data with an actionable hint.
+raises fails closed · Host and Origin stay in step when hosts are overridden · 401/403 surface as structured data with an actionable hint.
 
 `test_mcp_auth.py` (20) covers the key layer against an in-memory Mongo stand-in:
 key entropy and prefix · the plaintext is unrecoverable from the stored record ·

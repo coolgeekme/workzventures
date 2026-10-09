@@ -31,6 +31,7 @@ from mcp_server import (  # noqa: E402
     build_mcp_app,
     compose_lifespan,
     mcp_mount_prefix,
+    origins_for_hosts,
     tool_name_for,
 )
 from mcp_auth import McpPrincipal  # noqa: E402
@@ -496,3 +497,56 @@ def test_resolver_sees_the_raw_header_exactly_as_sent():
     app = make_app_with_resolver(backend, spy)
     asyncio.run(call_tool(app, "dashboard_kpis", {}, token="Bearer nck_exact_value"))
     assert "Bearer nck_exact_value" in seen
+
+
+# --------------------------------------------------------------------------
+# Transport security: Host and Origin must be configured together
+# --------------------------------------------------------------------------
+
+
+def test_origins_are_derived_from_the_host_allowlist():
+    """Deploying on a custom hostname must not leave Origin validation behind.
+
+    A Host allowlist that is configurable while the Origin list is hard-coded
+    produces a deployment where Host checks pass and Origin checks 400 — and only
+    browser-based clients ever see it.
+    """
+    origins = origins_for_hosts(["example.test", "127.0.0.1:*"])
+    assert "https://example.test" in origins
+    assert "http://example.test" in origins
+    assert "https://127.0.0.1:*" in origins
+
+
+def test_custom_hosts_are_reflected_in_transport_security():
+    """Building with custom hosts must produce matching origins."""
+    backend = FakeBackend()
+    app = make_app(backend, allowed_hosts=["custom.host", "other.host:*"])
+
+    settings = None
+    for route in app.routes:
+        inner = getattr(route, "app", None)
+        if inner is not None and hasattr(inner, "session_manager"):
+            manager = inner.session_manager
+            settings = getattr(manager, "security_settings", None)
+            break
+
+    assert settings is not None, "expected the transport security settings on the mounted app"
+    assert "custom.host" in settings.allowed_hosts
+    assert "other.host:*" in settings.allowed_hosts
+    # The crux: the origins moved WITH the hosts.
+    assert "https://custom.host" in settings.allowed_origins
+    assert "https://other.host:*" in settings.allowed_origins
+
+
+def test_explicit_origin_override_wins(monkeypatch):
+    monkeypatch.setenv("MCP_ALLOWED_ORIGINS", "https://only.this")
+    backend = FakeBackend()
+    app = make_app(backend, allowed_hosts=["custom.host"])
+
+    for route in app.routes:
+        inner = getattr(route, "app", None)
+        if inner is not None and hasattr(inner, "session_manager"):
+            settings = inner.session_manager.security_settings
+            assert settings.allowed_origins == ["https://only.this"]
+            return
+    raise AssertionError("expected the mounted MCP app")

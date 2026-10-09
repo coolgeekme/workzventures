@@ -82,12 +82,15 @@ DEFAULT_ALLOWED_HOSTS = [
     "[::1]:*",
 ]
 
-ALLOWED_ORIGINS = [
-    "https://app.nextcapos.com",
-    "https://nextcapos.com",
-    "http://127.0.0.1:*",
-    "http://localhost:*",
-]
+def origins_for_hosts(hosts: List[str]) -> List[str]:
+    """Derive the Origin allowlist from a Host allowlist.
+
+    Host and Origin are two halves of the same DNS-rebinding check. Hard-coding
+    one while the other is configurable produces a deployment that passes Host
+    validation and then fails Origin validation with a 400 — the failure only
+    appears for browser-based clients, which makes it expensive to diagnose.
+    """
+    return [f"{scheme}://{host}" for host in hosts for scheme in ("https", "http")]
 
 _PY_TYPES: Dict[str, Any] = {
     "string": str,
@@ -202,6 +205,14 @@ def build_mcp_app(
         if h.strip()
     ]
 
+    # An explicit origin list wins; otherwise derive it from the hosts so the two
+    # cannot disagree (see origins_for_hosts).
+    allowed_origins = [
+        o.strip()
+        for o in os.environ.get("MCP_ALLOWED_ORIGINS", "").split(",")
+        if o.strip()
+    ] or origins_for_hosts(allowed_hosts)
+
     # Split the public endpoint into the prefix FastAPI mounts at and the segment
     # the MCP app serves internally.
     #
@@ -239,12 +250,18 @@ def build_mcp_app(
     # The MCP app serves at the inner segment; FastAPI mounts its parent prefix.
     mcp.settings.streamable_http_path = segment
 
-    # The SDK defaults to a loopback-only Host allowlist, which returns 421 for
-    # any real domain. Name the deployment hosts, or the endpoint looks dead.
+    # The SDK ships DNS-rebinding protection with a LOOPBACK-ONLY default, which
+    # returns 421 for any real domain — so the deployment hosts must be named or
+    # the endpoint looks dead.
     mcp.settings.transport_security = TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=allowed_hosts,
-        allowed_origins=ALLOWED_ORIGINS,
+        # Origins are DERIVED from the configured hosts, not hard-coded. Both are
+        # part of the same check: with a fixed origin list, deploying on a custom
+        # hostname (via MCP_ALLOWED_HOSTS) would pass Host validation and then fail
+        # Origin validation with a 400 — a confusing failure that only shows up in
+        # a browser-based client. Set MCP_ALLOWED_ORIGINS to override outright.
+        allowed_origins=allowed_origins,
     )
 
     transport = httpx.ASGITransport(app=asgi_app)
