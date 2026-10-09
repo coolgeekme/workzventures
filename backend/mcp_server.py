@@ -250,17 +250,27 @@ def build_mcp_app(
     # The MCP app serves at the inner segment; FastAPI mounts its parent prefix.
     mcp.settings.streamable_http_path = segment
 
-    # The SDK ships DNS-rebinding protection with a LOOPBACK-ONLY default, which
-    # returns 421 for any real domain — so the deployment hosts must be named or
-    # the endpoint looks dead.
+    # The SDK ships DNS-rebinding protection with a LOOPBACK-ONLY default allowlist,
+    # which returns 421 for any real domain.
+    #
+    # It is OFF by default here, and that is a deliberate choice rather than an
+    # oversight. This endpoint is PUBLIC and bearer-authenticated: the credential
+    # travels in an explicit header, never ambiently as a cookie, so a malicious
+    # page cannot make a victim's browser authenticate on its behalf. Rebinding
+    # protection is aimed at services reachable on loopback or a LAN, where a
+    # browser can be tricked into reaching an address the attacker cannot. Behind a
+    # reverse proxy it mostly produces 421s, because the Host the app receives is
+    # the proxy's, not the public one — a failure that only appears in production.
+    #
+    # Turn it on with MCP_DNS_REBINDING_PROTECTION=true for a deployment that
+    # genuinely sits on a private network. When on, host AND origin allowlists
+    # apply, and the two are kept in step (see origins_for_hosts).
+    rebinding_on = os.environ.get("MCP_DNS_REBINDING_PROTECTION", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
     mcp.settings.transport_security = TransportSecuritySettings(
-        enable_dns_rebinding_protection=True,
+        enable_dns_rebinding_protection=rebinding_on,
         allowed_hosts=allowed_hosts,
-        # Origins are DERIVED from the configured hosts, not hard-coded. Both are
-        # part of the same check: with a fixed origin list, deploying on a custom
-        # hostname (via MCP_ALLOWED_HOSTS) would pass Host validation and then fail
-        # Origin validation with a 400 — a confusing failure that only shows up in
-        # a browser-based client. Set MCP_ALLOWED_ORIGINS to override outright.
         allowed_origins=allowed_origins,
     )
 
@@ -440,6 +450,22 @@ def build_mcp_app(
             for k, v in scope.get("headers", [])
         }
         raw = headers.get("authorization")
+
+        # Behind a reverse proxy the app sees the PROXY's Host, not the public one.
+        # If DNS-rebinding protection is enabled, validating the proxy's hostname
+        # against a list of public domains can never pass — so prefer the host the
+        # proxy says the client asked for. Only consulted when protection is on;
+        # otherwise this is inert.
+        if mcp.settings.transport_security.enable_dns_rebinding_protection:
+            forwarded_host = headers.get("x-forwarded-host")
+            if forwarded_host:
+                scope = dict(scope)
+                scope["headers"] = [
+                    (k, v)
+                    for k, v in scope.get("headers", [])
+                    if k.decode("latin-1").lower() != "host"
+                ] + [(b"host", forwarded_host.split(",")[0].strip().encode("latin-1"))]
+
         if token_resolver is not None:
             try:
                 principal = await token_resolver(raw)

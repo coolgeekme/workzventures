@@ -40,6 +40,9 @@ from mcp.client.streamable_http import streamablehttp_client  # noqa: E402
 
 ENDPOINT_PATH = "/api/mcp/server"
 MOUNT_PREFIX = mcp_mount_prefix(ENDPOINT_PATH)
+# The mounted app serves at the inner segment; Mount strips the prefix. Direct
+# ASGI calls must use this path or they 404 before any middleware runs.
+INNER_PATH = "/" + ENDPOINT_PATH.rsplit("/", 1)[1]
 
 
 def load_actions():
@@ -550,3 +553,171 @@ def test_explicit_origin_override_wins(monkeypatch):
             assert settings.allowed_origins == ["https://only.this"]
             return
     raise AssertionError("expected the mounted MCP app")
+
+
+# --------------------------------------------------------------------------
+# DNS-rebinding protection must not break a proxied deployment
+# --------------------------------------------------------------------------
+
+
+def _transport_settings(app):
+    for route in app.routes:
+        inner = getattr(route, "app", None)
+        if inner is not None and hasattr(inner, "session_manager"):
+            return inner.session_manager.security_settings
+    raise AssertionError("mounted MCP app not found")
+
+
+def _mcp_app_of(app):
+    for route in app.routes:
+        inner = getattr(route, "app", None)
+        if inner is not None and hasattr(inner, "session_manager"):
+            return inner
+    raise AssertionError("mounted MCP app not found")
+
+
+def asgi_probe(app, scope):
+    """Fire one raw ASGI request at the MOUNTED MCP app and return its status.
+
+    Bypasses the parent router (so a call can carry an arbitrary Host), but still
+    enters the app lifespan — without it the session manager is unstarted and the
+    request dies with "Task group is not initialized" before any header check.
+    """
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(msg):
+        sent.append(msg)
+
+    async def run():
+        async with app_lifespan(app):
+            await _mcp_app_of(app)(scope, receive, send)
+
+    asyncio.run(run())
+    return next((m["status"] for m in sent if m["type"] == "http.response.start"), None)
+
+
+def test_rebinding_protection_is_off_by_default():
+    """A public, bearer-authenticated endpoint must not 421 behind a proxy.
+
+    The SDK defaults to ON with a loopback-only allowlist, which rejects the real
+    domain — a production-only failure that costs a redeploy to discover.
+    """
+    backend = FakeBackend()
+    app = make_app(backend)
+    assert _transport_settings(app).enable_dns_rebinding_protection is False
+
+
+def test_rebinding_protection_can_be_enabled(monkeypatch):
+    monkeypatch.setenv("MCP_DNS_REBINDING_PROTECTION", "true")
+    backend = FakeBackend()
+    app = make_app(backend, allowed_hosts=["public.example"])
+    settings = _transport_settings(app)
+    assert settings.enable_dns_rebinding_protection is True
+    assert "public.example" in settings.allowed_hosts
+    assert "https://public.example" in settings.allowed_origins
+
+
+def test_enabling_protection_accepts_the_proxied_public_host(monkeypatch):
+    """With protection on, X-Forwarded-Host must be what gets validated.
+
+    The app sees the proxy's Host, so validating THAT against a list of public
+    domains can never pass. Without this the opt-in flag is a trap: turning on the
+    protection would take the endpoint down in any proxied deployment.
+    """
+    monkeypatch.setenv("MCP_DNS_REBINDING_PROTECTION", "true")
+    backend = FakeBackend()
+    app = make_app(backend, allowed_hosts=["public.example"])
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "path": INNER_PATH,
+        "raw_path": INNER_PATH.encode(),
+        "root_path": "",
+        "query_string": b"",
+        "headers": [
+            (b"host", b"internal-proxy.local:8001"),   # what the proxy forwards
+            (b"x-forwarded-host", b"public.example"),  # what the client asked for
+            (b"content-type", b"application/json"),
+            (b"accept", b"application/json, text/event-stream"),
+        ],
+        "client": ("10.0.0.1", 1234),
+        "server": ("internal-proxy.local", 8001),
+        "scheme": "http",
+    }
+
+    status = asgi_probe(app, scope)
+    assert status != 421, f"proxied public host was rejected with {status}"
+    assert status != 404, "request never reached the MCP handler"
+
+
+def test_proxied_host_ignored_when_protection_is_off():
+    """With protection off, the Host rewrite must not fire at all."""
+    backend = FakeBackend()
+    app = make_app(backend)
+    assert _transport_settings(app).enable_dns_rebinding_protection is False
+
+
+def test_bogus_internal_host_does_not_421_when_protection_is_off():
+    """The exact production failure this guards against.
+
+    Production sits behind an ingress that forwards its own Host, so the app saw
+    something other than app.nextcapos.com. With the SDK's default (protection ON,
+    loopback-only allowlist) the live endpoint answered 421 Invalid Host header and
+    was unreachable — while every other route on the same host worked fine.
+    """
+    backend = FakeBackend()
+    app = make_app(backend)  # default settings: protection off
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "path": INNER_PATH,
+        "raw_path": INNER_PATH.encode(),
+        "root_path": "",
+        "query_string": b"",
+        "headers": [
+            (b"host", b"internal-ingress.local:8001"),   # <- what prod actually sent
+            (b"content-type", b"application/json"),
+            (b"accept", b"application/json, text/event-stream"),
+        ],
+        "client": ("10.0.0.1", 1234),
+        "server": ("internal-ingress.local", 8001),
+        "scheme": "http",
+    }
+    status = asgi_probe(app, scope)
+    assert status not in (421, 404), (
+        f"expected the request to reach the MCP handler, got {status}"
+    )
+
+
+def test_protection_on_still_rejects_an_unknown_host(monkeypatch):
+    """The flip side: when opted in, the check must still actually reject."""
+    monkeypatch.setenv("MCP_DNS_REBINDING_PROTECTION", "true")
+    backend = FakeBackend()
+    app = make_app(backend, allowed_hosts=["allowed.example"])
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "path": INNER_PATH,
+        "raw_path": INNER_PATH.encode(),
+        "root_path": "",
+        "query_string": b"",
+        "headers": [
+            (b"host", b"attacker.example"),
+            (b"content-type", b"application/json"),
+            (b"accept", b"application/json, text/event-stream"),
+        ],
+        "client": ("10.0.0.1", 1234),
+        "server": ("allowed.example", 443),
+        "scheme": "https",
+    }
+    status = asgi_probe(app, scope)
+    assert status == 421
