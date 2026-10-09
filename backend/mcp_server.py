@@ -18,13 +18,18 @@ Design notes
   surfaces cannot drift. Adding a WebMCP action automatically adds an MCP tool.
   There is no second hand-maintained tool list to fall out of date.
 
-* **Dispatch is in-process, and the caller's token is forwarded.** Each tool
+* **Dispatch is in-process, and the caller's identity is forwarded.** Each tool
   call is issued to the app's *own* ASGI stack via ``httpx.ASGITransport`` rather
   than back over the network, so the target port is never assumed. The
-  ``Authorization`` header from the MCP client is passed through unchanged, which
-  means the existing JWT auth, ``require_permission`` gates and audit logging all
-  apply exactly as they do to the web app. No business logic is duplicated here,
-  and no privilege is escalated by going through MCP.
+  ``Authorization`` header from the MCP client is resolved by the injected
+  ``token_resolver`` (see ``mcp_auth.py``) and the resulting platform token is
+  forwarded, which means the existing JWT auth, ``require_permission`` gates and
+  audit logging all apply exactly as they do to the web app. No business logic is
+  duplicated here, and no privilege is escalated by going through MCP.
+
+* **A key can be narrower than its owner.** If the resolved principal carries an
+  ``allowed_tools`` list, a tool outside it is refused *before* dispatch. Both the
+  key's scope and the user's RBAC have to allow a call.
 
 * **Errors are returned as data, not raised.** An MCP client sees a structured
   ``{"ok": False, "status": 401, ...}`` payload explaining what went wrong,
@@ -46,12 +51,16 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
+from mcp_auth import McpPrincipal, Resolver as TokenResolver
+
 logger = logging.getLogger("workz.mcp")
 
-# The MCP client's bearer token, captured from the HTTP request and read back
-# inside the tool handler. A ContextVar (not a global) so concurrent tool calls
-# from different users cannot see each other's credentials.
-_current_auth: ContextVar[Optional[str]] = ContextVar("nextcapos_mcp_auth", default=None)
+# The resolved identity for the current request, captured from the HTTP request
+# and read back inside the tool handler. A ContextVar (not a global) so concurrent
+# tool calls from different users cannot see each other's credentials.
+_current_principal: ContextVar[Optional["McpPrincipal"]] = ContextVar(
+    "nextcapos_mcp_principal", default=None
+)
 
 #: Path params declared in an action endpoint, e.g. ``/api/leads/{lead_id}/stage``.
 _PATH_PARAM_RE = r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}"
@@ -173,12 +182,17 @@ def build_mcp_app(
     instructions: Optional[str] = None,
     allowed_hosts: Optional[List[str]] = None,
     endpoint_path: str = "/api/mcp/server",
+    token_resolver: Optional[TokenResolver] = None,
 ) -> Any:
     """Return a Starlette ASGI app implementing the MCP Streamable HTTP transport.
 
     Mount it on the FastAPI app (see the bottom of ``server.py``). ``asgi_app`` is
     the FastAPI application itself, used as the in-process transport target for
     tool dispatch.
+
+    ``token_resolver`` maps the inbound ``Authorization`` header to a principal
+    (see ``mcp_auth.make_token_resolver``). When omitted the header is forwarded
+    unchanged, which is what the transport tests use.
     """
     allowed_hosts = allowed_hosts or [
         h.strip()
@@ -236,15 +250,53 @@ def build_mcp_app(
     transport = httpx.ASGITransport(app=asgi_app)
     registered: List[str] = []
 
-    def _make_handler(bound_action: Dict[str, Any]) -> Callable:
-        """Create a handler that dispatches to one specific action."""
+    def _make_handler(bound_action: Dict[str, Any], bound_tool: str) -> Callable:
+        """Create a handler that dispatches to one specific action.
+
+        ``bound_tool`` is closed over explicitly: deriving it inside the handler
+        from the principal would let a restricted key be checked against the wrong
+        name.
+        """
 
         async def _handler(**kwargs: Any) -> Any:
-            return await dispatch(bound_action, kwargs)
+            return await dispatch(bound_action, kwargs, bound_tool)
 
         return _handler
 
-    async def dispatch(action: Dict[str, Any], arguments: Dict[str, Any]) -> Any:
+    async def dispatch(
+        action: Dict[str, Any], arguments: Dict[str, Any], tool_name: str
+    ) -> Any:
+        principal = _current_principal.get() or McpPrincipal()
+
+        # A key that was presented but rejected gets a precise reason, rather
+        # than a forwarded request that fails upstream with an opaque 401.
+        if principal.error:
+            return {
+                "ok": False,
+                "status": principal.error_status,
+                "error": principal.error,
+                "hint": (
+                    "Issue a new key from the platform (POST /api/mcp/keys) and "
+                    "update the client's Authorization header."
+                ),
+            }
+
+        # A key may be narrower than its owner: enforce its own tool scope before
+        # dispatch, on top of whatever RBAC the platform will apply downstream.
+        if not principal.permits(tool_name):
+            return {
+                "ok": False,
+                "status": 403,
+                "error": (
+                    f"API key '{principal.key_label or principal.key_id}' is not "
+                    f"permitted to call '{tool_name}'."
+                ),
+                "hint": (
+                    "This key carries an allowed-tools list. Allowed: "
+                    f"{', '.join(principal.allowed_tools or [])}."
+                ),
+            }
+
         endpoint = action.get("endpoint") or ""
         method = (action.get("method") or "GET").upper()
 
@@ -269,9 +321,8 @@ def build_mcp_app(
             return {"ok": False, "error": f"Missing path parameter(s): {', '.join(missing)}"}
 
         headers = {"Accept": "application/json"}
-        token = _current_auth.get()
-        if token:
-            headers["Authorization"] = token
+        if principal.forward_header:
+            headers["Authorization"] = principal.forward_header
 
         kwargs: Dict[str, Any] = {"headers": headers}
         if method in ("POST", "PUT", "PATCH"):
@@ -343,7 +394,7 @@ def build_mcp_app(
         # A bare closure over the loop variable would leave every tool
         # dispatching to whichever action the loop finished on — nine tools all
         # calling the last endpoint.
-        _handler = _make_handler(action)
+        _handler = _make_handler(action, tool_name)
         _handler.__name__ = tool_name
         _handler.__doc__ = (
             f"{action.get('description', '')}\n\n"
@@ -358,7 +409,12 @@ def build_mcp_app(
     inner = mcp.streamable_http_app()
 
     async def app_with_auth(scope, receive, send):
-        """Capture the caller's Authorization header for the tool dispatcher."""
+        """Resolve the caller's credential for the tool dispatcher.
+
+        Resolution happens once, here, rather than inside each handler — the
+        inbound header arrives on the transport request, and the tool call itself
+        is a separate message inside it.
+        """
         if scope["type"] != "http":
             await inner(scope, receive, send)
             return
@@ -366,11 +422,25 @@ def build_mcp_app(
             k.decode("latin-1").lower(): v.decode("latin-1")
             for k, v in scope.get("headers", [])
         }
-        token = _current_auth.set(headers.get("authorization"))
+        raw = headers.get("authorization")
+        if token_resolver is not None:
+            try:
+                principal = await token_resolver(raw)
+            except Exception as exc:  # noqa: BLE001 - never 500 the transport
+                logger.warning("MCP credential resolution failed: %s", exc)
+                principal = McpPrincipal(
+                    error="Could not verify the supplied credential.",
+                    error_status=401,
+                )
+        else:
+            # No resolver wired: forward verbatim. Used by the transport tests.
+            principal = McpPrincipal(forward_header=raw)
+
+        token = _current_principal.set(principal)
         try:
             await inner(scope, receive, send)
         finally:
-            _current_auth.reset(token)
+            _current_principal.reset(token)
 
     # Expose the session manager so the host app can run it in ITS lifespan.
     #

@@ -33,6 +33,7 @@ from mcp_server import (  # noqa: E402
     mcp_mount_prefix,
     tool_name_for,
 )
+from mcp_auth import McpPrincipal  # noqa: E402
 from mcp.client.session import ClientSession  # noqa: E402
 from mcp.client.streamable_http import streamablehttp_client  # noqa: E402
 
@@ -352,3 +353,146 @@ def test_unknown_tool_name_is_rejected():
     out = asyncio.run(attempt())
     assert backend.calls == []
     assert "not_a_real_tool" in json.dumps(parse_tool_result(out))
+
+
+# --------------------------------------------------------------------------
+# Credential resolution at the transport boundary
+#
+# With a token_resolver wired, the header a tool call arrives with is not
+# necessarily the header that gets forwarded. These pin that down: a resolved
+# identity replaces the raw credential, a rejected credential never reaches an
+# endpoint, and a key's own tool scope is enforced before dispatch.
+# --------------------------------------------------------------------------
+
+
+def make_app_with_resolver(backend, resolver):
+    app = FastAPI()
+    mcp_app = build_mcp_app(
+        ACTIONS,
+        backend,
+        allowed_hosts=["test", "test:*"],
+        endpoint_path=ENDPOINT_PATH,
+        token_resolver=resolver,
+    )
+    app.mount(MOUNT_PREFIX, mcp_app)
+    app.router.lifespan_context = compose_lifespan(app.router.lifespan_context, mcp_app)
+    return app
+
+
+def const_resolver(principal):
+    async def resolve(raw_header):
+        return principal
+
+    return resolve
+
+
+def test_resolver_replaces_the_inbound_credential():
+    """The endpoint must see the RESOLVED identity, never the raw agent key."""
+    backend = FakeBackend()
+    app = make_app_with_resolver(
+        backend, const_resolver(McpPrincipal(forward_header="Bearer exchanged-jwt"))
+    )
+    asyncio.run(call_tool(app, "leads_list", {}, token="Bearer nck_agentkey"))
+    assert backend.calls[-1]["headers"]["authorization"] == "Bearer exchanged-jwt"
+    assert "nck_agentkey" not in json.dumps(backend.calls[-1]["headers"])
+
+
+def test_rejected_credential_never_reaches_an_endpoint():
+    backend = FakeBackend()
+    app = make_app_with_resolver(
+        backend,
+        const_resolver(
+            McpPrincipal(error="API key not recognised.", error_status=401)
+        ),
+    )
+    out = asyncio.run(call_tool(app, "leads_list", {}, token="Bearer nck_revoked"))
+    assert out["ok"] is False
+    assert out["status"] == 401
+    assert "not recognised" in out["error"]
+    assert backend.calls == []
+
+
+def test_key_tool_scope_is_enforced_before_dispatch():
+    """A restricted key is refused for tools outside its list, before dispatch.
+
+    Both calls share ONE session on purpose: the MCP session manager's run() may
+    only be entered once per instance, so a test cannot open the lifespan twice
+    against the same app.
+    """
+    backend = FakeBackend()
+    app = make_app_with_resolver(
+        backend,
+        const_resolver(
+            McpPrincipal(
+                forward_header="Bearer exchanged-jwt",
+                allowed_tools=["leads_list"],
+                key_id="k-1",
+                key_label="Hermes (read-only)",
+            )
+        ),
+    )
+
+    async def both_calls():
+        def factory(headers=None, timeout=None, auth=None):
+            return httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test",
+                headers=headers or {},
+                timeout=timeout or 30,
+                auth=auth,
+            )
+
+        results = {}
+        async with app_lifespan(app):
+            async with streamablehttp_client(
+                f"http://test{ENDPOINT_PATH}",
+                headers={"Authorization": "Bearer nck_agentkey"},
+                httpx_client_factory=factory,
+            ) as (read, write, _):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    allowed = await session.call_tool("leads_list", {})
+                    results["allowed"] = parse_tool_result(allowed)
+                    blocked = await session.call_tool(
+                        "newsletter_dispatch", {"id": "nl-1"}
+                    )
+                    results["blocked"] = parse_tool_result(blocked)
+        return results
+
+    results = asyncio.run(both_calls())
+
+    assert results["allowed"].get("ok") is True
+    assert results["blocked"]["ok"] is False
+    assert results["blocked"]["status"] == 403
+    assert "newsletter_dispatch" in results["blocked"]["error"]
+    assert "leads_list" in results["blocked"]["hint"]
+    # Crucially: the refused call dispatched nothing, so the backend saw only one.
+    assert len(backend.calls) == 1
+    assert backend.calls[0]["path"] == "/api/leads"
+
+
+def test_a_failing_resolver_fails_closed():
+    """An exception while resolving must not fall through to an unauthenticated call."""
+
+    async def explode(raw_header):
+        raise RuntimeError("mongo down")
+
+    backend = FakeBackend()
+    app = make_app_with_resolver(backend, explode)
+    out = asyncio.run(call_tool(app, "leads_list", {}, token="Bearer nck_anything"))
+    assert out["ok"] is False
+    assert out["status"] == 401
+    assert backend.calls == []
+
+
+def test_resolver_sees_the_raw_header_exactly_as_sent():
+    seen = []
+
+    async def spy(raw_header):
+        seen.append(raw_header)
+        return McpPrincipal(forward_header="Bearer exchanged")
+
+    backend = FakeBackend()
+    app = make_app_with_resolver(backend, spy)
+    asyncio.run(call_tool(app, "dashboard_kpis", {}, token="Bearer nck_exact_value"))
+    assert "Bearer nck_exact_value" in seen

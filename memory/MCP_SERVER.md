@@ -47,27 +47,76 @@ original id is preserved in each tool's description.
 | `composio_linkedin_connect` | `POST /api/composio/connect/linkedin` | imperative |
 | `dashboard_kpis` | `GET /api/dashboard/stats` | declarative |
 
-## Auth and permissions
+## Auth: API keys (preferred) or a JWT
 
-The MCP endpoint **does not bypass the platform's security model**. Each tool
-call is dispatched to the app's own ASGI stack with the caller's `Authorization`
-header forwarded verbatim, so the existing JWT validation, `require_permission`
-gates, tenant scoping and audit logging all apply exactly as they do for the web
-app. A tool call from a user without the underlying permission returns `403`, not
-a silent success.
+The MCP endpoint takes a bearer credential in one of two forms.
 
-Get a token:
+**Agent key — what a persistent client should use.**
+
+```
+Authorization: Bearer nck_<43 url-safe chars>
+```
+
+Long-lived and revocable, because an MCP client stores its credential in a config
+file — a 72-hour JWT would mean re-issuing and re-pasting it every three days.
+
+**Platform JWT — for short-lived/interactive use.** The same token the web app
+issues. Still accepted, so the admin console can drive the endpoint directly.
+
 ```bash
 TOKEN=$(curl -s -X POST https://app.nextcapos.com/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email":"<you>","password":"<pw>"}' | jq -r .token)
 ```
 
-Errors come back as data, not raw exceptions, so an agent can act on them:
+### What happens to the credential
+
+A key is resolved **at the MCP boundary** and exchanged for a normal platform
+token minted with the app's own `create_token()`. That token is what reaches the
+platform's routes, so `get_current_user`, every `require_permission` gate, tenancy
+scoping and audit logging behave exactly as they do for the web app — there is no
+second authorization path to drift out of sync. The minted token never leaves the
+process: it is created per request and discarded when the in-process call returns.
+
+### Managing keys
+
+All three endpoints require the `team.manage` permission — minting a credential
+that carries someone's platform access is a team-management act, not self-service.
+
+```bash
+# Mint. The plaintext is returned ONCE and is not recoverable afterwards.
+curl -s -X POST https://app.nextcapos.com/api/mcp/keys \
+  -H "Authorization: Bearer $ADMIN_JWT" -H 'Content-Type: application/json' \
+  -d '{"label":"Hermes","allowed_tools":["leads_list","research_company_summarize","dashboard_kpis"]}'
+
+# List (never returns plaintext or hashes)
+curl -s https://app.nextcapos.com/api/mcp/keys -H "Authorization: Bearer $ADMIN_JWT"
+
+# Revoke — immediate, and marked rather than deleted so the audit trail survives
+curl -s -X DELETE https://app.nextcapos.com/api/mcp/keys/<key_id> \
+  -H "Authorization: Bearer $ADMIN_JWT"
+```
+
+**`allowed_tools` narrows a key below its owner's permissions.** The MCP layer
+refuses any tool outside that list *before* dispatch, so an agent can be given a
+read-only slice of a user who is otherwise an admin. Both the key's scope and the
+user's RBAC must allow a call. Omit the field for the owner's full reach. Unknown
+tool names are rejected at creation rather than silently dropped, because a typo
+would otherwise look like a broken integration later.
+
+Keys are stored as **sha256 hashes only** — a database read cannot reconstruct a
+working credential. Ownership, creation, every rejection and every revoke are
+written to the platform's tamper-evident audit chain
+(`mcp.key.create`, `mcp.key.revoke`, `mcp.key.reject.*`).
+
+### Errors come back as data, not exceptions
+
+An agent gets something it can act on rather than an opaque failure:
 
 ```json
-{"ok": false, "status": 403, "error": {"detail": "Insufficient role"},
- "hint": "Authenticated, but this user lacks the permission the endpoint requires."}
+{"ok": false, "status": 403,
+ "error": "API key 'Hermes (read-only)' is not permitted to call 'newsletter_dispatch'.",
+ "hint": "This key carries an allowed-tools list. Allowed: leads_list, dashboard_kpis."}
 ```
 
 ## Connecting a client
@@ -83,23 +132,27 @@ bridges a stdio client to a remote HTTP server:
       "args": [
         "-y", "mcp-remote",
         "https://app.nextcapos.com/api/mcp/server",
-        "--header", "Authorization: Bearer ${NEXTCAPOS_TOKEN}"
+        "--header", "Authorization: Bearer ${NEXTCAPOS_KEY}"
       ]
     }
   }
 }
 ```
 
-**Hermes** — add to `~/.hermes/config.yaml`:
+**Hermes** — add to `~/.hermes/config.yaml`. Note that Hermes stores HTTP MCP
+credentials as a static header, which is exactly why the long-lived key exists:
 
 ```yaml
-mcp:
+mcp_servers:
   nextcapos:
     url: https://app.nextcapos.com/api/mcp/server
     headers:
-      Authorization: Bearer <token>
+      Authorization: Bearer nck_<your key>
     enabled: true
 ```
+
+Then `hermes mcp test nextcapos` to discover the nine tools. Newly added servers
+do not hot-load — the tools appear on the **next** session.
 
 **Raw protocol check** (no client needed): a correct endpoint answers an
 unauthenticated `initialize` with a JSON-RPC error *about the request*, never a
@@ -155,13 +208,28 @@ reports no broken requirements against the full pinned stack.
 ## Tests
 
 ```bash
-cd backend && python -m pytest tests/test_mcp_server.py -v
+cd backend && python -m pytest tests/test_mcp_server.py tests/test_mcp_auth.py -v
 ```
 
-15 tests. They read `MCP_ACTIONS` out of `server.py` with `ast` (so no database or
-env vars are needed), then drive the real Streamable HTTP transport through an
-in-process ASGI client, asserting: every manifest action becomes exactly one
-tool, names are spec-safe, optional params stay optional, the bearer token is
-forwarded, POST bodies carry only supplied params, path params are substituted
-and stripped from the body, missing required params are rejected *before* any
-dispatch, and 401/403 surface as structured data with an actionable hint.
+**40 tests.**
+
+`test_mcp_server.py` (20) reads `MCP_ACTIONS` out of `server.py` with `ast` — so no
+database or env vars are needed — then drives the real Streamable HTTP transport
+through an in-process ASGI client. It asserts: every manifest action becomes
+exactly one tool · names are spec-safe · optional params stay optional · the
+credential is forwarded **resolved, not raw** · POST bodies carry only supplied
+params · path params are substituted and stripped from the body · a missing
+required param is rejected *before* dispatch · a rejected key never reaches an
+endpoint · a restricted key is refused for tools outside its list · a resolver that
+raises fails closed · 401/403 surface as structured data with an actionable hint.
+
+`test_mcp_auth.py` (20) covers the key layer against an in-memory Mongo stand-in:
+key entropy and prefix · the plaintext is unrecoverable from the stored record ·
+`wrap_key` never leaks the hash · a valid key is exchanged for the owner's real
+identity · a raw JWT passes through untouched · unknown, revoked and orphaned keys
+all grant nothing · a failing usage-write cannot block a valid call · rejection
+callbacks fire · and an empty `allowed_tools` means *unrestricted*, never
+deny-all.
+
+`check_enforcement.py` also covers the three new endpoints (32 mapped, 0 problems),
+so they cannot regress into unguarded routes.

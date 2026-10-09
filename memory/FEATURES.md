@@ -377,9 +377,10 @@ registry (`MCP_ACTIONS` in `backend/server.py`), so they cannot drift.
 - **Admin MCP Console** for inspection + activity monitor.
 
 **Desktop / server agents — MCP (Streamable HTTP)**
-- **Endpoint:** `POST /api/mcp/server` — bearer-token authenticated.
+- **Endpoint:** `POST /api/mcp/server` — bearer authenticated.
 - **9 MCP tools**, the same nine actions. Tool names replace dots with underscores (`research.company.summarize` → `research_company_summarize`); the original id stays in each tool's description.
-- **No privilege escalation:** every call dispatches to this app's own ASGI stack with the caller's `Authorization` header forwarded, so JWT auth, `require_permission` gates, tenant scoping and audit logging apply unchanged. A call without the underlying permission returns 403.
+- **Agent keys** (`POST/GET/DELETE /api/mcp/keys`, `team.manage`): long-lived, revocable, hash-only credentials for persistent clients — presented as `Authorization: Bearer nck_…` and exchanged at the boundary for a normal platform token, so RBAC applies unchanged. An optional `allowed_tools` list narrows a key *below* its owner's permissions.
+- **No privilege escalation:** every call dispatches to this app's own ASGI stack with the resolved identity, so JWT auth, `require_permission` gates, tenant scoping and audit logging apply unchanged. A call without the underlying permission returns 403.
 - **Errors are data, not exceptions** — `{"ok": false, "status": 401, "error": …, "hint": …}`.
 - Connects to Claude Desktop (via `mcp-remote`), ChatGPT connectors, Hermes, LangChain.
 - Implementation + connection guide: `memory/MCP_SERVER.md`. Pinned to `mcp==1.12.4` so no existing dependency is bumped.

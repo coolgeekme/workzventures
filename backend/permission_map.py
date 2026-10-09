@@ -61,6 +61,15 @@ ENDPOINT_PERMISSIONS: Dict[str, str] = {
     "GET /security/audit/verify": "audit.read",
     "POST /admin/demo/purge": ADMIN_ONLY,
     "POST /admin/listings/{lid}/sources/cleanup-corrupt": ADMIN_ONLY,
+
+    # --- MCP agent keys ----------------------------------------------------
+    # Minting or revoking a credential that carries a user's platform access is a
+    # team-management operation, so it sits on team.manage rather than being
+    # self-service. A key can then be narrowed further via its allowed_tools list,
+    # which the MCP layer enforces before dispatch.
+    "POST /mcp/keys": "team.manage",
+    "GET /mcp/keys": "team.manage",
+    "DELETE /mcp/keys/{kid}": "team.manage",
 }
 
 # Endpoints whose gate the parser resolved but which are NOT whole-endpoint
