@@ -20,7 +20,7 @@
 9. [Outreach & marketing](#outreach--marketing)
 10. [Trust, security & compliance](#trust-security--compliance)
 11. [Integrations](#integrations)
-12. [Developer / agent surface (WebMCP)](#developer--agent-surface-webmcp)
+12. [Developer / agent surface (WebMCP + MCP)](#developer--agent-surface-webmcp--mcp)
 13. [Mobile & accessibility](#mobile--accessibility)
 14. [Admin & platform operations](#admin--platform-operations)
 15. [How to keep this file fresh](#how-to-keep-this-file-fresh)
@@ -365,13 +365,24 @@ NextCapOS ships four first-class roles, each with a tailored console.
 
 ---
 
-## Developer / agent surface (WebMCP)
+## Developer / agent surface (WebMCP + MCP)
 
+NextCapOS exposes the same nine actions over two transports, generated from one
+registry (`MCP_ACTIONS` in `backend/server.py`), so they cannot drift.
+
+**Browser agents — WebMCP**
 - **WebMCP shim** — `navigator.mcpActions.register()` + `data-mcp-action` DOM attributes for AI browsing agents (Claude in Chrome, LangChain, Hermes).
-- **9 actions exposed** today.
+- **9 actions exposed.**
 - **Public manifest:** `GET /api/mcp/manifest`.
 - **Admin MCP Console** for inspection + activity monitor.
-- Roadmap: dedicated MCP server endpoint for direct Claude Desktop / ChatGPT integration.
+
+**Desktop / server agents — MCP (Streamable HTTP)**
+- **Endpoint:** `POST /api/mcp/server` — bearer-token authenticated.
+- **9 MCP tools**, the same nine actions. Tool names replace dots with underscores (`research.company.summarize` → `research_company_summarize`); the original id stays in each tool's description.
+- **No privilege escalation:** every call dispatches to this app's own ASGI stack with the caller's `Authorization` header forwarded, so JWT auth, `require_permission` gates, tenant scoping and audit logging apply unchanged. A call without the underlying permission returns 403.
+- **Errors are data, not exceptions** — `{"ok": false, "status": 401, "error": …, "hint": …}`.
+- Connects to Claude Desktop (via `mcp-remote`), ChatGPT connectors, Hermes, LangChain.
+- Implementation + connection guide: `memory/MCP_SERVER.md`. Pinned to `mcp==1.12.4` so no existing dependency is bumped.
 
 ---
 

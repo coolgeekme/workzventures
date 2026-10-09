@@ -12508,6 +12508,41 @@ async def migrate_opening_balances(db) -> int:
 app.include_router(api_router)
 
 
+# -----------------------------------------------------------------------------
+# MCP SERVER (hosted Streamable HTTP transport)
+# -----------------------------------------------------------------------------
+# The WebMCP surface above (data-mcp-action + /api/mcp/manifest) only reaches an
+# agent driving a browser tab. This adds the network transport so desktop and
+# server-side clients — Claude Desktop, ChatGPT connectors, Hermes — can connect
+# with a bearer token. Tools are generated from MCP_ACTIONS, so the two surfaces
+# cannot drift.
+#
+# Two details here are load-bearing:
+#
+#  1. The mount point is the PARENT of the public endpoint. Starlette's Mount
+#     emits a 307 when the request path equals the mount path, and MCP clients
+#     post bare URLs without following redirects.
+#  2. The session manager must be started in THIS app's lifespan. Starlette does
+#     not run a mounted app's lifespan, and without it every request fails with
+#     "Task group is not initialized".
+#
+# Must stay AFTER app.include_router so /api/mcp/manifest and /api/mcp/actions
+# keep matching their own registered routes.
+from mcp_server import build_mcp_app, compose_lifespan, mcp_mount_prefix  # noqa: E402
+
+MCP_ENDPOINT_PATH = os.environ.get("MCP_ENDPOINT_PATH", "/api/mcp/server")
+_mcp_app = build_mcp_app(
+    MCP_ACTIONS,
+    app,
+    name="NextCapOS MCP",
+    version=app.version,
+    endpoint_path=MCP_ENDPOINT_PATH,
+)
+app.mount(mcp_mount_prefix(MCP_ENDPOINT_PATH), _mcp_app)
+app.router.lifespan_context = compose_lifespan(app.router.lifespan_context, _mcp_app)
+logger.info("MCP endpoint mounted at %s", MCP_ENDPOINT_PATH)
+
+
 @app.middleware("http")
 async def security_headers_middleware(request: Request, call_next):
     response = await call_next(request)
